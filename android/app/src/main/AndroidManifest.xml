@@ -1,0 +1,256 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- v1.78 修：判断「现在有没有网」要用 ConnectivityManager.activeNetwork / getNetworkCapabilities，
+         两个都要 ACCESS_NETWORK_STATE；缺了它每台机器上都抛 SecurityException，被 catch 吞掉之后
+         联网判断永远是「没网」—— 背单词预翻译因此一次请求都没发出去过（普通权限，装上即有） -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- v1.62 后台保活：只开无障碍截屏时也挂前台通知（Android 14 起要声明类型，用 specialUse）+ 可申请忽略电池优化 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- v1.85 提醒要准点：待办/简报/复习都靠闹钟，普通 set 会被 Doze 合并、晚几分钟到几十分钟。
+         Android 12(31)+ 用精确闹钟必须声明这个权限，且要用户去系统设置里单独授权（见 RemindExact）。 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- 弹出面板/菜单时的轻微震动反馈（普通权限，装上即有） -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- M3 待办：写系统日历前必弹确认卡，确认后才动 CalendarContract；撤销只删自己建的那条 -->
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <!-- v1.77 更新：下载完拉起系统安装器要用（普通权限，用户首次同意「安装未知应用」后即可） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application
+        android:label="${appLabel}"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:theme="@android:style/Theme.DeviceDefault.Light.DarkActionBar">
+
+        <!-- 设置页（现在是二级入口：桌面图标落聊天页，这里只从聊天页顶栏 / 通知 / 快捷方式进来）。
+             单Task + onNewIntent：面板「还没填接口 · 点这里」带着EXTRA_API 过来时复用同一个实例翻到对应折叠组。
+             exported=false：不再是 launcher 就不该对外暴露（gate 脚本抓过 exported=true 的回归）；
+             应用内显式 Intent（聊天顶栏 / 同 uid 的通知 PendingIntent）不受影响 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
+            android:launchMode="singleTask" />
+
+        <activity
+            android:name=".CaptureActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:noHistory="false"
+            android:theme="@style/Invisible" />
+
+        <activity
+            android:name=".HistoryActivity"
+            android:exported="false"
+            android:label="${appLabel} · 历史记录"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <activity
+            android:name=".TranslateActivity"
+            android:exported="true"
+            android:label="${translateLabel}"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/TranslateCard">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- v1.63：识别图片 —— 系统分享「Ling 识题」+ 小球菜单「从相册选图识别」 -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:label="${shareLabel}"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Invisible">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- v1.69 陪伴 M2：和小珠聊聊（**桌面图标落在这里**：启动即聊天，设置是二级入口。
+             exported=true 是 launcher 活动必须的；小球菜单「和小珠聊聊」照旧走 [ChatActivity.intent] -->
+        <activity
+            android:name=".ChatActivity"
+            android:exported="true"
+            android:label="${appLabel} · 和小珠聊聊"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- v1.69 自定义中心：设置页「外观 → 自定义中心」+ 小球菜单「更多调节 → 自定义小珠…」 -->
+        <activity
+            android:name=".CustomizeActivity"
+            android:exported="false"
+            android:label="${appLabel} · 自定义中心"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- v1.69 K2 知识卡列表：浏览 / 搜索 / 删除 -->
+        <activity
+            android:name=".KnowledgeListActivity"
+            android:exported="false"
+            android:label="${appLabel} · 知识卡"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- M3 待办：列表页 + 新建/编辑/日历确认卡页 -->
+        <activity
+            android:name=".TodoListActivity"
+            android:exported="false"
+            android:label="${appLabel} · 待办与随手记"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+        <activity
+            android:name=".TodoActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@style/BrutPage" />
+
+        <!-- v1.86 记期：日历 + 每周几（重复提醒），规则物化成普通待办走同一条提醒链 -->
+        <activity
+            android:name=".ScheduleActivity"
+            android:exported="false"
+            android:label="${appLabel} · 记期"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- v1.86 一键开权限：按顺序把系统页一页页递到用户面前，回来自动接着下一页 -->
+        <activity
+            android:name=".PermissionActivity"
+            android:exported="false"
+            android:label="${appLabel} · 一键开权限"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <activity
+            android:name=".StudyActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:label="${appLabel} · 学习与复习"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- 文档导入生成知识卡（TXT/MD/DOC/DOCX/文本 PDF）：内部页，从学习页 / 设置进入。
+             exported=false：只走应用内显式 Intent，不对外暴露。 -->
+        <activity
+            android:name=".ImportActivity"
+            android:exported="false"
+            android:label="${appLabel} · 导入知识卡"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- K3 知识卡复习：全屏复习页 + 每日期满提醒闹钟 -->
+        <activity
+            android:name=".ReviewActivity"
+            android:exported="false"
+            android:label="${appLabel} · 知识卡复习"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- M3：待办到期 / 早晚简报 / 随手记通知动作（都不对外） -->
+        <receiver android:name=".TodoReceiver" android:exported="false" />
+        <receiver android:name=".BriefingReceiver" android:exported="false" />
+        <receiver android:name=".MemoReceiver" android:exported="false" />
+        <!-- K3：知识卡到期检查（每天一次，响了自我续订） -->
+        <receiver android:name=".ReviewReceiver" android:exported="false" />
+        <!-- 单词推送主时钟（WordAlarm 精确闹钟到点自续订，显式 PendingIntent，不对外） -->
+        <receiver android:name=".WordReceiver" android:exported="false" />
+        <!-- 知识卡弹窗主时钟（KnowledgeAlarm 精确闹钟到点自续订，独立于弹单词，显式 PendingIntent，不对外） -->
+        <receiver android:name=".KnowledgeReceiver" android:exported="false" />
+
+        <!-- v1.64：桌面快捷方式 / 快捷开关的透明中转页 -->
+        <activity
+            android:name=".QuickActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:noHistory="true"
+            android:theme="@style/Invisible" />
+
+        <service
+            android:name=".SolveTile"
+            android:exported="true"
+            android:icon="@drawable/ic_orb"
+            android:label="识别屏幕"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".RegionTile"
+            android:exported="true"
+            android:icon="@drawable/ic_orb"
+            android:label="框选识别"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- v1.62：开机 / 升级后把小球带回来（用户上次没点退出时） -->
+        <receiver android:name=".BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- v1.65 保活第四层：闹钟看门狗（inexact 15 分钟一次，只在 orbWanted 且小球没跑时拉起） -->
+        <receiver android:name=".WatchdogReceiver" android:exported="false" />
+
+        <service
+            android:name=".OrbService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Floating assistant bubble that stays on screen so the user can capture and explain the current screen at any time" />
+        </service>
+
+        <!-- 状态栏快捷开关：打游戏时隐藏 / 恢复小球（v1.58） -->
+        <service
+            android:name=".OrbTile"
+            android:exported="true"
+            android:icon="@drawable/ic_orb"
+            android:label="${appLabel} 小球"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
+        </service>
+
+        <!-- 无障碍截屏通道（首选）：授权一次持久，不弹框、不按次授权 -->
+        <service
+            android:name=".A11yService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/a11y_config" />
+        </service>
+    </application>
+</manifest>

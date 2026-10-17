@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* v1.28：底板 / 标题栏 / chip / 图标按钮 / 状态行 / markdown 全部走 ui.css 的 token，
+     这里只留答案面板独有的排版。改配色请改 ui.css。 */
+  /* v1.31.1：scrollbar-gutter 常驻 —— 滚动条出现/消失会让正文整体重新换行（排版抽搐主因之一） */
+  #wrap { padding: var(--sp-3) var(--sp-4); opacity: 0.92; flex: 1; overflow-y: auto; scrollbar-gutter: stable; }
+  #histlist { display:none; border-top: 1px solid var(--hairline-soft); padding: 6px 10px; max-height: 40vh; overflow-y: auto; font-size: 12px; flex: 0 0 auto; }
+  .hh { display:flex; align-items:center; gap:10px; color: var(--tx-2); padding: var(--sp-1) 0; }
+  #hb { -webkit-app-region: no-drag; border:none; background: var(--btn-bg); color: var(--tx-1); padding:2px var(--sp-2); border-radius: var(--r-sm); cursor:pointer; font-size:12px; }
+  .hi { display:flex; gap: var(--sp-2); padding: 5px 6px; border-radius: var(--r-sm); cursor:pointer; }
+  .hi:hover { background: rgba(var(--accent), .18); }
+  .ht { color: var(--tx-3); flex: 0 0 58px; }
+  .hp { color: var(--tx-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* —— 做题模式：靠字号/对比度/缩进分区，不依赖颜色（屏幕常年开灰度滤镜）—— */
+  #body .ans { margin: var(--sp-2) 0 var(--sp-3); padding: var(--sp-3); border-radius: var(--r-md); background: rgba(var(--accent), .16); border-left: 3px solid rgba(var(--accent), .9); }
+  #body .ans .lab { font-size: 11px; letter-spacing: .10em; color: var(--tx-2); }
+  #body .ans .val { font-size: 20px; font-weight: 700; line-height: 1.5; margin-top: var(--sp-1); color: rgb(var(--answer)); }
+  #body .ans .val p { margin: 0; }
+  #body .sec { margin: var(--sp-3) 0 0; }
+  #body .sec > h4 { margin: 0 0 var(--sp-2); font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--tx-2); border-bottom: 1px solid var(--hairline-soft); padding-bottom: 3px; }
+  #body .sec ol { margin: var(--sp-1) 0 0; padding-left: 20px; }
+  #body .sec li { margin: 3px 0; }
+  #body .sec.tip { opacity: .85; font-size: 13px; }
+  #body h3.qt { margin: var(--sp-4) 0 var(--sp-2); font-size: 13px; font-weight: 600; color: var(--tx-2); letter-spacing: .04em; }
+
+  /* v1.40：流式新增的行淡入进场（只加在这一帧新出现的块上，整篇文本不重排 → 不跳不闪） */
+  #body .fadein { animation: lineIn .15s ease-out; }
+  @keyframes lineIn { from { opacity: .28; transform: translateY(2px) } to { opacity: 1; transform: none } }
+  /* v1.65 通识：名词词块行（答案末尾的 [可点击名词] 清单 → 一排可点的小词块） */
+  #termsbar { display: none; flex-wrap: wrap; align-items: center; gap: 6px; flex: 0 0 auto;
+    border-top: 1px solid var(--hairline-soft); padding: 6px 12px 8px; -webkit-app-region: no-drag; }
+  #termsbar .tchip { font-size: 12px; color: var(--tx-1); background: var(--btn-bg);
+    border: 1px solid var(--hairline-soft); border-radius: var(--r-sm); padding: 3px 10px; cursor: pointer; }
+  #termsbar .tchip:hover { background: rgba(var(--accent), .25); }
+  /* v1.60（对齐安卓 v1.66）：模式抽屉 —— 点左上角模式标签往下拉出一列模式，只列模式，点一个就切过去并收起 */
+  #modechip { cursor: pointer; user-select: none; }
+  #modechip::after { content: ' ▾'; font-size: 9px; opacity: .7; }
+  #modechip.open::after { content: ' ▴'; }
+  #modetray { display: none; flex: 0 0 auto; flex-direction: column; gap: 2px; padding: 4px 10px 6px;
+    border-bottom: 1px solid var(--hairline-soft); -webkit-app-region: no-drag; }
+  #modetray.open { display: flex; animation: trayIn .14s ease-out; }
+  @keyframes trayIn { from { opacity: 0; transform: translateY(-6px) } to { opacity: 1; transform: none } }
+  #modetray .mrow { font-size: 13px; color: var(--tx-1); padding: 5px 8px; border-radius: var(--r-sm); cursor: pointer; }
+  #modetray .mrow:hover { background: rgba(var(--accent), .22); }
+  #modetray .mrow.sel { font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }   /* 选中靠 ✓ + 加粗下划线，不靠颜色 */
+  /* v1.60 追问栏：常驻底部；输入框左边固定两个开关「what」「why」（字号小一点） */
+  #askbar { display: none; flex: 0 0 auto; align-items: center; gap: 5px; padding: 6px 10px 8px;
+    border-top: 1px solid var(--hairline-soft); -webkit-app-region: no-drag; }
+  #askbar.on { display: flex; }
+  #askbar .tg { font: 10.5px/1 var(--font); padding: 4px 7px; border-radius: var(--r-pill); cursor: pointer; user-select: none;
+    color: var(--tx-2); background: transparent; border: 1px solid rgba(var(--fg), .28); }
+  #askbar .tg.on { color: var(--tx-1); background: rgba(var(--accent), .38); border-color: rgba(var(--accent), .85); font-weight: 600; }
+  #askbar .tg.on::before { content: '✓ '; }
+  #askbar .fake { flex: 1; min-width: 0; height: 26px; line-height: 26px; padding: 0 9px; border-radius: var(--r-sm); cursor: text;
+    border: 1px solid rgba(var(--fg), .22); background: rgba(var(--fg), .07); color: var(--tx-3); font-size: 12.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #askbar .fake:hover { border-color: rgba(var(--accent), .75); }
+  #askbar .send { height: 26px; padding: 0 10px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <div class="bar"><span class="dot"></span><span class="chip" id="modechip" title="点一下切换模式">通用</span><span class="title"></span><button class="ibtn" id="hist" title="历史"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 4.9V8l2.3 1.4"/></svg></button><button class="ibtn" id="close" title="关闭"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2"/></svg></button></div>
+    <!-- v1.60：工具行精简（同安卓 v1.66）：去掉追问 / 重新识别 / 复制按钮 —— 追问在底部常驻栏，复制靠划选气泡，字号在设置里调 -->
+    <div id="modetray"></div>
+    <div id="histlist" style="display:none"></div>
+    <div id="wrap">
+      <div id="state"></div>
+      <div id="body"></div>
+    </div>
+    <!-- v1.65 通识：名词词块行（renderBody 里检测到清单行才露出） -->
+    <div id="termsbar"></div>
+    <div id="askbar">
+      <span class="tg" id="tgWhat" title="what：讲简单点，再举个例子（万维钢式的通俗解释）">what</span>
+      <span class="tg" id="tgWhy" title="why：用第一性原理讲为什么">why</span>
+      <div class="fake" id="askFake">想追问什么…</div>
+      <button class="btn send" id="askSend">发送</button>
+      <!-- [KCard] v1.72 存为复习卡：跟追问栏一起露出（有正文才有东西可存）；存过就变 ✓ -->
+      <button class="btn send" id="kcardSave" title="把这一轮的问答存进知识卡，之后按 FSRS 安排复习">存为复习卡</button>
+    </div>
+  </div>
+<script src="math.js"></script>
+<script src="prompts.js"></script>
+<script src="themes.js"></script>
+<script>
+  const stateEl = document.getElementById('state')
+  const body = document.getElementById('body')
+  let started = false
+  let rawText = ''
+
+  // v1.27：流式渲染节流。
+  // 老写法每来一个 chunk 就整篇重渲染 markdown + 让主进程改一次窗口大小，而面板带 backdrop-filter 模糊
+  // —— 等于每个 chunk 把整块玻璃重新合成一次（实测一次识别里面板渲染进程烧 1.86 CPU 秒，占全程 45%）。
+  // 现在：正文最多每 120ms 重渲染一次、窗口最多每 200ms 调一次尺寸；收尾（done）再各补一次，保证最终态完整。
+  // v1.60：底部追问栏 / 词块行 / 模式抽屉 / 历史列表也算进高度（不算的话正文区会被它们挤成一小条）
+  const extraH = () => ['histlist', 'modetray', 'termsbar', 'askbar'].reduce((n, id) => { const el = document.getElementById(id); return n + (el ? el.offsetHeight : 0) }, 0)
+  const measureNeed = () => document.getElementById('wrap').scrollHeight + document.querySelector('.bar').offsetHeight + extraH() + 26
+  let rTimer = null, sTimer = null
+  /* —— v1.40 流式渲染（换掉 v1.35 的「攒完再揭示」）——
+     用户实测反馈：v1.35 等模型全部吐完才整篇揭示 —— **前面的等待时间太长**，内容一到又全部同时出现，
+     那段进度条反而显得多余。所以改回「到了就显示」的流式，但要保住流畅：
+       1) 每帧（16ms，做题模式 60ms）把「已完成的行」交给 baseEl（只在出现新行时重建 —— 静态文本重排看不出来），
+          正在写的那一行放 tailEl 帧内连续更新。**不额外限速**：屏幕上就是模型的真实节奏。
+       2) 新完成的行带一条 150ms 淡入进场（只动新行，不整篇重排，所以不跳不闪）。
+       3) 高度：流式期间冻结、超出一屏按 80px 台阶长，done 后一次收拢（透明玻璃每次 setBounds 都要重合成）。
+       4) 末尾跟一个光标；贴底跟读，用户往上翻就暂停跟读。
+     （v1.31~1.34 的漏桶打字机实现见 README，真要匀速吐字可以把 feed() 里的 rawText 换成按速率推进。） */
+  const wrapEl = document.getElementById('wrap')
+  let targetText = ''
+  let baseEl = null, tailEl = null, baseText = '', tailText = '', baseKids = 0
+  function streamReset() {
+    if (window.__selcopy) window.__selcopy.hide()   // v1.46：正文要重建了，选区气泡先收掉
+    body.innerHTML = ''
+    baseEl = document.createElement('div'); tailEl = document.createElement('div')
+    body.append(baseEl, tailEl)
+    baseText = ''; tailText = ''; baseKids = 0
+    domGen++   // v1.77：正文 DOM 整块换过 —— 作废还在途中的 resize 锚点
+    tailEl.appendChild(caretEl)
+  }
+  function streamRender() {
+    // v1.7x：流式期间也先把「关键词清单行」挡在正文外 —— 完整行、只写出一半的头（「[可点」）都算，
+    // 免得面板上闪出一行原始格式说明；done 后用 renderBody/splitTerms 再收一次尾。
+    const live = window.LZPrompts ? window.LZPrompts.stripTermsLive(rawText) : rawText
+    if (curMode === 'exam') { body.innerHTML = renderBody(live); return }   // 做题模式整篇重排，保持原样
+    if (!baseEl || !tailEl) streamReset()
+    const src = live
+    const i = src.lastIndexOf('\n')
+    const donePart = i < 0 ? '' : src.slice(0, i)
+    const tailPart = i < 0 ? src : src.slice(i)
+    if (donePart !== baseText) {
+      baseText = donePart
+      baseEl.innerHTML = renderMarkdown(donePart)
+      const kids = baseEl.children
+      for (let k = baseKids; k < kids.length; k++) kids[k].classList.add('fadein')   // 只给这次新增的块做进场
+      baseKids = kids.length
+    }
+    if (tailPart !== tailText) {
+      const wasEmpty = !tailText
+      tailText = tailPart
+      tailEl.innerHTML = renderMarkdown(tailPart)
+      tailEl.appendChild(caretEl)
+      // 新的一行刚开始写 → 给这一行一次进场（每行只跑一次，不是每帧，所以不会闪）
+      if (wasEmpty && tailPart.trim()) { tailEl.classList.remove('fadein'); void tailEl.offsetWidth; tailEl.classList.add('fadein') }
+    }
+  }
+  const caretEl = document.createElement('span')
+  caretEl.className = 'caret'
+
+  // v1.27/v1.33：渲染节流（按帧），done 时补一次保证最终态完整
+  const render = () => {
+    if (rTimer) return
+    rTimer = setTimeout(() => { rTimer = null; streamRender(); follow() }, curMode === 'exam' ? 60 : 16)
+  }
+  /* v1.77：preserve=true 表示这次是「同一篇正文换 DOM」（done 收尾 / 切模式），
+     读历史时要把视口顶的可见锚点对回去，别让正文漂走；跟随中则照旧贴底。 */
+  const renderNow = (preserve) => {
+    if (rTimer) { clearTimeout(rTimer); rTimer = null }
+    if (window.__selcopy) window.__selcopy.hide()   // v1.46：整篇重排会吃掉选区，气泡跟着收
+    const anchor = (preserve && !followBottom) ? captureAnchor() : null
+    body.innerHTML = renderBody(rawText)
+    baseEl = null; tailEl = null; baseText = ''; tailText = ''; baseKids = 0
+    domGen++
+    if (anchor) restoreAnchor(anchor)
+    else if (followBottom) follow()
+  }
+  function finishStream() {
+    doneFlag = false
+    if (typeof targetText === 'string' && targetText) rawText = targetText
+    renderNow(true); streamH = null; resizeNow()
+  }
+  function feed(t) {
+    targetText += t
+    rawText = targetText                 // v1.40：不再限速 —— 到了就显示
+    render(); resize()
+  }
+
+  // v1.31.1：高度按 4px 量化；流式期间冻结、按 80px 台阶长；done 后收拢
+  // （透明玻璃窗每次 setBounds 都会整体重新合成，流式期间零 resize 才不卡）
+  let lastNeed = 0, streamH = null
+  const quantNeed = () => Math.ceil(measureNeed() / 4) * 4
+  const resize = () => {
+    if (sTimer) return
+    sTimer = setTimeout(() => {
+      sTimer = null
+      const need = quantNeed()
+      if (streamH == null) streamH = Math.max(need, 360)
+      // v1.47：一超出就长，并多留 40px 余量（原来要超出 64px 才长 —— 这 64px 里正在写的那行被压在底边外）
+      else if (need > streamH) streamH = Math.ceil((need + 40) / 80) * 80
+      else return
+      lastNeed = streamH
+      growWindow(streamH)
+    }, 200)
+  }
+  const resizeNow = () => {
+    if (sTimer) { clearTimeout(sTimer); sTimer = null }
+    const n = quantNeed()
+    if (n !== lastNeed || streamH != null) { lastNeed = n; streamH = null; growWindow(n) }
+  }
+  let doneFlag = false
+  /* v1.77：跟读改成「用户意图驱动」。
+     老写法（v1.40~v1.76）的判定是「离底 <48px 就 followBottom=true」—— 可程序化滚动、窗口长高、
+     内容变高都会让「离底」当场变小，于是被当成「用户想跟」，每次渲染都把用户往下拽。
+     这正是用户实报的「流式答案强制往下跳」：只要有 followBottom 就以为没 bug，其实判据本身会误触发。
+     新契约：
+       · 新答案 / 历史回看初始 followBottom=false，从开头看；不因输出变长自动跳到末尾。
+       · 只有用户主动 wheel / 触摸 / 拖滚动条 / 键盘翻到「真正底部」才 followBottom=true。
+       · 往上翻 / 按住选字立即停跟；松开后只有确实停在真正底部才恢复。
+       · 程序化滚动（progTop 匹配）与纯布局 / 内容高度变化一律不改变跟随意愿。
+     跟随期间 chunk / done 照常贴底；排队的 rAF / 渲染 timeout 执行前都会重新校验 followBottom && !userHeld。 */
+  const BOTTOM_EPS = 4
+  let followBottom = false, userHeld = false, dragMoved = false
+  let fRaf = 0, progTop = null, padB = -1
+  let lastUserScrollAt = 0, userSeq = 0, domGen = 0, pendingAnchor = null
+
+  const maxTop = () => Math.max(0, wrapEl.scrollHeight - wrapEl.clientHeight)
+  const atBottom = () => maxTop() - wrapEl.scrollTop <= BOTTOM_EPS
+  const userScrolling = () => userHeld || (performance.now() - lastUserScrollAt < 500)
+  function cancelFollowRaf() { if (fRaf) { cancelAnimationFrame(fRaf); fRaf = 0 } }
+  function stopFollow() { followBottom = false; cancelFollowRaf() }
+  /* 所有程序化滚动都走这里：写回真实值后记进 progTop —— 紧接着的那次 scroll 事件会被认成
+     「我们自己滚的」而忽略。这是不再被程序滚动误开跟随的关键。 */
+  function setTop(v) {
+    const t = Math.max(0, Math.min(v, maxTop()))
+    if (Math.abs(t - wrapEl.scrollTop) > 0.5) { wrapEl.scrollTop = t; progTop = wrapEl.scrollTop }
+  }
+
+  wrapEl.addEventListener('scroll', () => {
+    const top = wrapEl.scrollTop
+    if (progTop != null && Math.abs(top - progTop) <= 1) { progTop = null; return }   // 程序化滚动 / 布局回夹：不动跟随意愿
+    progTop = null
+    if (!userScrolling()) return                                                     // 既非用户输入也非我们写的：一律不改变跟随
+    userSeq++
+    if (userHeld) dragMoved = true                                                   // 拖滚动条 / 触摸拖动
+    if (atBottom()) { if (!userHeld) followBottom = true }                           // 按住到不算数，松开时再判（见 endHold）
+    else stopFollow()
+  })
+  wrapEl.addEventListener('wheel', (e) => {
+    lastUserScrollAt = performance.now(); userSeq++
+    if (e.deltaY < 0) stopFollow()          // 往上翻：立即停跟
+    else cancelFollowRaf()                  // 往下：先撤掉缓动把控制权交还用户，到没到底交给 scroll 事件判定
+  }, { passive: true })
+  wrapEl.addEventListener('touchstart', () => { lastUserScrollAt = performance.now(); userSeq++ }, { passive: true })
+  wrapEl.addEventListener('touchmove', () => {
+    lastUserScrollAt = performance.now(); if (userHeld) dragMoved = true; cancelFollowRaf()
+  }, { passive: true })
+  wrapEl.addEventListener('pointerdown', () => { userHeld = true; dragMoved = false; lastUserScrollAt = performance.now() })
+  ;['pointerup', 'pointercancel'].forEach((ev) => window.addEventListener(ev, endHold))
+  window.addEventListener('blur', endHold)
+  window.addEventListener('mouseleave', endHold)   // 拖出窗口后可能收不到 pointerup：别把 holding 锁死
+  /* v1.78：松手时的跟随意愿按**落点**重判。
+     老写法只在「拖到底」时置 followBottom=true，却不清掉「按住前遗留的 true」——
+     用户按住选字时正文还在流式变长，一松手就被拽回底部（实测：离底 297px 一松手就被拉到 0）。
+     新契约（同上面注释）：
+       · 按住期间一律不跟（userHeld 挡住 follow）；
+       · 松手时——这次真滚/拖过（dragMoved）→ 跟随意愿 = 此刻是否真的在真正底部；
+                  没滚（只是按住选字 / 点一下）→ 若一松手已不在底部就停跟，仍在底部则保持原样
+                  （纯点击不算「主动滚到底」，不能凭它开启跟随）。 */
+  function endHold() {
+    if (!userHeld) return
+    userHeld = false
+    if (dragMoved) followBottom = atBottom()
+    else if (!atBottom()) followBottom = false
+    dragMoved = false
+  }
+  /* 键盘翻页（面板 focusable:false，一般收不到键；能收到时按用户意图处理，不走浏览器默认滚动） */
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    const page = Math.max(40, wrapEl.clientHeight * 0.85)
+    let dy = null, jump = null
+    switch (e.key) {
+      case 'ArrowUp': dy = -48; break
+      case 'ArrowDown': dy = 48; break
+      case 'PageUp': dy = -page; break
+      case 'PageDown': dy = page; break
+      case 'Home': jump = 0; break
+      case 'End': jump = 1; break
+      default: return
+    }
+    if (maxTop() <= 0) return               // 没有可滚的内容：别抢这几个键
+    e.preventDefault()
+    lastUserScrollAt = performance.now(); userSeq++; cancelFollowRaf()
+    if (jump === 0) { stopFollow(); setTop(0) }
+    else if (jump === 1) { setTop(maxTop()); followBottom = true }
+    else { if (dy < 0) followBottom = false; setTop(wrapEl.scrollTop + dy); if (dy > 0 && atBottom()) followBottom = true }
+  })
+
+  function follow() {
+    if (!followBottom || userHeld) return
+    // 新行刚出现的那一帧就得看得见：超出内容区的部分当场补上（同步），只把底部内边距那一小段交给缓动
+    if (padB < 0) padB = parseFloat(getComputedStyle(wrapEl).paddingBottom) || 0
+    const over = wrapEl.scrollHeight - wrapEl.clientHeight - wrapEl.scrollTop - padB
+    if (over > 0) setTop(wrapEl.scrollTop + over)
+    if (fRaf) return
+    const step = () => {
+      fRaf = 0
+      if (!followBottom || userHeld) return          // 排队的帧执行前重新校验：用户可能已经翻走了
+      const d = wrapEl.scrollHeight - wrapEl.clientHeight - wrapEl.scrollTop
+      if (d <= 1) return
+      setTop(wrapEl.scrollTop + Math.max(2, Math.ceil(d * 0.5)))
+      fRaf = requestAnimationFrame(step)
+    }
+    fRaf = requestAnimationFrame(step)
+  }
+
+  /* 可见锚点：跟随中不需要；读历史 / done 重排时，renderBody 换 DOM、窗口长高导致 scrollTop 被夹，
+     都可能让正文漂走 —— 记下「视口顶第一块 + 它相对视口顶的偏移」，换完再对回去。 */
+  function topBlocks() {
+    if (baseEl && tailEl && baseEl.parentNode === body) {
+      const out = [...baseEl.children]
+      if (tailEl.textContent.trim()) out.push(tailEl)
+      return out
+    }
+    return [...body.children]
+  }
+  function captureAnchor() {
+    const blocks = topBlocks()
+    if (!blocks.length) return null
+    const wt = wrapEl.getBoundingClientRect().top
+    for (let k = 0; k < blocks.length; k++) {
+      const r = blocks[k].getBoundingClientRect()
+      if (r.bottom > wt + 1) return { k, off: r.top - wt }
+    }
+    return { k: blocks.length - 1, off: blocks[blocks.length - 1].getBoundingClientRect().top - wt }
+  }
+  function restoreAnchor(a) {
+    if (!a) return
+    const blocks = topBlocks()
+    if (!blocks.length) return
+    const el = blocks[Math.min(a.k, blocks.length - 1)]
+    setTop(wrapEl.scrollTop + (el.getBoundingClientRect().top - wrapEl.getBoundingClientRect().top) - a.off)
+  }
+  /* 窗口长高（我们自己的 resize）会把 scrollTop 夹小：长高前先记住锚点，回来且用户没动过再复原 */
+  function growWindow(h) {
+    if (!followBottom) pendingAnchor = { a: captureAnchor(), gen: domGen, seq: userSeq }
+    window.orbApi.resize(h)
+  }
+  window.addEventListener('resize', () => {
+    if (followBottom) { follow(); return }          // 跟随中：窗口变了照旧贴底
+    if (!pendingAnchor) return
+    const p = pendingAnchor; pendingAnchor = null
+    if (p.gen === domGen && p.seq === userSeq) restoreAnchor(p.a)   // 期间用户自己滚过 / 换过 DOM 就不抢方向盘
+  })
+
+  function esc(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+  }
+  /* v1.58：公式排版 + 链接可点（math.js）；原来的 inline(esc(x)) 都换成了 fmt(x) */
+  function fmt(raw) { return window.LZMath ? window.LZMath.fmt(raw, (x) => inline(esc(x))) : inline(esc(raw)) }
+  function inline(s) {
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>')
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    return s
+  }
+  function renderMarkdown(src) {
+    const lines = (window.LZMath ? window.LZMath.joinDisplay(src) : src).split('\n')
+    let html = '', list = null, listTag = ''
+    const closeList = () => { if (list) { html += '</' + listTag + '>'; list = null } }
+    for (const raw of lines) {
+      const t = raw.trim()
+      if (t === '') { closeList(); continue }
+      const ul = t.match(/^[-*•]\s+(.*)$/)
+      const ol = t.match(/^\d+[.)]\s+(.*)$/)
+      const h1 = t.match(/^#\s+(.*)$/)
+      const h2 = t.match(/^##\s+(.*)$/)
+      const bq = t.match(/^>\s?(.*)$/)
+      const hr = /^[-*_]{3,}$/.test(t)
+      if (hr) { closeList(); html += '<hr>' }
+      else if (ul || ol) {
+        const tag = ul ? 'ul' : 'ol'
+        if (list !== tag) { closeList(); list = tag; listTag = tag; const st = ol && t.match(/^(\d+)/); html += '<' + tag + (st && st[1] !== '1' ? ' start="' + st[1] + '"' : '') + '>' }   // v1.58：中间隔着公式时列表会断开，按原文的编号续上
+        html += '<li>' + fmt((ul || ol)[1]) + '</li>'
+      } else if (h1 || h2) {
+        closeList()
+        html += (h1 ? '<h3>' : '<h4>') + fmt((h1 || h2)[1]) + (h1 ? '</h3>' : '</h4>')
+      } else if (bq) {
+        closeList(); html += '<p class="quote">' + fmt(bq[1]) + '</p>'
+      } else {
+        closeList(); html += '<p>' + fmt(raw) + '</p>'
+      }
+    }
+    closeList()
+    return html
+  }
+
+  let curMode = 'general'
+  // v1.52：纯小白格式的几段（这题在问什么 / 先弄懂 / 一步步做 / 其他选项错在哪 / 记住这句 / 举一反三）
+  const SEC_KINDS = { '答案': 'ans', '解析': 'sec', '分析': 'sec', '考点': 'tip', '补充': 'tip', '题干': 'tip',
+    '这题在问什么': 'sec', '先弄懂': 'sec', '一步步做': 'sec', '其他选项错在哪': 'sec', '记住这句': 'tip', '举一反三': 'tip' }
+  const SEC_RE = new RegExp('^#{1,3}\\s*(' + Object.keys(SEC_KINDS).join('|') + ')\\s*[:：]?\\s*$')
+  const SEC_RE2 = new RegExp('^[【\\[]\\s*(' + Object.keys(SEC_KINDS).join('|') + ')\\s*[】\\]]\\s*[:：]?\\s*$')
+
+  // 做题模式专用排版：把模型输出的「## 答案 / ## 解析 / ## 考点」三段式渲染成分区版式
+  function renderExam(src) {
+    const lines = (window.LZMath ? window.LZMath.joinDisplay(src) : src).split('\n')
+    let html = ''
+    let buf = []
+    let kind = 'text'
+    let title = ''
+
+    const flush = () => {
+      const text = buf.join('\n').trim()
+      buf = []
+      if (!text) { if (kind !== 'text') html += '' ; return }
+      const inner = renderMarkdown(text)
+      if (kind === 'ans') html += '<div class="ans"><div class="lab">答案</div><div class="val">' + inner + '</div></div>'
+      else if (kind === 'sec') html += '<div class="sec"><h4>' + esc(title) + '</h4>' + inner + '</div>'
+      else if (kind === 'tip') html += '<div class="sec tip"><h4>' + esc(title) + '</h4>' + inner + '</div>'
+      else html += inner
+    }
+
+    for (const raw of lines) {
+      const t = raw.trim()
+      const q = t.match(/^#{3,4}\s*(第\s*\d+\s*题[^\n]*)$/)
+      const m = t.match(SEC_RE) || t.match(SEC_RE2)
+      if (q) { flush(); kind = 'text'; html += '<h3 class="qt">' + esc(q[1]) + '</h3>'; continue }
+      if (m) { flush(); title = m[1]; kind = SEC_KINDS[m[1]] || 'sec'; continue }
+      buf.push(raw)
+    }
+    flush()
+    return html
+  }
+
+  /* v1.65 通识（对齐安卓 AnswerPanel.splitTerms）：从答案里拆出名词清单行，
+     剥出正文 + 生成词块；清单行不进正文、不进做题分区。无清单（其他模式 / 模型没按格式）时一切照旧。 */
+  /* v1.60：拆清单的逻辑挪到 prompts.js（主进程同一份约定，test/ 里单测）—— 型号 / 编号开头带数字的词不会被当成序号剥掉 */
+  let curTerms = []
+  const termsBar = document.getElementById('termsbar')
+  const splitTerms = (src) => window.LZPrompts.splitTerms(src)
+  function refreshTerms(terms) {
+    if (terms.join('｜') === curTerms.join('｜')) return
+    curTerms = terms
+    if (!terms.length) { termsBar.style.display = 'none'; termsBar.innerHTML = ''; return }
+    termsBar.innerHTML = terms.map((t) => '<button class="tchip" data-t="' + esc(t) + '">' + esc(t) + '</button>').join('')
+    termsBar.style.display = 'flex'
+  }
+  termsBar.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('.tchip')
+    if (b && window.orbApi.askTerm) window.orbApi.askTerm(b.dataset.t)
+  })
+
+  function renderBody(src) {
+    const sp = splitTerms(src)
+    refreshTerms(sp.terms)
+    return curMode === 'exam' ? renderExam(sp.text) : renderMarkdown(sp.text)
+  }
+
+  window.orbApi.onAnswerMode((m) => {
+    if (!m) return
+    curMode = m.id || 'general'
+    const chip = document.getElementById('modechip')
+    if (chip) chip.textContent = m.label || curMode
+    if (rawText) { renderNow(true); resizeNow() }   // 换排版是「同一篇正文换 DOM」：保住读位
+  })
+
+  const map = { capturing: '正在截取屏幕…', solving: '正在识别分析…', autoscan_on: '自动扫描中 · 按设定间隔解析屏幕，双击小球可立即解析…', rescan: '自动扫描 · 正在重新识别…（上一轮结果先留着）', autoscan_off: '自动扫描已停止', autoscan_standby: '屏幕休眠中 · 自动扫描待机，点亮屏幕后自动恢复', no_question: '解析完成 · 自动扫描继续监控中…', question_paused: '解析完成 · 暂停扫描 60 秒方便阅读（双击小球可立即继续）', screen_denied: '⚠️ 未获得「屏幕录制」权限 · 点这里打开系统设置 →', capture_failed: '⚠️ 截屏失败：请检查 系统设置 → 隐私与安全性 → 屏幕录制' }
+
+  // v1.28.1：标题栏不再显示「AI 屏幕解析」—— 模式 chip + 图标已经够说明这是什么了。
+  // .title 保留为空占位（flex:1 撑开，按钮才不会跑到左边）。想恢复就在这里填字。
+
+  /* v1.36：状态分两类 —— 只有「新一轮开始 / 错误」才清屏 + 重置进度条；
+     自动扫描的提示（暂停 60 秒 / 待机 / 未发现题目 / 开关）只改上面那行状态字，不动正文。
+     老写法所有状态都走重置分支：识别结果出来约 10 秒后，下一轮 tick 的「暂停扫描 60 秒」提示
+     会把刚出的答案整篇清掉、进度条弹回去 —— 看起来就是「结果自己消失了」。 */
+  const RESET_STATES = ['capturing', 'solving', 'screen_denied', 'capture_failed']
+  let pendingReset = false
+  function resetBody() {
+    started = false; rawText = ''; targetText = ''; doneFlag = false
+    baseEl = null; tailEl = null; baseText = ''; tailText = ''; baseKids = 0
+    streamH = null; lastNeed = 0
+    // v1.77：新一轮从开头看 —— 关掉跟随，并清掉上一轮残留的 rAF / 指针 / 滚动基线与在途锚点
+    stopFollow(); userHeld = false; dragMoved = false
+    progTop = null; padB = -1; pendingAnchor = null
+    closeHist()          // v1.46：新一轮开始 → 历史列表收掉（双击小球时第一下开的那个）
+    body.innerHTML = ''
+  }
+
+  window.orbApi.onState((s) => {
+    // v1.49：自动扫描不再停 60 秒，每轮都会重来 —— 这一轮先不清屏，上一轮答案留着读，
+    // 等新答案第一个字到了再换（见 onChunk 里的 pendingReset）
+    if (s === 'rescan') { if (rawText) pendingReset = true; else s = 'capturing' }   // 面板还空着就照常走「正在截取」
+    else if (RESET_STATES.includes(s)) pendingReset = false
+    if (!RESET_STATES.includes(s)) {
+      stateEl.textContent = map[s] || s
+      stateEl.style.display = 'inline'
+      stateEl.classList.remove('clickable')
+      stateEl.onclick = null
+      if (!rawText) body.innerHTML = ''   // 还没有正文：保持空板，不留上一轮残影
+      resizeNow()
+      return
+    }
+    resetBody()
+    stateEl.textContent = map[s] || s
+    stateEl.style.display = 'inline'
+    const clickable = (s === 'screen_denied')
+    stateEl.classList.toggle('clickable', clickable)
+    stateEl.onclick = clickable ? () => window.orbApi.openPrivacy() : null
+    renderNow(); resizeNow()
+  })
+
+  /* v1.37：切换 API 档案时闪一行「已切到 …」。
+     同样只改状态行、不碰正文和进度条（跟上面提示类状态一个道理），2.6 秒后自己收掉；
+     收之前再确认状态行还是这条提示（万一流式已经开始，别把「正在识别分析…」抹掉）。 */
+  let noticeTimer = null
+  window.orbApi.onNotice((txt) => {
+    if (!txt) return
+    const shown = String(txt)
+    stateEl.textContent = shown
+    stateEl.style.display = 'inline'
+    stateEl.classList.remove('clickable')
+    stateEl.onclick = null
+    resizeNow()
+    clearTimeout(noticeTimer)
+    noticeTimer = setTimeout(() => { if (stateEl.textContent === shown) { stateEl.style.display = 'none'; resizeNow() } }, 2600)
+  })
+
+  // v1.42：思考阶段（DeepSeek 只在 reasoning_content 里吐东西）也要有反馈，否则就是一块静止的面板
+  window.orbApi.onAnswerPhase((t) => {
+    if (!t || started) return
+    stateEl.textContent = t
+    stateEl.style.display = 'inline'
+    stateEl.classList.remove('clickable')
+    stateEl.onclick = null
+  })
+
+  window.orbApi.onChunk((d) => {
+    // v1.24：只有真来了正文才收状态行。空 chunk 只是「本轮结束」信号，
+    // 老写法会顺手把状态行 display:none，万一没正文就只剩一块空玻璃框。
+    if (pendingReset) {
+      if (!d.text) return          // 这一轮没出正文：上一轮答案原样留着
+      pendingReset = false
+      resetBody()
+      setTop(0)                     // v1.77：新一轮从开头看
+      started = true; stateEl.style.display = 'none'
+      feed(d.text); renderNow()      // 同一个任务里清空 + 画上新的，中间不会露出空白帧
+      if (d.done) finishStream()
+      return
+    }
+    if (d.text) {
+      if (!started) { started = true; stateEl.style.display = 'none' }
+      feed(d.text)
+    }
+    if (d.done) finishStream()
+  })
+
+  const histBtn = document.getElementById('hist')
+  const histList = document.getElementById('histlist')
+  let histData = []
+  function fmtT(ts){ const d = new Date(ts); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0') }
+  function renderHist(){
+    if (!histData.length) {
+      histList.innerHTML = '<div class="hh"><button id="hb">← 返回</button><span>还没有记录 · 双击小球立即识别</span></div>'
+      return
+    }
+    const items = histData.map((h,i)=>'<div class="hi" data-i="'+i+'"><span class="ht">'+fmtT(h.t)+'</span><span class="hp">'+esc(h.text.slice(0,36))+'</span></div>').join('')
+    histList.innerHTML = '<div class="hh"><button id="hb">← 返回</button><span>最近 ' + histData.length + ' 条</span></div>' + items
+  }
+  /* v1.46：历史列表的开/关抽成一个函数 —— 除了标题栏那个按钮，
+     主进程的「单击小球」也会远程让它打开（orb:click → answer:open-history）。 */
+  /* v1.73 D2：开历史要 await getHistory()。双击小球时第一下先把历史打开，第二下才切去识别 ——
+     如果那次 await 在这之后才回来，旧写法会把历史列表直接铺在刚清空/刚画好的正文上，
+     看起来就是「双击识别之后答案卡消失」。用一个 generation token：任何能改变面板内容的事情
+     （新一轮 capture / 关闭历史 / 再开一次历史）都 +1；await 回来时对不上号就作废，不画。 */
+  let histGen = 0
+  async function toggleHist(force) {
+    const want = force === true ? true : histList.style.display !== 'block'
+    if (!want) { closeHist(); return }
+    const gen = ++histGen
+    let data = []
+    try { data = await window.orbApi.getHistory() || [] } catch { data = [] }
+    if (gen !== histGen) return          // 期间来了新一轮 capture/answer，或又开/关过历史 → 这次结果作废（迟到的结果连 histData 都不提交，避免污染下一次历史选中）
+    histData = data
+    renderHist(); histList.style.display = 'block'; resizeNow()
+  }
+  function closeHist() {
+    histGen++                             // 让还在 await 的那次「打开历史」失效（resetBody 每轮都会调它）
+    histList.innerHTML = ''               // v1.74：关掉连历史区 DOM 一起清空，别把上一次/迟到的条目留在里面
+    if (histList.style.display === 'block') { histList.style.display = 'none'; resizeNow() }
+  }
+  histBtn.addEventListener('click', () => toggleHist())
+  window.orbApi.onOpenHistory(() => toggleHist(true))
+  histList.addEventListener('click', (e) => {
+    const el = e.target.closest('.hi')
+    if (el) {
+      const h = histData[Number(el.dataset.i)]
+      if (h) {
+        started = false; rawText = h.text
+        stopFollow(); pendingAnchor = null   // v1.77：历史回看从开头看，不跟随
+        renderNow()
+        setTop(0)
+        stateEl.style.display = 'none'; closeHist(); resizeNow()
+      }
+      return
+    }
+    if (e.target.closest('#hb')) { closeHist(); resizeNow() }
+  })
+
+  /* v1.60 追问栏（对齐安卓 v1.66）：面板本身不抢焦点（focusable:false），点输入框时开追问卡（就叠在这条栏上）去打字。
+     what / why 开关状态在主进程（追问卡里也显示同一份）；输入框空着、开关开着直接点「发送」= 按开关问。 */
+  const askBar = document.getElementById('askbar')
+  const tgWhat = document.getElementById('tgWhat'), tgWhy = document.getElementById('tgWhy')
+  let toggles = { what: false, why: false }
+  function showToggles(t) {
+    toggles = t || toggles
+    tgWhat.classList.toggle('on', !!toggles.what); tgWhy.classList.toggle('on', !!toggles.why)
+    document.getElementById('askFake').textContent = (toggles.what || toggles.why) ? '空着点发送 = 按开关问' : '想追问什么…'
+  }
+  tgWhat.addEventListener('click', () => window.orbApi.askToggle('what'))
+  tgWhy.addEventListener('click', () => window.orbApi.askToggle('why'))
+  window.orbApi.onAskToggles(showToggles)
+  window.orbApi.getAskToggles().then(showToggles).catch(() => {})
+  document.getElementById('askFake').addEventListener('click', () => window.orbApi.askOpen())
+  document.getElementById('askSend').addEventListener('click', () => {
+    if (toggles.what || toggles.why) window.orbApi.askSend('', false); else window.orbApi.askOpen()
+  })
+  function syncAskBar() {   // 有正文了才露出追问栏（识别中 / 空板时不显示，同安卓）
+    const on = !!rawText
+    if (askBar.classList.contains('on') !== on) { askBar.classList.toggle('on', on); resizeNow() }
+  }
+  setInterval(syncAskBar, 400)
+
+  /* [KCard] v1.72「存为复习卡」—— 面板把这一轮的原文整段交给主进程，
+     抽正反面（front=本轮问题行 / back=答案正文剥标记截 500）和去重都在 knowledge.js 里做，
+     面板只管按钮态：没存过显示「存为复习卡」，存过显示 ✓ 不可再点，重复存给提示不给静默。 */
+  const kcardSaveBtn = document.getElementById('kcardSave')
+  let kcardSaved = false, kcardBusy = false
+  function paintKcardBtn() {
+    if (kcardBusy) return
+    kcardSaveBtn.textContent = kcardSaved ? '✓ 已存' : '存为复习卡'
+    kcardSaveBtn.disabled = kcardSaved
+    kcardSaveBtn.style.opacity = kcardSaved ? '.7' : '1'
+    kcardSaveBtn.style.cursor = kcardSaved ? 'default' : 'pointer'
+  }
+  // 每一轮正文变了就重新问一次「这张存过没」（追问追加也算新的一轮）
+  let kcardProbeText = ''
+  function syncKcardSaved() {
+    const t = rawText || ''
+    if (t === kcardProbeText) return
+    kcardProbeText = t
+    if (!t) { kcardSaved = false; kcardProbeText = ''; paintKcardBtn(); return }
+    window.orbApi.kcardHas(t).then((saved) => { kcardSaved = !!saved; paintKcardBtn() }).catch(() => {})
+  }
+  kcardSaveBtn.addEventListener('click', () => {
+    if (kcardSaved || kcardBusy || !rawText) return
+    kcardBusy = true
+    kcardSaveBtn.textContent = '存卡中…'
+    // 成败提示由主进程 pushNotice 走 answer:notice（面板只有那一条提示通道，不另开一套）
+    window.orbApi.kcardAdd(rawText).then((r) => {
+      kcardBusy = false
+      if (r && r.ok) { kcardSaved = true }
+      paintKcardBtn()
+    }).catch(() => { kcardBusy = false; paintKcardBtn() })
+  })
+  setInterval(syncKcardSaved, 600)
+  paintKcardBtn()
+
+  // v1.60 模式抽屉
+  const modeChip = document.getElementById('modechip'), modeTray = document.getElementById('modetray')
+  async function toggleModes(force) {
+    const open = force != null ? force : !modeTray.classList.contains('open')
+    if (!open) { modeTray.classList.remove('open'); modeChip.classList.remove('open'); resizeNow(); return }
+    let info = null
+    try { info = await window.orbApi.getModes() } catch {}
+    if (!info) return
+    modeTray.innerHTML = info.modes.map((m) => '<div class="mrow' + (m.id === info.mode ? ' sel' : '') + '" data-id="' + esc(m.id) + '">'
+      + (m.id === info.mode ? '✓ ' : '　') + esc(m.label) + '</div>').join('')
+    modeTray.classList.add('open'); modeChip.classList.add('open'); resizeNow()
+  }
+  modeChip.addEventListener('click', () => toggleModes())
+  modeTray.addEventListener('click', (e) => {
+    const r = e.target.closest('.mrow')
+    if (!r) return
+    window.orbApi.setModeFromPanel(r.dataset.id)
+    toggleModes(false)
+  })
+  document.getElementById('close').addEventListener('click', () => window.orbApi.close())
+  resizeNow()
+
+  // v1.32：外观（背景浓度 / 字号 / 对比度）；v1.60：加配色（themes.js，默认护眼）
+  function applyAppearance(a) {
+    const r = document.documentElement.style
+    const c = (a && a.contrast) != null ? a.contrast : 0.92
+    window.LZThemes.applyTheme(document.documentElement, a)
+    r.setProperty('--ui-font', ((a && a.fontSize) || 14) + 'px')
+    r.setProperty('--tx-1-a', String(c))
+    r.setProperty('--tx-2-a', (c * 0.76).toFixed(2))
+    r.setProperty('--tx-3-a', (c * 0.60).toFixed(2))
+    r.setProperty('--tx-4-a', (c * 0.46).toFixed(2))
+    resizeNow()
+  }
+  window.orbApi.getAppearance().then(applyAppearance).catch(() => {})
+  window.orbApi.onAppearanceChanged(applyAppearance)
+</script>
+<!-- v1.46：选中即可复制（划选正文 → 选区上方浮出「复制」气泡）。面板不抢焦点，⌘C 收不到，
+     所以复制入口必须只用鼠标就能走完；细节与实测见 selcopy.js 头部注释。 -->
+<script>
+  // v1.58：答案 / 译文里的网址点了用浏览器打开（主进程只放行 http / https / mailto）
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a.lzm-lnk')
+    if (!a) return
+    e.preventDefault(); e.stopPropagation()
+    window.orbApi.openLink(a.dataset.href)
+  }, true)
+</script>
+<script src="selcopy.js"></script>
+<script src="panelgrow.js"></script>
+</body>
+</html>

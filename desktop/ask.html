@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<script src="themes.js" data-auto></script>
+<style>
+  /* v1.28：同 scan.html —— 小卡片统一用 .card；输入框用 ui.css 的 .field */
+  .card { padding: 11px var(--sp-3) 10px; }
+  .hd { display: flex; align-items: center; gap: 7px; color: var(--tx-1);
+    font-size: 12.5px; font-weight: 600; margin-bottom: 7px; }
+  .hd .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--grad-orb); flex: 0 0 auto; }
+  .hint { margin-top: 6px; font-size: 11px; color: var(--tx-4); }
+  /* v1.51：附带新截图 —— 勾选框本身带 ✓，不靠颜色 */
+  .shot { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 12px; color: var(--tx-2); cursor: default; user-select: none; }
+  /* v1.60：输入框左边固定两个开关 what / why（字号小一点；开着带 ✓，不靠颜色） */
+  .row { display: flex; align-items: center; gap: 5px; }
+  .row .field { flex: 1; min-width: 0; }
+  .tg { font: 10.5px/1 var(--font); padding: 5px 7px; border-radius: var(--r-pill); cursor: pointer; user-select: none;
+    color: var(--tx-2); border: 1px solid rgba(var(--fg), .28); }
+  .tg.on { color: var(--tx-1); background: rgba(var(--accent), .38); border-color: rgba(var(--accent), .85); font-weight: 600; }
+  .tg.on::before { content: '✓ '; }
+  .shot input { margin: 0; width: 14px; height: 14px; accent-color: rgb(var(--mint)); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="hd"><span class="dot"></span>追问这次识别（会带上原截图）</div>
+    <div class="row">
+      <span class="tg" id="tgWhat" title="what：讲简单点，再举个例子（万维钢式的通俗解释）">what</span>
+      <span class="tg" id="tgWhy" title="why：用第一性原理讲为什么">why</span>
+      <input id="q" class="field" type="text" autocomplete="off" spellcheck="false"
+             placeholder="例如：为什么不是 C？ / 第 2 步的依据是什么">
+    </div>
+    <label class="shot"><input id="shot" type="checkbox">附带一张新截图（情况有变时勾上）</label>
+    <div class="hint">回车发送 · ⌘/Ctrl+回车 = 带新截图发送 · Esc 取消</div>
+  </div>
+<script>
+  const q = document.getElementById('q')
+  const shot = document.getElementById('shot')
+  let tg = { what: false, why: false }
+  function showTg(t) { tg = t || tg; document.getElementById('tgWhat').classList.toggle('on', !!tg.what); document.getElementById('tgWhy').classList.toggle('on', !!tg.why) }
+  window.orbApi.askInfo().then((i) => { if (i) { shot.checked = !!i.withShot; showTg(i) } }).catch(() => {})
+  window.orbApi.onAskToggles(showTg)
+  for (const k of ['what', 'why']) document.getElementById(k === 'what' ? 'tgWhat' : 'tgWhy').addEventListener('mousedown', (e) => { e.preventDefault(); window.orbApi.askToggle(k) })   // mousedown + preventDefault：焦点留在输入框
+  shot.addEventListener('change', () => q.focus())   // 点完勾选框焦点回输入框，接着打字
+  function send(forceShot) {
+    const t = q.value.trim()
+    if (!t && !tg.what && !tg.why) { window.orbApi.askCancel(); return }   // v1.60：开关开着时空着也能发（= 按开关问）
+    window.orbApi.askSend(t, forceShot || shot.checked)
+  }
+  q.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); send(e.metaKey || e.ctrlKey) }
+    else if (e.key === 'Escape') { e.preventDefault(); window.orbApi.askCancel() }
+  })
+  window.addEventListener('blur', () => window.orbApi.askCancel())
+  q.focus()
+</script>
+</body>
+</html>

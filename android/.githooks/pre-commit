@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Reject accidental commits of signing material, local config and API secrets.
+# Install with: git config core.hooksPath .githooks
+set -euo pipefail
+
+blocked_names='(^|/)(keystore\.properties|local\.properties|lingzhu-internal\.properties|[^/]*\.(jks|keystore|p12|pfx))$'
+blocked_content='PRIVATE KEY-----|storePassword[[:space:]]*=[[:space:]]*[^[:space:]<$()]{6,}[[:space:]]*$|keyPassword[[:space:]]*=[[:space:]]*[^[:space:]<$()]{6,}[[:space:]]*$|sk-[A-Za-z0-9]{16,}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,}'
+
+failed=0
+
+# -z keeps paths containing spaces intact; the hook itself is skipped so the
+# patterns below cannot flag it. Paths are relative to the repository root,
+# which for this hook is the parent of android/, so both the android/... form
+# and the self-relative form are matched.
+while IFS= read -r -d '' f; do
+    case "$f" in
+        ./.githooks/pre-commit|.githooks/pre-commit) continue ;;
+        ./android/.githooks/pre-commit|android/.githooks/pre-commit) continue ;;
+    esac
+
+    # Filename checks come before the binary skip: a *.jks or *.p12 would
+    # otherwise be skipped as binary and never reach this check.
+    if printf '%s\n' "$f" | grep -Eq "$blocked_names"; then
+        echo "BLOCKED (secret-bearing filename): $f" >&2
+        failed=1
+        continue
+    fi
+
+    case "$f" in
+        *.png|*.jpg|*.jpeg|*.gif|*.webp|*.jar|*.zip|*.apk|*.aab|*.jks|*.keystore|*.p12|*.pfx) continue ;;
+    esac
+    if ! git show ":$f" | grep -Eq "$blocked_content"; then
+        continue
+    fi
+    echo "BLOCKED (secret-like content): $f" >&2
+    failed=1
+done < <(git diff --cached --name-only --diff-filter=ACM -z)
+
+if [ "$failed" -ne 0 ]; then
+    echo "Commit rejected. Remove the listed material; this repository never stores keys or signing files." >&2
+    exit 1
+fi

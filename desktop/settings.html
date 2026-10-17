@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<script src="themes.js" data-auto></script>
+<style>
+  /* v1.31：设置卡 —— 自定义 API（OpenAI 兼容）+ 扫描间隔。新手引导也在这张卡里。
+   * v1.37：API 区块按同类客户端（Cherry Studio / Chatbox / Open WebUI）重做：
+   *        服务商预设一键填地址 · 获取模型列表 · 检测连接（含「能不能看图」）· 档案点一下即切。 */
+  .card { padding: 14px 16px 12px; max-height: 100%; overflow-y: auto; scrollbar-gutter: stable; }
+  .hd { display: flex; align-items: center; gap: 7px; color: var(--tx-1); font-size: 13.5px; font-weight: 600; margin-bottom: 2px; }
+  .hd .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--grad-orb); flex: 0 0 auto; }
+  .hd .now { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--tx-3); max-width: 210px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hd .now b { color: rgb(var(--heading)); font-weight: 500; }
+  .sub { color: var(--tx-3); font-size: 11.5px; margin-bottom: 8px; line-height: 1.6; }
+  .lb { font-size: 11px; color: var(--tx-3); margin: 9px 0 4px; letter-spacing: .04em; }
+  .lb b { color: var(--tx-2); font-weight: 600; }
+  .rv { float: right; color: var(--tx-4); font-size: 11px; }
+  .row2 { display: flex; gap: 6px; align-items: center; }
+  .row2 .field { flex: 1; min-width: 0; }
+  .guide {
+    margin: 8px 0 2px; padding: 8px 10px; border-radius: var(--r-sm);
+    background: rgba(var(--fg),.06); border: 1px solid var(--hairline-soft);
+    font-size: 11.5px; line-height: 1.7; color: var(--tx-2);
+  }
+  .guide .note { color: rgba(var(--warn), .95); }
+  .guide .step { color: rgb(var(--heading)); }
+  .tip .link { white-space: nowrap; }
+  .link { color: rgb(var(--heading)); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  .link:hover { color: rgb(var(--rose-light)); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips.scroll { max-height: 84px; overflow-y: auto; }
+  .chip.sel { background: rgba(var(--accent), .38); }
+  .chip.preset { border: 1px dashed rgba(var(--fg),.24); }
+  .chip .badge { margin-left: 5px; padding: 0 4px; border-radius: 5px; font-size: 10px;
+    background: rgba(var(--accent), .30); color: rgb(var(--heading)); }
+  .chip.sel .badge { background: rgba(0,0,0,.22); color: #dff6ec; }
+  .chip .x { margin-left: 5px; color: var(--tx-4); }
+  .chip .x:hover { color: rgba(var(--danger), .95); }
+  .res { display: none; margin-top: 6px; font-size: 11.5px; padding: 6px 9px; border-radius: var(--r-sm);
+    border: 1px solid var(--hairline-soft); background: rgba(var(--fg),.05); line-height: 1.6; }
+  .res.ok { display: block; color: rgb(var(--heading)); border-color: rgba(var(--accent), .45); }
+  .res.bad { display: block; color: rgba(var(--danger), .95); border-color: rgba(var(--danger), .45); }
+  .res.busy { display: block; color: var(--tx-2); }
+  .res .dim { color: var(--tx-4); }
+  .field[readonly] { cursor: default; }
+  .field.rec { border-color: rgba(var(--accent), .85); background: rgba(var(--accent), .12); color: rgb(var(--heading)); }
+  .rng { width: 100%; accent-color: rgb(var(--mint)); height: 22px; margin: 0; }
+  .rv2 { font-size: 11px; color: rgb(var(--heading)); font-variant-numeric: tabular-nums; float: right; }
+  .sep { height: 1px; margin: 12px 0 0; background: var(--hairline-soft); }
+  .morehead { cursor: pointer; user-select: none; }
+  .ft { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+  .btn.mini { padding: 4px 9px; font-size: 11.5px; white-space: nowrap; }
+  /* 外观：配色卡片（默认护眼 + 六套青春配色，名字写明风格，色块只是辅助） */
+  .tcards { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .tcard { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 4px; border-radius: var(--r-sm); cursor: pointer;
+    border: 1px solid var(--hairline-soft); font-size: 11.5px; color: var(--tx-1); max-width: 205px; }
+  .tcard:hover { border-color: rgba(var(--accent), .7); }
+  .tcard.sel { border: 2px solid rgba(var(--fg), .8); font-weight: 700; }
+  .tcard .sw { width: 22px; height: 22px; border-radius: 6px; flex: 0 0 auto; border: 1px solid rgba(var(--fg), .25); }
+  .tcard .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tip { font-size: 10.5px; color: var(--tx-4); margin-top: 5px; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <div class="card" id="panel">
+    <div class="hd"><span class="dot"></span>API 设置<span class="now" id="curLabel"></span></div>
+    <div class="sub">Ling 靠截图识别，模型要<b>能收图片</b>。填好地址和 Key，点「检测连接」直接告诉你行不行。</div>
+    <div class="tip" id="chanLine"></div>
+    <!-- v1.60：桌面内置更新通道 —— 版本那一行下面能「检查更新 / 下载最新版」。
+         所有来自 manifest 的文本（版本号 / notes）一律 textContent 写入，绝不 innerHTML。 -->
+    <div class="lb"><b>版本更新</b><span class="rv" id="updState">未检查</span></div>
+    <div class="row2">
+      <button class="btn mini" id="updCheck">检查更新</button>
+      <button class="btn mini" id="updDownload" disabled>下载最新版</button>
+    </div>
+    <div class="tip" id="updNotes"></div>
+    <div class="tip" id="updSrc"></div>
+    <div class="guide" id="guide" style="display:none">
+      <div>第一次用？先在小球上右键 →「API 档案」→「管理 / 新增档案…」，然后：
+        ① 点「<span class="step">小米 MiMo</span>」预设（模型 mimo-v2.6-pro，原生能看图）→ 粘 Key；
+        ② 或点「<span class="step">DeepSeek</span>」预设（模型 deepseek-flash = V4.1-Flash，也支持看图）→ 粘 Key；
+        接着点「检测连接」，绿字说明能收图，就存成档案。
+        <span class="note">模型必须能收图片，屏幕识别才有效；检测会直接告诉你行不行。</span></div>
+    </div>
+
+    <div class="lb"><b>服务商预设</b><span class="rv">点一下自动填地址 + 模型</span></div>
+    <div id="presets" class="chips"></div>
+    <div class="tip" id="presetTip"></div>
+
+    <div class="lb"><b>接口地址</b>（Base URL，不带 /chat/completions）</div>
+    <input id="baseUrl" class="field" type="text" spellcheck="false" placeholder="https://api.xiaomimimo.com/v1">
+
+    <div class="lb"><b>API Key</b>（只保存在本机）<span class="rv"><span class="link" id="keyLink" style="display:none">去申请 API Key ↗</span>　<span class="link" id="eye">👁 显示</span></span></div>
+    <input id="apiKey" class="field" type="password" spellcheck="false" placeholder="sk-...">
+
+    <div class="lb"><b>模型</b><span class="rv">可手填，也可「获取列表」里点选</span></div>
+    <div class="row2">
+      <input id="model" class="field" type="text" spellcheck="false" placeholder="deepseek-flash">
+      <button class="btn mini" id="fetch">获取列表</button>
+      <button class="btn mini primary" id="test">检测连接</button>
+    </div>
+    <div id="modellist" class="chips scroll" style="display:none; margin-top:6px;"></div>
+    <div id="res" class="res"></div>
+
+    <div class="lb"><b>思考强度</b><span class="rv">DeepSeek 专有 · 影响识别 / 翻译 / 追问</span></div>
+    <div id="think" class="chips"></div>
+    <div class="tip"><span id="thinkTip">点一下就生效（不用再点保存）。<b>高</b>是官方默认：想得更久、更准，首字更慢；<b>关</b>最快。</span>
+      思考和识别期间面板会显示「正在思考…」这类提示。悬停查词固定不走思考 —— 词典查询，思考只会把输出预算吃光。</div>
+
+    <div class="lb"><b>做题解析</b><span class="rv">右键菜单里也能切</span></div>
+    <div id="detail" class="chips"></div>
+    <div class="tip"><b>简略</b>只点关键一步；<b>标准</b>分步讲、选择题说明错项；<b>详细</b>不跳步、逐个分析选项，再给同类题通用解法。
+      打开<b>纯小白</b>后用大白话讲，术语先解释、每步都写出来、尽量打比方（通用模式和追问也生效）。</div>
+
+    <div class="lb"><b>API 档案</b><span class="rv">点档案名 = 立即切换生效</span></div>
+    <div id="profiles" class="chips"></div>
+    <div id="saveasRow" style="display:none; margin-top:6px;">
+      <input id="profileName" class="field" type="text" placeholder="档案名，如：DeepSeek / 硅基流动视觉">
+    </div>
+    <div class="tip">档案名旁边的 ✕ 删除；没名字时自动存成「模型名@主机」。切档案不用重启，下一次识别就用新的。</div>
+
+    <div class="sep"></div>
+    <!-- v1.60（对齐安卓 v1.66）：外观 —— 配色卡片、结果面板位置、正文字号（从面板 / 其他设置挪到这里）+ 识别关键词开关 -->
+    <div class="lb"><b>识别关键词</b><span class="rv">点一下就生效</span></div>
+    <div id="kwSw" class="chips"></div>
+    <div class="tip">开着时，每次识别（通用 / 做题 / 自定义模式都算）回答下面会多一排关键词词块，型号、编号、品牌、规格优先（如 R7250、Wi-Fi 7、LPDDR5X）；点哪个词就解释哪个。这行清单本身不会显示在正文里，只变成那排词块。原来的「通识」模式并进来了。</div>
+    <div class="lb"><b>外观配色</b><span class="rv" id="themeNow"></span></div>
+    <div id="themeCards" class="tcards"></div>
+    <div class="lb"><b>结果面板位置</b></div>
+    <div id="sideSw" class="chips"></div>
+    <div class="lb"><b>正文字号</b><span class="rv2" id="fsv"></span></div>
+    <input id="fontSize" class="rng" type="range" min="12" max="18" step="1">
+    <div class="tip">拖动就生效（面板开着也立刻变）。</div>
+
+    <div class="sep"></div>
+    <div class="lb morehead" id="v158Toggle"><b>翻译引擎 · 自定义模式 · 缓存 · 历史</b><span class="rv" id="v158Hint">展开 ▾</span></div>
+    <div id="v158" style="display:none">
+      <div class="lb"><b>划词翻译用</b><span class="rv">点一下就生效</span></div>
+      <div id="engine" class="chips"></div>
+      <div class="tip" id="engineTip"></div>
+      <div id="deeplBox" style="display:none">
+        <div class="lb"><b>DeepL API Key</b><span class="rv"><span class="link" id="dlEye">👁 显示</span></span></div>
+        <input id="dlKey" class="field" type="password" spellcheck="false" placeholder="xxxxxxxx-…:fx">
+        <div class="tip" id="dlTip">DeepL 官网（deepl.com/pro-api）注册 API Free 就有每月 50 万字符。Key 结尾是 <b>:fx</b> 的是免费版。只存在本机。DeepL 只给译文；配了上面的 AI 会在译文后自动补一段讲解（以原文为准）。</div>
+      </div>
+      <div id="baiduBox" style="display:none">
+        <div class="tip">百度翻译开放平台（fanyi-api.baidu.com）→ 管理控制台 → 开发者信息 里有 APP ID、API Key 和密钥。<b>API Key</b> 和 <b>APP ID + 密钥</b> 二选一；只存在本机。不走 AI 接口、不耗 AI 额度，百度只给译文；配了上面的 AI 会在译文后自动补一段讲解（以原文为准）。</div>
+        <div class="lb"><b>百度 APP ID</b></div>
+        <input id="bdAppId" class="field" type="text" spellcheck="false" placeholder="2026…">
+        <div class="lb"><b>百度 API Key</b>（推荐）<span class="rv"><span class="link" id="bdEye">👁 显示</span></span></div>
+        <input id="bdKey" class="field" type="password" spellcheck="false" placeholder="填了就用它（Bearer 鉴权）">
+        <div class="lb"><b>百度 密钥</b>（没有 API Key 时才用）</div>
+        <input id="bdSecret" class="field" type="password" spellcheck="false" placeholder="APP ID + 密钥 签名">
+        <div class="lb"><b>百度模型</b></div>
+        <div id="bdModel" class="chips"></div>
+      </div>
+
+      <div class="lb"><b>自定义模式</b><span class="rv">右键菜单 / 面板的模式里都能切</span></div>
+      <div class="tip">除了「通用」「做题」，可以建任意多个自己的模式：起个名字、写一段解析要求（比如「只告诉我答案」「把画面里的英文翻成中文」）。留空就用示例写法。</div>
+      <div id="cmodes"></div>
+      <button class="btn mini" id="cmAdd" style="margin-top:6px">＋ 新建自定义模式</button>
+
+      <div class="lb"><b>结果缓存</b><span class="rv" id="cacheInfo"></span></div>
+      <div id="cacheSw" class="chips"></div>
+      <div class="tip">同一个画面、同样的模式和设置再识别一次，或者同一段文字再翻一次，直接用上次的结果：不调接口、不花额度，面板上写「缓存」。只认一模一样的画面（菜单栏时钟变了不算），宁可重新问也不拿错答案。想重新问就点下面的「清空缓存」。识别留 100 条、翻译留 300 条，7 天过期。</div>
+      <button class="btn mini" id="cacheClr" style="margin-top:6px">清空缓存</button>
+
+      <div class="lb"><b>历史记录</b><span class="rv" id="histInfo"></span></div>
+      <div id="histSw" class="chips"></div>
+      <div class="tip">每次识别（连同追问）和翻译都存在本机，最多 200 条，退出再开也在。单击小球打开面板里的历史列表。关掉后不再记新的。</div>
+      <button class="btn mini" id="histClr" style="margin-top:6px">清空历史</button>
+    </div>
+    <div class="sep"></div>
+    <div class="lb morehead" id="moreToggle"><b>其他设置</b>（快捷键 / 扫描间隔 / 背景浓度 / 对比度）<span class="rv" id="moreHint">展开 ▾</span></div>
+    <div id="more" style="display:none">
+      <div class="lb"><b>划词翻译快捷键</b><span class="rv" id="hkHint">点「改」再按组合键</span></div>
+      <div class="row2">
+        <input id="hotkey" class="field" type="text" readonly>
+        <button class="btn mini" id="hkRec">改</button>
+        <button class="btn mini" id="hkDft">默认</button>
+      </div>
+      <div class="tip" id="hkTip">⌘/ 是系统级热键：只要 Ling 开着，这个组合就先给 Ling —— 编辑器里同样的「切换注释」(⌘/) 会收不到。不想抢就把这儿改成别的（比如 ⌥⇧T）。</div>
+      <div class="lb"><b>自动扫描间隔</b>（秒，5 ~ 3600）</div>
+      <input id="interval" class="field" type="number" min="5" max="3600" step="1">
+      <div class="lb"><b>背景浓度</b><span class="rv2" id="bgv"></span></div>
+      <input id="bgAlpha" class="rng" type="range" min="25" max="85" step="1">
+      <div class="lb"><b>文字对比度</b><span class="rv2" id="ctv"></span></div>
+      <input id="contrast" class="rng" type="range" min="70" max="100" step="1">
+    </div>
+
+    <div class="ft"><button class="btn" id="saveas">⊕ 存为档案</button><button class="btn" id="cancel">取消</button><button class="btn primary" id="save">保存</button></div>
+  </div>
+<script>
+  const $ = (id) => document.getElementById(id)
+  function fit() { window.orbApi.settingsResize($('panel').offsetHeight + 8) }
+  function escHtml(t) { return String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
+
+  /* v1.37：服务商预设 = 名字 + 官方地址 + 官方模型 id + 申请 Key 的跳转链接。
+   * 前两条是推荐项（小米 MiMo ① / DeepSeek ②），地址与模型名都对着官方文档核过：
+   *   Xiaomi MiMo 开放平台文档（2026-09-22 更新）：OpenAI 兼容 https://api.xiaomimimo.com/v1，示例模型 mimo-v2.6-pro；
+   *   DeepSeek 官方价格页：模型名 deepseek-flash 即 DeepSeek-V4.1-Flash（支持图像理解），BASE URL https://api.deepseek.com。
+   * 没核过申请页地址的两家（硅基流动 / 智谱）只填地址、不给跳转链接 —— 宁可不给，也不给个可能 404 的。 */
+  const PRESETS = [
+    { name: '小米 MiMo', badge: '推荐①', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.6-pro',
+      keyUrl: 'https://platform.xiaomimimo.com/#/console/api-keys',
+      tip: '今天刚发布的 MiMo-V2.6-Pro：原生全模态（能看图），同系列还有更便宜的 mimo-v2.6-flash。走 Token Plan 订阅的话地址要换成 https://token-plan-cn.xiaomimimo.com/v1，Key 是 tp- 开头。' },
+    { name: 'DeepSeek', badge: '推荐②', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash',
+      keyUrl: 'https://platform.deepseek.com',
+      tip: 'deepseek-flash 就是 DeepSeek-V4.1-Flash（原生支持图像理解，1M 上下文）。旧名 deepseek-v4-flash 也能调，但已路由到 V4.1-Flash。' },
+    { name: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', model: '', keyUrl: '',
+      tip: '国内直连；模型名挑带 VL 的（视觉），地址填好后点「获取列表」挑一个。' },
+    { name: '智谱', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: '', keyUrl: '',
+      tip: '模型名挑 glm-4v 系列（能看图），或点「获取列表」挑一个。' },
+    { name: 'OpenAI 兼容…', baseUrl: '', model: '', keyUrl: '',
+      tip: '任何 OpenAI 兼容端点：填地址 + Key，先点「获取列表」拉模型，再点「检测连接」确认能收图。' }
+  ]
+
+  let profiles = [], activeProfile = null, allModels = [], curKeyUrl = '', appliedPreset = ''
+
+  function renderPresets() {
+    const box = $('presets'); box.innerHTML = ''
+    PRESETS.forEach((p) => {
+      const c = document.createElement('span')
+      c.className = 'chip clickable preset' + (p.name === appliedPreset ? ' sel' : '')
+      c.innerHTML = escHtml(p.name) + (p.badge ? '<span class="badge">' + escHtml(p.badge) + '</span>' : '')
+      c.addEventListener('click', () => applyPreset(p))
+      box.appendChild(c)
+    })
+  }
+  function renderKeyLink() {
+    const el = $('keyLink')
+    if (!el) return
+    el.style.display = curKeyUrl ? '' : 'none'
+    if (curKeyUrl) el.dataset.url = curKeyUrl
+  }
+  function applyPreset(p, quiet) {
+    if (p.baseUrl) $('baseUrl').value = p.baseUrl
+    if (p.model) $('model').value = p.model
+    curKeyUrl = p.keyUrl || ''
+    appliedPreset = p.name
+    renderPresets(); renderKeyLink()
+    const tip = $('presetTip')
+    tip.innerHTML = escHtml(p.tip || '') + (p.keyUrl ? '　<span class="link" data-url="' + escHtml(p.keyUrl) + '">去申请 API Key ↗</span>' : '')
+    if (!quiet) setRes('busy', '已填好「' + escHtml(p.name) + '」的地址' + (p.model ? '和模型 ' + escHtml(p.model) : '，模型名请点「获取列表」挑一个') + ' —— 再粘上 API Key，点「检测连接」。')
+    fit()
+  }
+  /* 打开卡片时：地址能对上某个预设，就把它的说明和「申请 Key」链接也带出来 */
+  function syncPresetFromBaseUrl() {
+    const cur = $('baseUrl').value.trim().replace(/\/+$/, '')
+    const hit = PRESETS.find((p) => p.baseUrl && p.baseUrl.replace(/\/+$/, '') === cur)
+    if (hit) applyPreset(hit, true)
+    else { curKeyUrl = ''; appliedPreset = ''; renderPresets(); renderKeyLink(); $('presetTip').innerHTML = '' }
+  }
+
+  function setRes(kind, html) {
+    const el = $('res')
+    el.className = 'res ' + (kind || '')
+    el.innerHTML = html || ''
+    if (!kind) el.style.display = 'none'
+  }
+
+  function renderProfiles(list, active) {
+    profiles = list || []
+    activeProfile = active || null
+    const box = $('profiles'); box.innerHTML = ''
+    if (!profiles.length) {
+      box.innerHTML = '<span style="font-size:11px;color:rgba(var(--fg),.35)">还没有档案 —— 填好后点「⊕ 存为档案」</span>'
+      $('save').textContent = '保存'
+      return
+    }
+    profiles.forEach((p) => {
+      const c = document.createElement('span')
+      const isAct = p.name === activeProfile
+      c.className = 'chip clickable' + (isAct ? ' sel' : '')
+      c.innerHTML = escHtml(p.name) + (isAct ? ' ✓' : '') + (isAct ? '' : '<span class="x" title="删除这个档案">✕</span>')
+      c.addEventListener('click', (e) => {
+        if (e.target.classList.contains('x')) {
+          window.orbApi.delProfile(p.name)
+          profiles = profiles.filter((x) => x.name !== p.name)
+          renderProfiles(profiles, activeProfile)
+          setRes('busy', '已删除档案「' + escHtml(p.name) + '」（当前生效的不受影响）')
+          fit()
+          return
+        }
+        // 点档案名 = 立即切换生效（不再需要「回填表单 → 再点保存」两步）
+        window.orbApi.switchProfile(p.name)
+        $('baseUrl').value = p.baseUrl || ''
+        $('apiKey').value = p.apiKey || ''
+        $('model').value = p.model || ''
+        activeProfile = p.name
+        renderProfiles(profiles, activeProfile)
+        $('curLabel').innerHTML = '当前：<b>' + escHtml(p.name) + ' · ' + escHtml(p.model || '未填模型') + '</b>'
+        setRes('busy', '已切到「' + escHtml(p.name) + '」—— 立刻生效，不用重启。')
+        fit()
+      })
+      box.appendChild(c)
+    })
+    $('save').textContent = activeProfile ? '保存到「' + activeProfile + '」' : '保存'
+  }
+
+  /* —— v1.42：思考强度（DeepSeek 专有）——
+   * 点一下就生效：只把这一项发给主进程（部分保存），不用连带把表单里的其他字段也提交。
+   * 「高」= 官方默认；「关」= 最快。悬停查词在主进程里固定关思考，不受这里影响。 */
+  let thinkSel = 'high'
+  const THINK_LABEL = { off: '关 (最快)', low: '低', high: '高 (默认)', max: '最高' }
+  function renderThink(list) {
+    const box = $('think'); box.innerHTML = ''
+    ;(list || []).forEach((o) => {
+      const c = document.createElement('span')
+      c.className = 'chip clickable' + (o.id === thinkSel ? ' sel' : '')
+      c.textContent = THINK_LABEL[o.id] || o.label
+      c.addEventListener('click', () => {
+        thinkSel = o.id
+        renderThink(list)
+        window.orbApi.saveSettings({ thinkingEffort: o.id, keepOpen: true })
+        setRes('ok', '✓ 思考强度已改成「' + (THINK_LABEL[o.id] || o.label) + '」，立刻生效（不用重启）')
+        fit()
+      })
+      box.appendChild(c)
+    })
+  }
+
+  /* —— v1.49：做题解析强度 + 纯小白，同思考强度一样点一下就生效 —— */
+  let detailSel = 'standard', noviceOn = false, detailList = []
+  function renderDetail() {
+    const box = $('detail'); box.innerHTML = ''
+    detailList.forEach((o) => {
+      const c = document.createElement('span')
+      c.className = 'chip clickable' + (o.id === detailSel ? ' sel' : '')
+      c.textContent = (o.id === detailSel ? '✓ ' : '') + o.label
+      c.addEventListener('click', () => {
+        detailSel = o.id
+        renderDetail()
+        window.orbApi.saveSettings({ examDetail: o.id, keepOpen: true })
+        setRes('ok', '✓ 解析强度已改成「' + o.label + '」，下一次识别生效')
+        fit()
+      })
+      box.appendChild(c)
+    })
+    const n = document.createElement('span')
+    n.className = 'chip clickable' + (noviceOn ? ' sel' : '')
+    n.textContent = noviceOn ? '✓ 纯小白：开' : '纯小白：关'
+    n.addEventListener('click', () => {
+      noviceOn = !noviceOn
+      renderDetail()
+      window.orbApi.saveSettings({ novice: noviceOn, keepOpen: true })
+      setRes('ok', noviceOn ? '✓ 已开启纯小白讲解，下一次识别生效' : '✓ 已关闭纯小白讲解')
+      fit()
+    })
+    box.appendChild(n)
+  }
+
+  window.orbApi.getSettings().then((s) => {
+    if (!s) return
+    $('baseUrl').value = s.baseUrl || ''
+    $('apiKey').value = s.apiKey || ''
+    $('model').value = s.model || ''
+    $('interval').value = Math.round((s.scanIntervalMs || 20000) / 1000)
+    hkLabel = s.hotkey || ''; hkRaw = s.hotkeyRaw || ''
+    hkRestore()
+    $('curLabel').innerHTML = '当前：<b>' + escHtml((s.activeProfile ? s.activeProfile + ' · ' : '') + (s.model || '未填模型')) + '</b>'
+    const a = s.appearance || {}
+    $('bgAlpha').value = Math.round((a.bgAlpha || 0.50) * 100)
+    $('fontSize').value = a.fontSize || 14
+    $('contrast').value = Math.round((a.contrast || 0.92) * 100)
+    showVals()
+    renderProfiles(s.profiles || [], s.activeProfile)
+    // v1.60：桌面端思考强度默认统一「高」
+    thinkSel = s.thinkingEffort || 'high'
+    renderThink(s.thinkingOptions)
+    detailSel = s.examDetail || 'standard'; noviceOn = !!s.novice; detailList = s.examDetailOptions || []
+    renderDetail()
+    syncPresetFromBaseUrl()
+    initV158(s)
+    initLook(s)
+    const nm = s.appName || 'Ling'
+    $('chanLine').textContent = nm + ' v' + (s.version || '')
+    // 更新源由主进程给；本开源构建默认没有维护者更新服务器，界面直说，不假装在线
+    $('updSrc').textContent = s.updateSource
+      ? '更新源：' + s.updateSource
+      : '更新源：未配置（本开源构建不提供维护者更新服务器）'
+    if (!s.updateSource) { $('updCheck').disabled = true; $('updState').textContent = '未配置更新源' }
+    if (s.firstRun) $('guide').style.display = 'block'
+    fit()
+  }).catch(() => fit())
+  renderPresets()
+
+  /* 外观配色：默认护眼 + 六套青春配色，点卡片立刻生效（色块只是辅助，名字里写明风格） */
+  function hex(c) { return '#' + c.toString(16).padStart(6, '0') }
+  let themeSel = 'eye'
+  function renderThemes() {
+    const T = window.LZThemes
+    $('themeCards').innerHTML = T.PRESETS.map((p) => {
+      const sw = 'linear-gradient(135deg,' + hex(p.bg) + ',' + hex(p.bg2 == null ? p.bg : p.bg2) + ')'
+      return '<div class="tcard' + (p.id === themeSel ? ' sel' : '') + '" data-id="' + p.id + '" title="' + escHtml(p.label) + '">'
+        + '<span class="sw" style="background:' + sw + '"></span><span class="nm">' + (p.id === themeSel ? '✓ ' : '') + escHtml(p.label) + '</span></div>'
+    }).join('')
+    $('themeNow').textContent = '当前：' + T.preset(themeSel).label.replace(/（.*$/, '')
+    fit()
+  }
+  $('themeCards').addEventListener('click', (e) => {
+    const c = e.target.closest('.tcard'); if (!c) return
+    themeSel = c.dataset.id
+    window.orbApi.saveSettings({ theme: themeSel, keepOpen: true })
+    renderThemes()
+  })
+  function initLook(s) {
+    chipGroup($('kwSw'), [[true, '开（默认）'], [false, '关']], s.keywords !== false, (v) => window.orbApi.saveSettings({ keywords: v, keepOpen: true }))
+    themeSel = window.LZThemes.normId(s.theme)
+    renderThemes()
+    chipGroup($('sideSw'), [['left', '屏幕左边（默认，从左侧滑出）'], ['orb', '跟着小球']], s.panelSide || 'left', (v) => window.orbApi.saveSettings({ panelSide: v, keepOpen: true }))
+  }
+  $('fontSize').addEventListener('change', () => window.orbApi.saveSettings({ appearance: collect().appearance, keepOpen: true }))
+
+  function showVals() {
+    $('bgv').textContent = $('bgAlpha').value + '%'
+    $('fsv').textContent = $('fontSize').value + 'px'
+    $('ctv').textContent = $('contrast').value + '%'
+  }
+  for (const id of ['bgAlpha', 'fontSize', 'contrast']) $(id).addEventListener('input', showVals)
+
+  /* —— v1.38：划词翻译热键（默认 ⌘/，可自己录）——
+   * 录键规则：必须带一个修饰键（⌘/⌃/⌥/⇧）—— 裸键当全局热键会把日常打字全抢走。
+   * 修饰键本身不结束录制（要等真正的那个键），Esc 取消。 */
+  let hkLabel = '', hkRaw = '', rec = false
+  function hkRestore() {
+    $('hotkey').value = hkLabel || '未注册'
+    $('hotkey').classList.remove('rec')
+    $('hkHint').textContent = '点「改」再按组合键'
+  }
+  function accelFromEvent(e) {
+    const mods = []
+    // macOS 上 ⌘；v1.50：Windows 上 metaKey 是 Win 键，得写成 Super（写 CommandOrControl 会被当成 Ctrl）
+    if (e.metaKey) mods.push(/Mac/i.test(navigator.platform) ? 'CommandOrControl' : 'Super')
+    if (e.ctrlKey) mods.push('Control')
+    if (e.altKey) mods.push('Alt')
+    if (e.shiftKey) mods.push('Shift')
+    const k = e.key
+    if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Dead'].includes(k)) return ''
+    if (!mods.length) return ''
+    let key
+    if (k === ' ') key = 'Space'
+    else if (k.length === 1) key = k.toUpperCase()
+    else key = k
+    return mods.join('+') + '+' + key
+  }
+  $('hkRec').addEventListener('click', () => {
+    if (rec) return
+    rec = true
+    $('hotkey').value = '按下组合键…（Esc 取消）'
+    $('hotkey').classList.add('rec')
+    $('hkHint').textContent = '正在录制'
+    setRes('busy', '按一个组合键：修饰键（⌘/⌃/⌥/⇧）+ 一个键，比如 ⌘/ 或 ⌥⇧T。')
+    fit()
+  })
+  $('hkDft').addEventListener('click', async () => {
+    const r = await window.orbApi.setHotkey('__default__')
+    if (r && r.ok) { hkLabel = r.label; hkRaw = r.raw; hkRestore(); setRes('ok', '✓ 已恢复默认快捷键 ' + r.label) }
+    else { hkRestore(); setRes('bad', '✗ 恢复默认失败：' + ((r && r.error) || '未知错误')) }
+    fit()
+  })
+
+  $('eye').addEventListener('click', () => {
+    const i = $('apiKey')
+    const show = i.type === 'password'
+    i.type = show ? 'text' : 'password'
+    $('eye').textContent = show ? '🙈 隐藏' : '👁 显示'
+  })
+  /* —— v1.58：翻译引擎 / 自定义模式 / 缓存 / 历史（全部「点一下就存」）—— */
+  let v158 = null
+  function chipGroup(box, opts, sel, onPick) {
+    box.innerHTML = ''
+    opts.forEach(([id, label]) => {
+      const c = document.createElement('span')
+      c.className = 'chip clickable' + (id === sel ? ' sel' : '')
+      c.textContent = (id === sel ? '✓ ' : '') + label   // 不靠颜色：选中的前面打 ✓
+      c.addEventListener('click', () => { onPick(id); chipGroup(box, opts, id, onPick) })
+      box.appendChild(c)
+    })
+  }
+  function showInfo(ci) {
+    if (!ci) return
+    $('cacheInfo').textContent = '识别 ' + ci.solve + ' 条 · 翻译 ' + ci.translate + ' 条 · ' + ci.kb + ' KB'
+    $('histInfo').textContent = '现在 ' + ci.history + ' 条'
+  }
+  function saveBaidu() {
+    v158.baidu = { appId: $('bdAppId').value.trim(), apiKey: $('bdKey').value.trim(), secret: $('bdSecret').value.trim(), model: v158.baidu.model || 'llm' }
+    window.orbApi.saveSettings({ baidu: v158.baidu, keepOpen: true })
+  }
+  function renderCModes() {
+    const box = $('cmodes'); box.innerHTML = ''
+    v158.customModes.forEach((m) => {
+      const w = document.createElement('div')
+      w.className = 'guide'
+      w.innerHTML = '<div class="row2"><input class="field cmName" type="text" maxlength="20" placeholder="名字，比如：错题本"><button class="btn mini cmDel">删除</button></div>'
+        + '<textarea class="field cmPrompt" rows="3" style="margin-top:6px;resize:vertical" placeholder="先用一句话说这是什么界面或什么题。如果有题目：先给答案，再分步讲解，最后列出考点。如果没有题目：列出画面里的关键信息，再给我一条建议。"></textarea>'
+      w.querySelector('.cmName').value = m.name
+      w.querySelector('.cmPrompt').value = m.prompt
+      const save = () => { m.name = w.querySelector('.cmName').value.trim() || '自定义'; m.prompt = w.querySelector('.cmPrompt').value; window.orbApi.saveSettings({ customModes: v158.customModes, keepOpen: true }) }
+      w.querySelector('.cmName').addEventListener('change', save)
+      w.querySelector('.cmPrompt').addEventListener('change', save)
+      w.querySelector('.cmDel').addEventListener('click', () => { v158.customModes = v158.customModes.filter((x) => x !== m); window.orbApi.saveSettings({ customModes: v158.customModes, keepOpen: true }); renderCModes(); fit() })
+      box.appendChild(w)
+    })
+  }
+  function initV158(s) {
+    v158 = { transEngine: s.transEngine || 'ai', baidu: s.baidu || { model: 'llm' }, deepl: s.deepl || { apiKey: '' }, customModes: s.customModes || [], useCache: s.useCache !== false, saveHistory: s.saveHistory !== false }
+    // v1.7x：自动 = 配了 AI 就先 AI 出富讲解，AI 不行再退 DeepL → 百度（只出译文，面板会写明没做讲解）；
+    // 「自动」下 DeepL 和百度的填写框都露出来
+    const ENGINE_TIP = {
+      auto: '自动：配置了上面的 AI 就用 AI 出「译文 + 讲解」（音标 / 词性 / 用法 / 例句等）；AI 没配或失败再退到 DeepL → 百度，只出译文，面板会写明这次没做讲解。翻译面板会写这次用的是哪个、前面为什么没成功。',
+      deepl: '用 DeepL 翻译；配置了 AI 就在译文后补一段讲解（以原文为准，参考 DeepL 译文）。AI 没配或失败就只保留译文，并写明没做讲解。', baidu: '用百度翻译；配置了 AI 就在译文后补一段讲解（以原文为准，参考百度译文）。AI 没配或失败就只保留译文，并写明没做讲解。', ai: '只用上面的 AI 模型：一次给出「译文 + 讲解」（音标 / 词性 / 搭配 / 例句等），更详细但更慢、耗 AI 额度。'
+    }
+    const showBaidu = () => {
+      const e = v158.transEngine
+      $('baiduBox').style.display = (e === 'baidu' || e === 'auto') ? 'block' : 'none'
+      $('deeplBox').style.display = (e === 'deepl' || e === 'auto') ? 'block' : 'none'
+      $('engineTip').textContent = ENGINE_TIP[e] || ''
+      fit()
+    }
+    chipGroup($('engine'), [['auto', '自动：AI → DeepL → 百度'], ['deepl', 'DeepL'], ['baidu', '百度翻译'], ['ai', 'AI 模型（上面的接口）']], v158.transEngine, (id) => { v158.transEngine = id; window.orbApi.saveSettings({ transEngine: id, keepOpen: true }); showBaidu() })
+    $('dlKey').value = v158.deepl.apiKey || ''
+    $('dlKey').addEventListener('change', () => { v158.deepl = { apiKey: $('dlKey').value.trim() }; window.orbApi.saveSettings({ deepl: v158.deepl, keepOpen: true }) })
+    $('dlEye').addEventListener('click', () => { const show = $('dlKey').type === 'password'; $('dlKey').type = show ? 'text' : 'password'; $('dlEye').textContent = show ? '🙈 隐藏' : '👁 显示' })
+    $('bdAppId').value = v158.baidu.appId || ''; $('bdKey').value = v158.baidu.apiKey || ''; $('bdSecret').value = v158.baidu.secret || ''
+    for (const id of ['bdAppId', 'bdKey', 'bdSecret']) $(id).addEventListener('change', saveBaidu)
+    $('bdEye').addEventListener('click', () => { const show = $('bdKey').type === 'password'; $('bdKey').type = $('bdSecret').type = show ? 'text' : 'password'; $('bdEye').textContent = show ? '🙈 隐藏' : '👁 显示' })
+    chipGroup($('bdModel'), [['llm', '大模型翻译（更通顺，默认）'], ['nmt', '机器翻译（更快）']], v158.baidu.model || 'llm', (id) => { v158.baidu.model = id; saveBaidu() })
+    chipGroup($('cacheSw'), [[true, '开'], [false, '关']], v158.useCache, (v) => { window.orbApi.saveSettings({ useCache: v, keepOpen: true }) })
+    chipGroup($('histSw'), [[true, '保存'], [false, '不保存']], v158.saveHistory, (v) => { window.orbApi.saveSettings({ saveHistory: v, keepOpen: true }) })
+    renderCModes(); showInfo(s.cacheInfo); showBaidu()
+    if (v158.transEngine !== 'ai') { $('v158').style.display = 'block'; $('v158Hint').textContent = '收起 ▴' }
+  }
+  $('cmAdd').addEventListener('click', () => {
+    let n = v158.customModes.length + 1
+    while (v158.customModes.some((m) => m.id === 'c' + n)) n++
+    const names = v158.customModes.map((m) => m.name)
+    let name = '自定义', k = 2
+    while (names.includes(name)) name = '自定义 ' + (k++)
+    v158.customModes.push({ id: 'c' + n, name, prompt: '' })
+    window.orbApi.saveSettings({ customModes: v158.customModes, keepOpen: true }); renderCModes(); fit()
+  })
+  $('cacheClr').addEventListener('click', async () => { showInfo(await window.orbApi.clearCache()); setRes('ok', '✓ 缓存已清空'); fit() })
+  $('histClr').addEventListener('click', async () => { if (!confirm('清空全部历史记录？')) return; showInfo(await window.orbApi.clearHistory()); setRes('ok', '✓ 历史已清空'); fit() })
+  $('v158Toggle').addEventListener('click', () => {
+    const m = $('v158'); const open = m.style.display === 'none'
+    m.style.display = open ? 'block' : 'none'; $('v158Hint').textContent = open ? '收起 ▴' : '展开 ▾'; fit()
+  })
+
+  $('moreToggle').addEventListener('click', () => {
+    const m = $('more')
+    const open = m.style.display === 'none'
+    m.style.display = open ? 'block' : 'none'
+    $('moreHint').textContent = open ? '收起 ▴' : '展开 ▾'
+    fit()
+  })
+
+  // —— 获取模型列表（Cherry Studio / Chatbox 的「获取列表 / Fetch」）——
+  $('fetch').addEventListener('click', async () => {
+    const btn = $('fetch')
+    btn.disabled = true
+    setRes('busy', '正在拉取模型列表…')
+    const r = await window.orbApi.fetchModels({ baseUrl: $('baseUrl').value, apiKey: $('apiKey').value, model: $('model').value })
+    btn.disabled = false
+    fit()
+    if (!r || !r.ok) { setRes('bad', '✗ 拉不到列表：' + escHtml((r && r.error) || '未知错误') + '<br><span class="dim">也可以直接手填模型名。</span>'); fit(); return }
+    allModels = r.models || []
+    setRes('ok', '✓ 拉到 ' + allModels.length + ' 个模型 · ' + r.ms + 'ms<br><span class="dim">点下面任意一个就填进「模型」框。</span>')
+    const box = $('modellist'); box.innerHTML = ''
+    allModels.forEach((id) => {
+      const c = document.createElement('span')
+      c.className = 'chip clickable'
+      c.textContent = id
+      c.addEventListener('click', () => { $('model').value = id; renderModelSel(); setRes('busy', '已选模型 ' + escHtml(id) + ' —— 再点「检测连接」确认它能收图。'); fit() })
+      box.appendChild(c)
+    })
+    renderModelSel()
+    box.style.display = 'block'
+    fit()
+  })
+  function renderModelSel() {
+    const cur = $('model').value.trim()
+    ;[...$('modellist').children].forEach((c) => c.classList.toggle('sel', c.textContent === cur))
+  }
+
+  // —— 检测连接（Chatbox 的 Check：连通 + 延迟 + 能不能收图）——
+  $('test').addEventListener('click', async () => {
+    const btn = $('test')
+    btn.disabled = true
+    setRes('busy', '正在检测（最多 15 秒）…')
+    const r = await window.orbApi.testConn({ baseUrl: $('baseUrl').value, apiKey: $('apiKey').value, model: $('model').value })
+    btn.disabled = false
+    fit()
+    if (!r) { setRes('bad', '✗ 检测失败：没有返回'); return }
+    if (r.ok) {
+      setRes('ok', '✓ 连接成功 · ' + r.ms + 'ms · 支持图片 ✓'
+        + '<br><span class="dim">模型回显 ' + escHtml(r.model) + (r.reply ? ' · 回复「' + escHtml(r.reply) + '」' : '') + '　地址 ' + escHtml(r.baseUrl) + '</span>')
+    } else {
+      setRes('bad', '✗ ' + escHtml(r.error) + '<br><span class="dim">' + (r.ms ? r.ms + 'ms · ' : '') + escHtml(r.baseUrl || '') + ' / ' + escHtml(r.model || '') + '</span>')
+    }
+  })
+
+  // —— 档案：⊕ 存为档案（存完不关卡片，方便接着检测）——
+  $('saveas').addEventListener('click', () => {
+    const row = $('saveasRow')
+    if (row.style.display === 'none') { row.style.display = 'block'; $('profileName').focus(); fit(); return }
+    let name = $('profileName').value.trim()
+    if (!name) {
+      const m = $('model').value.trim() || 'model'
+      let host = 'custom'
+      try { host = new URL($('baseUrl').value.trim() || 'https://x').host } catch {}
+      name = m + '@' + host
+    }
+    const cfg = { baseUrl: $('baseUrl').value.trim(), apiKey: $('apiKey').value.trim(), model: $('model').value.trim() }
+    const exists = profiles.some((p) => p.name === name)
+    profiles = exists ? profiles.map((p) => (p.name === name ? Object.assign({}, p, cfg) : p)) : profiles.concat([Object.assign({ name }, cfg)])
+    window.orbApi.saveSettings(collect({ saveAs: name, keepOpen: true }))
+    $('profileName').value = ''
+    row.style.display = 'none'
+    activeProfile = name
+    renderProfiles(profiles, activeProfile)
+    $('curLabel').innerHTML = '当前：<b>' + escHtml(name + ' · ' + (cfg.model || '未填模型')) + '</b>'
+    setRes('ok', '✓ 已' + (exists ? '更新' : '存为新') + '档案「' + escHtml(name) + '」，并切成当前。建议顺手点一下「检测连接」。')
+    fit()
+  })
+  function collect(extra) {
+    return Object.assign({
+      baseUrl: $('baseUrl').value.trim(),
+      apiKey: $('apiKey').value.trim(),
+      model: $('model').value.trim(),
+      scanIntervalSec: Number($('interval').value) || null,
+      appearance: { bgAlpha: Number($('bgAlpha').value) / 100, fontSize: Number($('fontSize').value), contrast: Number($('contrast').value) / 100 }
+    }, extra || {})
+  }
+
+  // 所有「跳转链接」（新手引导里的、预设说明里的、Key 行那个）统一走委托：
+  // 带上 data-url 就能点 —— 动态渲染出来的链接不用再单独挂监听。
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-url]')
+    if (el && el.dataset.url) window.orbApi.openExternal(el.dataset.url)
+  })
+  $('save').addEventListener('click', () => window.orbApi.saveSettings(collect(activeProfile ? { profile: activeProfile } : null)))
+  $('cancel').addEventListener('click', () => window.orbApi.cancelSettings())
+  window.addEventListener('blur', () => window.orbApi.cancelSettings())
+  document.addEventListener('keydown', async (e) => {
+    // v1.38：录制热键时其他快捷键全让路（否则 ⌘S / ⌘Enter 会被当成保存）
+    if (rec) {
+      e.preventDefault()
+      if (e.key === 'Escape') { rec = false; hkRestore(); setRes('busy', '已取消改键，还是 ' + hkLabel); fit(); return }
+      const acc = accelFromEvent(e)
+      if (!acc) { $('hkHint').textContent = '要带一个修饰键（⌘/⌃/⌥/⇧）'; return }
+      rec = false
+      const r = await window.orbApi.setHotkey(acc)
+      if (r && r.ok) { hkLabel = r.label; hkRaw = r.raw; hkRestore(); setRes('ok', '✓ 划词翻译快捷键已改为 ' + r.label + '（立刻生效，已落盘）') }
+      else { hkRestore(); setRes('bad', '✗ 改键失败：' + ((r && r.error) || '未知错误') + ' —— 仍然是 ' + hkLabel) }
+      fit()
+      return
+    }
+    if (e.key === 'Escape') window.orbApi.cancelSettings()
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); $('saveas').click() }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); $('save').click() }
+  })
+  fit()
+
+  /* v1.60：桌面内置更新通道 —— 只做「检查 / 下载」，源与下载目标都由主进程决定（前端传不了任何 URL / 路径）。
+   * 来自 manifest 的版本号 / notes 一律 textContent 写入 —— 哪怕源被投毒塞 HTML，也只会当纯文本显示，不执行。 */
+  let updLast = null, updDownloading = false
+  function updState(t) { $('updState').textContent = t }
+  function updRefresh() {
+    // 只有「检查通过 + 本平台有资产 + 通道版本不低于本机」才允许下载（同版本可重新下载当前通道最新版，更低不回退）；检查中（updCheck 禁用）一律禁下载，避免下到错版本
+    $('updDownload').disabled = $('updCheck').disabled || updDownloading || !(updLast && updLast.ok && updLast.canDownload)
+  }
+  $('updCheck').addEventListener('click', () => {
+    updLast = null                       // 开始检查即清旧结果：检查中 / 失败后下载绝不能用到上一次的资产
+    $('updCheck').disabled = true; updState('检查中…'); $('updNotes').textContent = ''; updRefresh()
+    Promise.resolve(window.orbApi.checkUpdate()).then((r) => {
+      updLast = r || null
+      $('updCheck').disabled = false
+      if (!r || !r.ok) { updState('检查失败'); $('updNotes').textContent = (r && r.error) || '未知错误'; updRefresh(); fit(); return }
+      // 严格更大才是「新版本」；相等是「已是最新版」（仍可重新下载）；通道版本更低时明确提示，绝不诱导用「下载最新版」回退
+      // canDownload 且版本号不同 = 严格更新（通道更低时 canDownload 为 false，落到下面单独提示）
+      const newer = !!(r.latestVersion && r.latestVersion !== r.currentVersion && r.canDownload)
+      if (r.unsupported) updState('当前平台暂无安装包')
+      else if (newer) updState('发现新版本 v' + r.latestVersion)
+      else if (r.latestVersion && r.latestVersion !== r.currentVersion) updState('本机版本高于通道（v' + r.currentVersion + ' > v' + r.latestVersion + '），不提供下载')
+      else updState('已是最新版 v' + r.currentVersion)
+      let note = r.notes || ''
+      if (r.unsupported) note = (note ? note + '　' : '') + '当前平台（' + (r.platformKey || '未知') + '）这次没有提供安装包，暂不支持。'
+      $('updNotes').textContent = note
+      $('updSrc').textContent = r.sourceUrl ? '更新源：' + r.sourceUrl : '更新源：未配置（本开源构建不提供维护者更新服务器）'
+      updRefresh(); fit()
+    }).catch((e) => { updLast = null; $('updCheck').disabled = false; updState('检查失败'); $('updNotes').textContent = (e && e.message) || '未知错误'; updRefresh(); fit() })
+  })
+  $('updDownload').addEventListener('click', () => {
+    updDownloading = true; updState('下载中…'); updRefresh()
+    Promise.resolve(window.orbApi.downloadUpdate()).then((r) => {
+      if (r && r.ok) { updState('已下载并校验通过'); $('updNotes').textContent = '已放到：' + (r.path || '') + '（已在访达 / 资源管理器里定位，未打开）' }
+      else { updState('下载失败（可重试）'); $('updNotes').textContent = (r && r.error) || '未知错误' }
+      updDownloading = false; updRefresh(); fit()
+    }).catch((e) => { updDownloading = false; updState('下载失败（可重试）'); $('updNotes').textContent = (e && e.message) || '未知错误'; updRefresh(); fit() })
+  })
+</script>
+</body>
+</html>

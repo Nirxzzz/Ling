@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<script src="themes.js" data-auto></script>
+<style>
+  /* v1.28：小卡片改用统一的 .card（原来是自成一派的 .panel），按钮走 ui.css 的 .btn */
+  .card { padding: var(--sp-3) var(--sp-3) 11px; }
+  .hd { display: flex; align-items: center; gap: 7px; color: var(--tx-1); font-size: 13px; font-weight: 600; }
+  .hd .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--grad-orb); flex: 0 0 auto; }
+  .bd { margin: 7px 0 var(--sp-3); color: var(--tx-2); font-size: 12px; line-height: 1.6; }
+  .ft { display: flex; gap: var(--sp-2); justify-content: flex-end; }
+</style>
+</head>
+<body>
+  <div class="card" id="panel">
+    <div class="hd"><span class="dot"></span>开启自动扫描？</div>
+    <div class="bd">每 20 秒自动截屏识别一次屏幕，答案面板会反复出现。<br>双击小球可随时关闭。</div>
+    <div class="ft"><button class="btn" id="no">取消</button><button class="btn primary" id="yes">开启</button></div>
+  </div>
+<script>
+  function fit() { window.orbApi.scanResize(document.getElementById('panel').offsetHeight + 8) }
+  document.getElementById('yes').addEventListener('click', () => window.orbApi.scanStart())
+  document.getElementById('no').addEventListener('click', () => window.orbApi.scanCancel())
+  window.addEventListener('blur', () => window.orbApi.scanCancel())
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') window.orbApi.scanCancel()
+    if (e.key === 'Enter') window.orbApi.scanStart()
+  })
+  fit()
+</script>
+</body>
+</html>

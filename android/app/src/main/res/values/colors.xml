@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 开源副本图标底色：纯白，前景为 res/drawable/ic_launcher_foreground.xml 的原创几何图形 -->
+    <color name="ic_launcher_background">#FFFFFFFF</color>
+</resources>

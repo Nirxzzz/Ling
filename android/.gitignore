@@ -1,0 +1,44 @@
+# Build output and caches
+.gradle/
+build/
+app/build/
+.kotlin/
+*.class
+*.hprof
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local machine configuration
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# Signing material: never commit
+*.jks
+*.keystore
+*.p12
+*.pfx
+keystore.properties
+release.properties
+signing.properties
+
+# Build-time secrets (upstream internal builds used these; this fork must not)
+lingzhu-internal.properties
+*secret*.properties
+*credentials*.properties
+
+# Packaged artifacts and release channels
+*.apk
+*.aab
+*.ap_
+*.dex
+update/
+delivery/
+evidence/
+
+# Local test/report output
+test-results/
+reports/
+*.log

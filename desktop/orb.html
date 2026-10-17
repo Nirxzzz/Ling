@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  /* 窗口 80×80（含光晕留白 ORB_PAD），球体固定 52×52 居中 —— 视觉规格不变 */
+  #stage { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  /* v1.23 圆球：薄荷绿 × 玫瑰金粉，规格不变（52×52）
+   * 球体感 = 左上高光(radial) + 对角主渐变(linear) + 底部内阴影；纯 CSS 绘制，不依赖位图 */
+  .block {
+    width: 52px; height: 52px; flex: 0 0 auto;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 31% 26%, rgba(255,255,255,.85) 0%, rgba(255,255,255,0) 30%),
+      linear-gradient(135deg, #5FDFB4 0%, #8CE8C7 32%, #EFC0BE 66%, #F29FB0 100%);
+    box-shadow:
+      0 0 14px rgba(139,233,199,.60),
+      0 0 5px  rgba(246,192,198,.55),
+      0 3px 10px rgba(0,0,0,.35),
+      inset 0 -4px 9px rgba(222,148,158,.42),
+      inset 0 2px 6px rgba(255,255,255,.55),
+      inset 0 0 0 1px rgba(255,255,255,.30);
+    cursor: pointer; user-select: none; position: relative;
+    /* v1.48：按下/松开补过渡 —— 以前 :active 的 scale(.95) 是瞬跳；按下 70ms 收，松开带一点回弹 */
+    transition: opacity .5s ease, box-shadow .5s ease, transform .22s cubic-bezier(.2, .9, .3, 1.4);
+  }
+  .block.dim { opacity: .3;
+    box-shadow: 0 0 4px rgba(139,233,199,.25), inset 0 0 0 1px rgba(255,255,255,.10); }
+  .block.busy { animation: bounce .8s ease-in-out infinite; }
+  .block.scan { box-shadow:
+      0 0 0 2px rgba(139,233,199,.95),
+      0 0 14px rgba(139,233,199,.60),
+      0 0 5px rgba(246,192,198,.55),
+      0 3px 10px rgba(0,0,0,.35),
+      inset 0 -4px 9px rgba(222,148,158,.42),
+      inset 0 2px 6px rgba(255,255,255,.55); }
+  .block.scan::after { content:''; position:absolute; inset:-4px; border-radius:50%; border:2px solid rgba(139,233,199,.55); }
+  /* 做题模式标识：内层虚线圈（不依赖颜色，灰度下也看得出） */
+  .block.exam::before { content:''; position:absolute; inset:4px; border-radius:50%; border:1px dashed rgba(255,255,255,.95); pointer-events:none; }
+  @keyframes bounce { 0%,100%{ transform: translateY(0) } 50%{ transform: translateY(-3px) } }
+  .block:active { transform: scale(.95); transition: opacity .5s ease, box-shadow .5s ease, transform .07s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .block, .block:active { transition: opacity .5s ease, box-shadow .5s ease; } }
+</style>
+</head>
+<body>
+  <div id="stage"><div class="block" id="block"></div></div>
+<script>
+  const block = document.getElementById('block')
+  let sx=0, sy=0, moved=false, down=false, scanning=false
+  let dimEnabled = true, dimTimer = null
+
+  function dimNow(){ if (dimEnabled && !scanning && !down) block.classList.add('dim') }
+  function undim(){ clearTimeout(dimTimer); block.classList.remove('dim') }
+  function armDim(){ clearTimeout(dimTimer); dimTimer = setTimeout(dimNow, 4000) }
+  function setDim(on){ dimEnabled = !!on; window.orbApi.setDimState(dimEnabled); if (dimEnabled) armDim(); else undim() }
+
+  /* v1.46：左键分三档 —— 单击看历史 / 双击立即识别 / 三击开关自动扫描。
+   *
+   * 判定用 `e.detail`（Chromium 按**系统双击阈值**给出的连击序号 1/2/3…），而不是自己用 setTimeout 数点击：
+   *   · 自己数就得等一个「第二击还会不会来」的窗口，单击要陪等 300~500ms 才有反应；
+   *   · 而且那个窗口是渲染进程的定时器 —— 小球被判成「后台/被遮挡」时 Chromium 会把它节流到分钟级
+   *     （v1.29 的开关就是为这个加的），单击会变成没反应。
+   * 用 e.detail 则单击立刻响应、双击三击也不用等。
+   * 代价：双击的第一下会先把历史面板开出来，第二下再切去识别 —— 那一下过场约 200ms，可以接受。 */
+  function dispatchTap(n) {
+    if (n <= 1) window.orbApi.click()               // 单击 → 历史记录
+    else if (n === 2) window.orbApi.doubleclick()   // 双击 → 立即识别
+    else if (n === 3) window.orbApi.tripleclick()   // 三击 → 自动扫描开关
+    // n ≥ 4：连击太多，什么都不做（免得四击又把自动扫描关回去）
+  }
+
+  // v1.44：跟手优先 + 限速兜底。
+  //
+  // 经过（都是真机量出来的，探针见 ~/Desktop/灵珠-v1.44.0-补丁/）：
+  //   v1.35.2：每个 mousemove 直接发 → 跟手误差 2.6px（600px/s 拖动）
+  //   v1.43  ：一律攒到下一帧再发 → 跟手误差 12.5px（同轨迹），高刷下 22px
+  //   —— 即「等到下一帧」白搭了恒定一帧（≈16.7ms）的延迟，而主进程其实根本没被压垮：
+  //      真实指针事件会被 Chromium 合到帧率（≈60 次/秒），拖动期间主进程 IPC 往返最大才 6~12ms。
+  //      之前那个「78.9ms」是拿 400 条事件在一个任务里瞬间灌进去测的，不是真实输入的样子。
+  // 所以改成：距上次发送 ≥8ms 就直接发（跟手），否则累加到下一帧（把上限压在 ~125 次/秒）。
+  const SEND_GAP_MS = 8
+  let pendDx = 0, pendDy = 0, moveRaf = 0, lastSend = -1e9
+  function flushMove() {
+    moveRaf = 0
+    if (!pendDx && !pendDy) return
+    const dx = pendDx, dy = pendDy
+    pendDx = 0; pendDy = 0
+    lastSend = performance.now()
+    window.orbApi.move(dx, dy)
+  }
+  function queueMove(dx, dy) {
+    pendDx += dx; pendDy += dy
+    if (performance.now() - lastSend >= SEND_GAP_MS) {
+      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0 }
+      flushMove()
+      return
+    }
+    if (!moveRaf) moveRaf = requestAnimationFrame(flushMove)
+  }
+
+  // 只认鼠标左键：右键是「打开菜单」，不能再顺带触发一次识别
+  block.addEventListener('mousedown', (e)=>{ if (e.button !== 0) return; down=true; moved=false; sx=e.screenX; sy=e.screenY; undim(); e.preventDefault() })
+  window.addEventListener('mousemove', (e)=>{ if(!down) return; const dx=e.screenX-sx, dy=e.screenY-sy; if(dx||dy){ moved=true; sx=e.screenX; sy=e.screenY; queueMove(dx,dy) } })
+  window.addEventListener('mouseup', (e)=>{ if(!down) return; down=false; if (moveRaf) { cancelAnimationFrame(moveRaf); flushMove() } if(e.button!==0) return; if(!moved) dispatchTap(e.detail || 1); armDim() })
+  block.addEventListener('mouseenter', undim)
+  block.addEventListener('mouseleave', armDim)
+
+  // 右键 → 独立菜单窗口
+  // （旧写法把菜单放在 52×52 的窗口里，body 又是 overflow:hidden，菜单永远被裁掉看不见）
+  block.addEventListener('contextmenu', (e)=>{ e.preventDefault(); undim(); window.orbApi.menu() })
+
+  function setScan(on){ scanning=on; block.classList.toggle('scan', on); if(on) undim(); else armDim() }
+  window.orbApi.onScan(setScan)
+  window.orbApi.onOrb((busy)=>{ block.classList.toggle('busy', busy); if(busy) undim() })
+  window.orbApi.onOrbMode((label)=>{ block.classList.toggle('exam', label === '做题') })
+  window.orbApi.onDimToggle(()=> setDim(!dimEnabled))
+
+  // 光晕留白区鼠标穿透：进球体 → 接管；出球体 → 放行（forward 让 move 事件继续到达）
+  block.addEventListener('mouseenter', () => window.orbApi.mouseThrough(false))
+  block.addEventListener('mouseleave', () => window.orbApi.mouseThrough(true))
+  window.orbApi.mouseThrough(true)
+
+  window.orbApi.setDimState(true)
+  armDim()
+</script>
+</body>
+</html>

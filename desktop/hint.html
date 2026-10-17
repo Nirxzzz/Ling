@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<script src="themes.js" data-auto></script>
+<style>
+  /* v1.28：首次引导气泡 —— 走 --surface-toast，圆角/描边/阴影与其他界面同一套 */
+  .hint {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-radius: var(--r-lg);
+    background: var(--surface-toast); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--hairline); color: var(--tx-1);
+    box-shadow: var(--shadow); white-space: nowrap;
+    font-size: 15px;
+  }
+  .arrow { font-size: 22px; color: rgb(var(--accent)); animation: blink 1s infinite; }
+</style>
+</head>
+<body><div class="hint"><span class="arrow">◀</span>单击看历史 · 双击识别 · 三击自动扫描</div></body>
+</html>

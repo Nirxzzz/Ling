@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* v1.28：同 answer.html —— 底板 / 标题栏 / chip / 图标按钮 / 状态行 / markdown 都走 ui.css */
+  .panel { position: relative; }
+  #wrap { padding: var(--sp-3) var(--sp-4); flex: 1; overflow-y: auto; scrollbar-gutter: stable; }
+  #src .w, #body .w { cursor: help; border-bottom: 1px dotted rgba(var(--fg),.38); border-radius: 2px; }
+  #src .w:hover, #body .w:hover { background: rgba(var(--accent), .28); }
+  .langmenu { display: none; position: absolute; top: 34px; right: 10px; z-index: 30; min-width: 148px;
+    background: var(--surface-menu); border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--sp-1);
+    box-shadow: 0 10px 26px rgba(0,0,0,.5); max-height: 64%; overflow-y: auto; }
+  .langmenu .li { display: flex; align-items: center; gap: 6px; padding: 5px var(--sp-2); border-radius: var(--r-sm); font-size: 12px; cursor: pointer; color: rgba(var(--fg),.9); }
+  .langmenu .li:hover { background: rgba(var(--accent), .25); }
+  .langmenu .li .c { width: 12px; color: rgb(var(--accent)); }
+  .langmenu .li .h { margin-left: auto; color: var(--tx-4); font-size: 11px; }
+  #wtip { display: none; position: absolute; z-index: 40; max-width: 268px;
+    background: var(--surface-menu); border: 1px solid rgba(var(--fg),.26); border-radius: var(--r-md);
+    padding: 9px 11px; font-size: 12.5px; line-height: 1.55; color: rgba(var(--fg),.94);
+    box-shadow: 0 10px 26px rgba(0,0,0,.55); white-space: pre-wrap; pointer-events: none;
+    /* v1.39：进出都走淡入+轻微上浮，换词时 left/top 也跟手滑过去（原来是硬切 / 瞬移） */
+    opacity: 0; transform: translateY(-3px) scale(.985);
+    transition: opacity .13s ease, transform .13s ease, left .13s ease, top .13s ease; }
+  #wtip.on { opacity: 1; transform: none; }
+  #wtip.flash { animation: tipFlash .18s ease-out; }
+  @keyframes tipFlash { from { opacity: .45 } }
+  #wtip.busy { animation: tipBusy 1.1s ease-in-out infinite; }
+  @keyframes tipBusy { 0%, 100% { opacity: .72 } 50% { opacity: 1 } }
+  #wtip .why { color: var(--tx-3); font-size: 12px; margin-top: 2px; }
+  #wtip .miss { color: rgba(var(--fg),.86); font-weight: 600; }
+  #wtip .hd { color: rgb(var(--accent)); font-weight: 600; margin-bottom: 2px; }
+  #wtip .ex { color: var(--tx-3); margin-top: var(--sp-1); font-size: 12px; }
+  /* v1.40：流式新增的行淡入进场（同 answer.html） */
+  #body .fadein { animation: lineIn .15s ease-out; }
+  @keyframes lineIn { from { opacity: .28; transform: translateY(2px) } to { opacity: 1; transform: none } }
+
+  #src { display: none; margin: 0 0 var(--sp-3); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-sm); background: rgba(0,0,0,.22);
+         border-left: 2px solid rgba(var(--accent), .65); color: var(--tx-2); font-size: 12.5px; line-height: 1.7;
+         max-height: 92px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  /* v1.58：标题后面的小字 ——「百度」「缓存（3 分钟前）」；不靠颜色，写字 */
+  .bar .title { white-space: nowrap; flex: 0 0 auto; }
+  .tbadge { font-size: 11px; color: var(--tx-3); margin: 0 0 6px 2px; }
+  .tbadge:empty { display: none; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <div class="bar"><span class="dot"></span><span class="title">划词翻译</span><span class="chip rose clickable" id="langchip">自动 ▾</span><button class="ibtn" id="retry" title="重译"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 8.9a5.2 5.2 0 1 1-4.1-5.1"/><polyline points="9.6 2.2 9.9 4.6 7.5 5.2"/></svg></button><button class="ibtn" id="copy" title="复制全文"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.9" y="5.9" width="7.3" height="7.3" rx="1.6"/><path d="M10.2 5.9V4.6a1.7 1.7 0 0 0-1.7-1.7H4.6a1.7 1.7 0 0 0-1.7 1.7v3.9a1.7 1.7 0 0 0 1.7 1.7h1.3"/></svg></button><button class="ibtn" id="close" title="关闭"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2"/></svg></button></div>
+    <div class="langmenu" id="langmenu"></div>
+    <div id="wtip"></div>
+    <div id="wrap">
+      <div class="tbadge" id="tbadge"></div>
+      <div id="src"></div>
+      <div id="state"></div>
+      <div id="body"></div>
+    </div>
+  </div>
+<script src="math.js"></script>
+<script src="themes.js"></script>
+<script>
+  const stateEl = document.getElementById('state')
+  const srcEl = document.getElementById('src')
+  const body = document.getElementById('body')
+  const wrap = document.getElementById('wrap')
+  let started = false
+  let rawText = ''
+
+  // —— 悬停查词（v1.22）：面板里的单词停一下，弹释义卡片 ——
+  const WORD_RE = /[A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f'’\-]+/g
+  const wtip = document.getElementById('wtip')
+  const wordMem = new Map()          // 渲染层缓存（主进程还有一层 LRU）
+  let tipTimer = null, tipFor = null, tipHideTimer = null
+
+  // 把文本节点里的拉丁词包上 <span class="w">；跳过 code/pre 和已包过的
+  function linkifyWords(root) {
+    if (!root) return
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => (n.parentElement && n.parentElement.closest('code, pre, .w'))
+        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+    })
+    const targets = []
+    while (walker.nextNode()) { if (WORD_RE.test(walker.currentNode.nodeValue)) targets.push(walker.currentNode) }
+    for (const node of targets) {
+      const str = node.nodeValue
+      const frag = document.createDocumentFragment()
+      let last = 0, m
+      WORD_RE.lastIndex = 0
+      while ((m = WORD_RE.exec(str))) {
+        if (m.index > last) frag.appendChild(document.createTextNode(str.slice(last, m.index)))
+        const sp = document.createElement('span')
+        sp.className = 'w'; sp.textContent = m[0]
+        frag.appendChild(sp)
+        last = m.index + m[0].length
+      }
+      if (last < str.length) frag.appendChild(document.createTextNode(str.slice(last)))
+      node.parentNode.replaceChild(frag, node)
+    }
+  }
+
+  function tipShow() {
+    clearTimeout(tipHideTimer)
+    const wasHidden = wtip.style.display === 'none' || !wtip.style.display
+    wtip.style.display = 'block'
+    if (!wtip.classList.contains('on')) {
+      // 注意别用 requestAnimationFrame 来加这个类：某些时机下 rAF 不跑，
+      // .on 就永远加不上 —— 气泡会停在 opacity:0（只剩 flash 动画撑着，动画一完就消失）。
+      // 这里用「强制重排」把 display 的初始态落实下来，同一次执行里加 .on，过渡照样会跑。
+      if (wasHidden) void wtip.offsetWidth
+      wtip.classList.add('on')
+    }
+  }
+  function hideTip() {
+    clearTimeout(tipTimer)
+    tipFor = null; tipForEl = null
+    clearTimeout(tipHideTimer)
+    wtip.classList.remove('on', 'busy')
+    tipHideTimer = setTimeout(() => { wtip.style.display = 'none'; wtip.classList.remove('flash') }, 150)   // 先淡出再真正藏
+  }
+  function setTip(html, cls) {
+    wtip.classList.remove('busy')
+    if (cls) wtip.classList.add(cls)
+    wtip.innerHTML = html
+    if (cls === 'busy') wtip.classList.remove('flash')
+    else { wtip.classList.remove('flash'); void wtip.offsetWidth; wtip.classList.add('flash') }   // 结果落进来时轻轻闪一下
+  }
+
+  function positionTip(el) {
+    if (!el) return
+    const pr = document.querySelector('.panel').getBoundingClientRect()
+    const r = el.getBoundingClientRect()
+    wtip.style.visibility = 'hidden'
+    wtip.style.display = 'block'
+    const tw = wtip.offsetWidth, th = wtip.offsetHeight
+    let x = r.left + pr.left + r.width / 2 - tw / 2
+    x = Math.max(pr.left + 6, Math.min(x, pr.left + pr.width - tw - 6))
+    let y = r.bottom + pr.top + 6
+    if (y + th > pr.top + pr.height - 6) y = r.top + pr.top - th - 6
+    wtip.style.left = (x - pr.left) + 'px'
+    wtip.style.top = (y - pr.top) + 'px'
+    wtip.style.visibility = 'visible'
+    tipShow()
+  }
+
+  function renderTip(word, res) {
+    if (tipFor !== word) return
+    const text = res && res.ok ? res.text : ''
+    if (text) {
+      const lines = text.split('\n').map((x) => x.trim()).filter(Boolean)
+      const hd = lines.shift() || ''
+      const exLine = lines.length && /[—–]/.test(lines[lines.length - 1]) ? lines.pop() : ''
+      setTip('<div class="hd">' + esc(hd) + '</div>'
+        + lines.map((l) => '<div>' + esc(l.replace(/^[-•*]\s*/, '')) + '</div>').join('')
+        + (exLine ? '<div class="ex">' + esc(exLine) + '</div>' : ''))
+    } else {
+      // v1.39：查不到时说清楚是「接口/模型没给」还是真没这个词 —— 老版本只有一句「没查到这个词」，
+      // 而当时真正的原因（GATEWAY 常量早就没了）根本看不出来。
+      setTip('<div class="miss">没查到释义</div>'
+        + '<div class="why">' + esc((res && res.error) || '模型没返回内容') + '</div>'
+        + '<div class="why">移开鼠标再停一次可以重试</div>')
+    }
+    positionTip(tipForEl)
+  }
+
+  let tipForEl = null
+  async function showTip(el) {
+    // v1.46：正在划选（或已经有选区）时别弹释义 —— 拖着鼠标划词会一路互相打架
+    if (window.__selcopy && window.__selcopy.busy()) return
+    const word = el.textContent.trim()
+    tipFor = word; tipForEl = el
+    setTip('<span class="why">查询中…</span>', 'busy')
+    positionTip(el)
+    if (wordMem.has(word)) { renderTip(word, wordMem.get(word)); return }
+    let res = null
+    try { res = await window.orbApi.lookupWord(word) } catch (e) { res = { ok: false, error: '查询出错' } }
+    if (res && typeof res === 'string') res = { ok: true, text: res }      // 兼容旧返回
+    if (res && res.ok) wordMem.set(word, res)
+    renderTip(word, res)
+  }
+
+  wrap.addEventListener('mouseover', (e) => {
+    const el = e.target.closest('span.w')
+    if (!el || el === tipForEl) return
+    clearTimeout(tipTimer)
+    const w = el.textContent.trim()
+    tipTimer = setTimeout(() => showTip(el), wordMem.has(w) ? 30 : 300)   // 查过的立刻弹，没查过的先等悬停 300ms
+  })
+  wrap.addEventListener('mouseout', (e) => {
+    if (e.target.closest('span.w')) { clearTimeout(tipTimer); }
+  })
+  wrap.addEventListener('mouseleave', hideTip)
+  wrap.addEventListener('scroll', hideTip)
+
+  // v1.27：同 answer.html —— 流式期间节流渲染与窗口尺寸（翻译面板也带模糊，同一笔浪费）
+  const measureNeed = () => wrap.scrollHeight + document.querySelector('.bar').offsetHeight + 26
+  let rTimer = null, sTimer = null
+  /* —— v1.40：流式渲染（同 answer.html，换掉 v1.35 的「攒完再揭示」）——
+     到了就显示，屏幕上是模型的真实节奏；已完成的行进 baseEl、正在写的那行进 tailEl，
+     新完成的行带 150ms 淡入；高度流式期间冻结、done 后收拢；末尾跟光标 + 贴底跟读。 */
+  const wrapEl = wrap
+  let targetText = ''
+  let baseEl = null, tailEl = null, baseText = '', tailText = '', baseKids = 0
+  function streamReset() {
+    body.innerHTML = ''
+    baseEl = document.createElement('div'); tailEl = document.createElement('div')
+    body.append(baseEl, tailEl)
+    baseText = ''; tailText = ''; baseKids = 0
+    tailEl.appendChild(caretEl)
+  }
+  function streamRender() {
+    if (!baseEl || !tailEl) streamReset()
+    const src = rawText
+    const i = src.lastIndexOf('\n')
+    const donePart = i < 0 ? '' : src.slice(0, i)
+    const tailPart = i < 0 ? src : src.slice(i)
+    if (donePart !== baseText) {
+      baseText = donePart
+      baseEl.innerHTML = renderMarkdown(donePart)
+      const kids = baseEl.children
+      for (let k = baseKids; k < kids.length; k++) kids[k].classList.add('fadein')
+      baseKids = kids.length
+    }
+    if (tailPart !== tailText) {
+      const wasEmpty = !tailText
+      tailText = tailPart
+      tailEl.innerHTML = renderMarkdown(tailPart)
+      tailEl.appendChild(caretEl)
+      if (wasEmpty && tailPart.trim()) { tailEl.classList.remove('fadein'); void tailEl.offsetWidth; tailEl.classList.add('fadein') }
+    }
+  }
+  const caretEl = document.createElement('span')
+  caretEl.className = 'caret'
+  const render = () => {
+    if (rTimer) return
+    rTimer = setTimeout(() => { rTimer = null; streamRender(); lastStreamAt = performance.now(); follow() }, 16)
+  }
+  const renderNow = () => {
+    if (rTimer) { clearTimeout(rTimer); rTimer = null }
+    if (window.__selcopy) window.__selcopy.hide()   // v1.46：整篇重排会吃掉选区，气泡跟着收
+    body.innerHTML = renderMarkdown(rawText)
+    baseEl = null; tailEl = null; baseText = ''; tailText = ''; baseKids = 0
+  }
+  let doneFlag = false
+  function finishStream() {
+    doneFlag = false
+    if (typeof targetText === 'string' && targetText) rawText = targetText
+    renderNow()
+    setTimeout(() => { linkifyWords(body); resizeNow() }, 60)   // 正文定了再做一次链接化（悬停查词要用 .w）
+    streamH = null; resizeNow()
+  }
+  function feed(t) {
+    targetText += t
+    rawText = targetText                 // v1.40：不再限速 —— 到了就显示
+    render(); resize()
+  }
+
+  // 高度：流式期间冻结、按 80px 台阶长；done 后收拢（同 answer.html）
+  let lastNeed = 0, streamH = null
+  const quantNeed = () => Math.ceil(measureNeed() / 4) * 4
+  const resize = () => {
+    if (sTimer) return
+    sTimer = setTimeout(() => {
+      sTimer = null
+      const need = quantNeed()
+      if (streamH == null) streamH = Math.max(need, 260)
+      // v1.47：一超出就长，并多留 40px 余量（原来要超出 64px 才长 —— 这 64px 里正在写的那行被压在底边外）
+      else if (need > streamH) streamH = Math.ceil((need + 40) / 80) * 80
+      else return
+      lastNeed = streamH
+      window.orbApi.transResize(streamH)
+    }, 200)
+  }
+  const resizeNow = () => {
+    if (sTimer) { clearTimeout(sTimer); sTimer = null }
+    const n = quantNeed()
+    if (n !== lastNeed || streamH != null) { lastNeed = n; streamH = null; window.orbApi.transResize(n) }
+  }
+  /* v1.47：跟读真正落地。v1.40 起就有 followBottom，但从来没人去滚 #wrap ——
+     面板长到顶高（≤480）以后，正在写的那行一直在可视区下面（实测 93% 的时间看不见光标）。
+     现在：每次渲染后若贴底：新行立即露出来，最后一小段用 rAF 缓动贴底（每帧追一半）；
+     判定「用户往上翻」只看 scrollTop 变小且离底 >48px —— 程序滚动只会往下，窗口变高导致的回夹离底是 0，都不会误判；
+     按住鼠标（在选字）时不滚，免得选区被拖走。 */
+  let followBottom = true, prevTop = 0, holding = false, fRaf = 0
+  wrapEl.addEventListener('scroll', () => {
+    const top = wrapEl.scrollTop
+    const dist = wrapEl.scrollHeight - top - wrapEl.clientHeight
+    if (dist < 48) followBottom = true
+    else if (top < prevTop - 1) followBottom = false
+    prevTop = top
+  })
+  wrapEl.addEventListener('wheel', (e) => { if (e.deltaY < 0 && wrapEl.scrollTop > 0) { followBottom = false; if (fRaf) { cancelAnimationFrame(fRaf); fRaf = 0 } } }, { passive: true })
+  wrapEl.addEventListener('pointerdown', () => { holding = true })
+  window.addEventListener('pointerup', () => { holding = false })
+  let padB = -1
+  function follow() {
+    if (!followBottom || holding) return
+    // 新行刚出现的那一帧就得看得见：超出内容区的部分当场补上（同步），只把底部内边距那一小段交给缓动
+    if (padB < 0) padB = parseFloat(getComputedStyle(wrapEl).paddingBottom) || 0
+    const over = wrapEl.scrollHeight - wrapEl.clientHeight - wrapEl.scrollTop - padB
+    if (over > 0) { wrapEl.scrollTop += over; prevTop = wrapEl.scrollTop }
+    if (fRaf) return
+    const step = () => {
+      fRaf = 0
+      if (!followBottom || holding) return
+      const d = wrapEl.scrollHeight - wrapEl.clientHeight - wrapEl.scrollTop
+      if (d <= 1) return
+      wrapEl.scrollTop += Math.max(2, Math.ceil(d * 0.5))
+      prevTop = wrapEl.scrollTop
+      fRaf = requestAnimationFrame(step)
+    }
+    fRaf = requestAnimationFrame(step)
+  }
+  let lastStreamAt = 0
+  window.addEventListener('resize', () => { if (performance.now() - lastStreamAt < 1000) follow() })   // 只在流式中跟，翻历史时窗口变高不乱滚
+
+  function esc(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+  }
+  /* v1.58：公式排版 + 链接可点（math.js）；原来的 inline(esc(x)) 都换成了 fmt(x) */
+  function fmt(raw) { return window.LZMath ? window.LZMath.fmt(raw, (x) => inline(esc(x))) : inline(esc(raw)) }
+  function inline(s) {
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>')
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    return s
+  }
+  function renderMarkdown(src) {
+    const lines = (window.LZMath ? window.LZMath.joinDisplay(src) : src).split('\n')
+    let html = '', list = null, listTag = ''
+    const closeList = () => { if (list) { html += '</' + listTag + '>'; list = null } }
+    for (const raw of lines) {
+      const t = raw.trim()
+      if (t === '') { closeList(); continue }
+      const ul = t.match(/^[-*•]\s+(.*)$/)
+      const ol = t.match(/^\d+[.)]\s+(.*)$/)
+      const h1 = t.match(/^#\s+(.*)$/)
+      const h2 = t.match(/^##\s+(.*)$/)
+      const bq = t.match(/^>\s?(.*)$/)
+      if (ul || ol) {
+        const tag = ul ? 'ul' : 'ol'
+        if (list !== tag) { closeList(); list = tag; listTag = tag; const st = ol && t.match(/^(\d+)/); html += '<' + tag + (st && st[1] !== '1' ? ' start="' + st[1] + '"' : '') + '>' }   // v1.58：中间隔着公式时列表会断开，按原文的编号续上
+        html += '<li>' + fmt((ul || ol)[1]) + '</li>'
+      } else if (h1 || h2) {
+        closeList()
+        html += (h1 ? '<h3>' : '<h4>') + fmt((h1 || h2)[1]) + (h1 ? '</h3>' : '</h4>')
+      } else if (bq) {
+        closeList(); html += '<p class="quote">' + fmt(bq[1]) + '</p>'
+      } else {
+        closeList(); html += '<p>' + fmt(raw) + '</p>'
+      }
+    }
+    closeList()
+    return html
+  }
+
+  // —— 翻译语言选择 ——
+  const langChip = document.getElementById('langchip')
+  const langMenu = document.getElementById('langmenu')
+  let langs = [], curLang = 'auto'
+
+  function renderLangMenu() {
+    langMenu.innerHTML = langs.map((l) => '<div class="li" data-id="' + l.id + '"><span class="c">'
+      + (l.id === curLang ? '✓' : '') + '</span>' + esc(l.label)
+      + '<span class="h">' + esc(l.tip || '') + '</span></div>').join('')
+  }
+  function applyLang(i) {
+    if (!i) return
+    langs = i.langs || langs
+    curLang = i.id || 'auto'
+    langChip.textContent = (i.label || '自动') + ' ▾'
+    renderLangMenu()
+  }
+  window.orbApi.onTransLang(applyLang)
+  window.orbApi.getTransLangs().then(applyLang).catch(() => {})
+
+  langChip.addEventListener('click', (e) => {
+    e.stopPropagation()
+    langMenu.style.display = langMenu.style.display === 'block' ? 'none' : 'block'
+  })
+  langMenu.addEventListener('click', (e) => {
+    const el = e.target.closest('.li')
+    if (!el) return
+    langMenu.style.display = 'none'
+    if (el.dataset.id && el.dataset.id !== curLang) window.orbApi.transSetLang(el.dataset.id)
+  })
+  document.addEventListener('mousedown', (e) => {
+    if (!langMenu.contains(e.target) && !langChip.contains(e.target)) langMenu.style.display = 'none'
+  })
+
+  const map = {
+    reading: '正在读取选区…',
+    translating: '正在翻译…',
+    no_selection: '没读到选中的文字 · 先用鼠标选中一段文字，再按快捷键',
+    need_perm: '⚠️ 缺少「辅助功能」权限 · 点这里打开系统设置 →',
+    failed: '⚠️ 翻译失败'
+  }
+
+  function setState(s) {
+    stateEl.textContent = map[s] || s
+    stateEl.style.display = 'inline'
+    const clickable = (s === 'need_perm')
+    stateEl.classList.toggle('clickable', clickable)
+    stateEl.onclick = clickable ? () => window.orbApi.openAccessibilityPane() : null
+  }
+
+  window.orbApi.onTransBadge((t) => { document.getElementById('tbadge').textContent = t ? '来源：' + t : '' })
+  window.orbApi.onTransState((s) => {
+    started = false; rawText = ''; targetText = ''; doneFlag = false
+    baseEl = null; tailEl = null; baseText = ''; tailText = ''; baseKids = 0
+    streamH = null; lastNeed = 0; followBottom = true
+    hideTip(); body.innerHTML = ''
+    setState(s)
+    renderNow(); resizeNow()
+  })
+
+  // v1.42：思考阶段反馈（同 answer.html）
+  window.orbApi.onTransPhase((t) => {
+    if (!t || started) return
+    stateEl.textContent = t
+    stateEl.style.display = 'inline'
+  })
+
+  window.orbApi.onTransSrc((t) => {
+    srcEl.textContent = t
+    linkifyWords(srcEl)
+    srcEl.style.display = 'block'
+    resizeNow()
+  })
+
+  window.orbApi.onTransChunk((d) => {
+    // v1.24：同 answer.html —— 空 chunk 不再顺手收掉状态行
+    if (d.text) {
+      if (!started) { started = true; stateEl.style.display = 'none' }
+      feed(d.text)
+    }
+    if (d.done) finishStream()
+  })
+
+  document.getElementById('retry').addEventListener('click', () => {
+    started = false; rawText = ''; targetText = ''; doneFlag = false
+    baseEl = null; tailEl = null; baseText = ''; tailText = ''; baseKids = 0
+    streamH = null; lastNeed = 0; followBottom = true
+    body.innerHTML = ''; hideTip()
+    setState('translating'); window.orbApi.transRetry()
+  })
+  document.getElementById('copy').addEventListener('click', () => { if (rawText) window.orbApi.copy(rawText) })
+  document.getElementById('close').addEventListener('click', () => window.orbApi.transClose())
+  resizeNow()
+
+  // v1.32：外观（同 answer.html）
+  function applyAppearance(a) {
+    const r = document.documentElement.style
+    const c = (a && a.contrast) != null ? a.contrast : 0.92
+    window.LZThemes.applyTheme(document.documentElement, a)   // v1.60：配色（默认护眼）
+    r.setProperty('--ui-font', ((a && a.fontSize) || 14) + 'px')
+    r.setProperty('--tx-1-a', String(c))
+    r.setProperty('--tx-2-a', (c * 0.76).toFixed(2))
+    r.setProperty('--tx-3-a', (c * 0.60).toFixed(2))
+    r.setProperty('--tx-4-a', (c * 0.46).toFixed(2))
+    resizeNow()
+  }
+  window.orbApi.getAppearance().then(applyAppearance).catch(() => {})
+  window.orbApi.onAppearanceChanged(applyAppearance)
+</script>
+<!-- v1.46：选中即可复制（原文区 / 译文区都能划选 → 选区上方浮出「复制」气泡） -->
+<script>
+  // v1.58：答案 / 译文里的网址点了用浏览器打开（主进程只放行 http / https / mailto）
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a.lzm-lnk')
+    if (!a) return
+    e.preventDefault(); e.stopPropagation()
+    window.orbApi.openLink(a.dataset.href)
+  }, true)
+</script>
+<script src="selcopy.js"></script>
+<script src="panelgrow.js"></script>
+</body>
+</html>

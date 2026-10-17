@@ -1,0 +1,90 @@
+{
+  "name": "ling-desktop",
+  "productName": "Ling",
+  "version": "1.60.2",
+  "description": "Ling：全局悬浮小球，截屏解析 / 划词翻译（Electron，macOS 与 Windows 共用源码）",
+  "main": "main.js",
+  "license": "MIT",
+  "author": "Ling contributors",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js && node tool/smoke-main.js main.js",
+    "pack:mac": "electron-builder --mac zip --arm64 --publish never",
+    "pack:win": "electron-builder --win zip --x64 --publish never",
+    "pack": "npm run pack:mac && npm run pack:win"
+  },
+  "devDependencies": {
+    "electron": "37.10.3",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.ling.opensource",
+    "productName": "Ling",
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "extras.js",
+      "update.js",
+      "prompts.js",
+      "themes.js",
+      "math.js",
+      "fsrs.js",
+      "knowledge.js",
+      "anki.js",
+      "preload.js",
+      "ui.css",
+      "selcopy.js",
+      "panelgrow.js",
+      "orb.html",
+      "answer.html",
+      "hint.html",
+      "menu.html",
+      "scan.html",
+      "ask.html",
+      "translate.html",
+      "review.html",
+      "settings.html",
+      "probe.png",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "identity": null,
+      "electronLanguages": [
+        "zh-CN",
+        "en"
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "npmRebuild": false,
+    "icon": "build/icon.png"
+  }
+}

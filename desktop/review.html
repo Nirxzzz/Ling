@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<script src="themes.js" data-auto></script>
+<style>
+  /* v1.72 [KCard] 知识卡复习页 + 卡库（同一个小窗口，两个 tab）
+     复习流程：正面 → 「显示答案」→ 四档评分 → 下一张；空队列就是「今日复习完毕」。
+     FSRS 全在主进程算（knowledge.js / fsrs.js）—— 这里只渲染和发评分，不碰调度。 */
+  body { background: none; }
+  /* 底板 / 标题栏 / 按钮全部走 ui.css 的 .card / .bar / .ibtn / .btn（跟设置卡、菜单同一套），
+     这里只补复习页特有的排版。 */
+  #kwin {
+    display: flex; flex-direction: column; height: calc(100vh - 2 * var(--sp-1));
+    overflow: hidden;
+  }
+  .kbar {
+    -webkit-app-region: drag;
+    display: flex; align-items: center; gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    font-size: 12px; color: var(--tx-2);
+    background: rgba(var(--fg), .06);
+    border-bottom: 1px solid var(--hairline-soft);
+    flex: 0 0 auto;
+  }
+  .kbar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--grad-orb); flex: 0 0 auto; }
+  .kbar .title { flex: 1; font-weight: 600; color: var(--tx-1); }
+  .kbar .ibtn { -webkit-app-region: no-drag; }
+
+  .tabs { display: flex; gap: var(--sp-1); padding: var(--sp-2) var(--sp-3) 0; flex: 0 0 auto; }
+  .tabs .tab {
+    -webkit-app-region: no-drag; cursor: pointer; user-select: none;
+    font: 11.5px var(--font); padding: 4px 12px; border-radius: var(--r-pill);
+    background: var(--btn-bg); border: 1px solid transparent; color: var(--tx-3);
+  }
+  .tabs .tab.on { color: var(--tx-1); background: rgba(var(--accent), .28); border-color: rgba(var(--accent), .60); font-weight: 600; }
+
+  .body { flex: 1 1 auto; overflow-y: auto; padding: var(--sp-3); }
+
+  /* ---- 复习 tab ---- */
+  .meta { font-size: 11.5px; color: var(--tx-4); display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+  .kcard {
+    border-radius: var(--r-md); border: 1px solid var(--hairline-soft);
+    background: rgba(var(--fg), .04); padding: var(--sp-3); margin-bottom: var(--sp-3);
+  }
+  .kcard .lbl { font-size: 11px; color: var(--tx-4); margin-bottom: 5px; letter-spacing: .04em; }
+  .kcard .q { font-size: 14.5px; line-height: 1.55; color: var(--tx-1); white-space: pre-wrap; word-break: break-word; }
+  .kcard .a { font-size: 13.5px; line-height: 1.62; color: var(--tx-2); white-space: pre-wrap; word-break: break-word;
+    border-top: 1px dashed var(--hairline-soft); margin-top: 10px; padding-top: 10px; }
+  .empty { text-align: center; color: var(--tx-3); font-size: 13px; line-height: 1.8; padding: var(--sp-4) var(--sp-3); white-space: pre-line; }
+
+  .grades { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .grades .g {
+    border: none; height: 34px; border-radius: var(--r-sm); cursor: pointer;
+    font: 12.5px var(--font); background: var(--btn-bg); color: var(--tx-1);
+  }
+  .grades .g:hover { filter: brightness(1.12); }
+  .grades .g:active { transform: scale(.96); }
+  .grades .g small { display: block; font-size: 10px; color: var(--tx-4); line-height: 1; margin-top: 2px; }
+  .grades .g.g1 { background: rgba(220, 90, 90, .22); color: #ffd9d9; }
+  .grades .g.g2 { background: rgba(224, 160, 70, .22); }
+  .grades .g.g3 { background: rgba(var(--accent), .30); }
+  .grades .g.g4 { background: rgba(110, 200, 150, .24); }
+
+  /* ---- 卡库 tab ---- */
+  .libbar { display: flex; gap: 6px; margin-bottom: var(--sp-2); }
+  .libbar input {
+    flex: 1; min-width: 0; height: 28px; padding: 0 10px; font: 12.5px var(--font);
+    color: var(--tx-1); background: var(--btn-bg); border: 1px solid var(--hairline-soft); border-radius: var(--r-sm); outline: none;
+  }
+  .libbar input:focus { border-color: rgba(var(--accent), .70); }
+  .item {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 8px 10px; border-radius: var(--r-sm); border: 1px solid var(--hairline-soft);
+    background: rgba(var(--fg), .03); margin-bottom: 6px;
+  }
+  .item .body { flex: 1; min-width: 0; }
+  .item .f { font-size: 12.5px; color: var(--tx-1); line-height: 1.5; word-break: break-word; }
+  .item .b { font-size: 11.5px; color: var(--tx-4); line-height: 1.45; margin-top: 3px; word-break: break-word;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .item .tag { font-size: 10px; color: var(--tx-4); flex: 0 0 auto; padding-top: 2px; }
+  .item .tag.due { color: #e8a0a0; }
+  .item .del {
+    -webkit-app-region: no-drag; flex: 0 0 auto; border: none; cursor: pointer;
+    background: var(--btn-bg); color: var(--tx-4); border-radius: var(--r-sm);
+    width: 24px; height: 24px; font-size: 14px; line-height: 1;
+  }
+  .item .del:hover { background: rgba(var(--danger), .30); color: var(--tx-1); }
+</style>
+</head>
+<body>
+  <div class="kwin card" id="kwin">
+    <div class="kbar">
+      <span class="dot"></span><span class="title" id="khead">知识卡复习</span>
+      <button class="ibtn" id="kclose" title="关闭"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2"/></svg></button>
+    </div>
+    <div class="tabs">
+      <div class="tab on" id="tabReview">复习</div>
+      <div class="tab" id="tabLib">卡库</div>
+    </div>
+    <div class="body" id="body"></div>
+  </div>
+<script src="fsrs.js"></script>
+<script src="knowledge.js"></script>
+<script>
+  /* v1.72 [KCard] 渲染层：只做展示和点按，调度/存储一律在主进程。
+     两个 tab 共用一个窗口：复习（正面→翻面→四档）/ 卡库（浏览·搜索·删）。
+     文案（页头 / 进度 / 空队列提示）取 knowledge.js 里的纯函数，跟安卓和主进程同一份，不另写。 */
+  const KC = window.LZKnowledge
+  const bodyEl = document.getElementById('body')
+  const headEl = document.getElementById('khead')
+  const tabReview = document.getElementById('tabReview'), tabLib = document.getElementById('tabLib')
+  const RATINGS = [
+    { v: 1, name: '忘记' }, { v: 2, name: '困难' }, { v: 3, name: '良好' }, { v: 4, name: '简单' }
+  ]
+  /** 当前 tab：'review' | 'lib' */
+  let tab = 'review'
+  /** 复习队列（主进程给的已排好序的到期卡） */
+  let queue = []
+  /** 这一张翻面了没 */
+  let flipped = false
+  /** 卡库缓存 */
+  let lib = [], libQuery = ''
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  }
+  function fit() {
+    const h = document.getElementById('kwin').scrollHeight
+    try { window.orbApi.kcardResize && window.orbApi.kcardResize(h) } catch {}
+  }
+
+  /* ---- 复习 tab ---- */
+
+  function renderReview() {
+    headEl.textContent = queue.length ? ('知识卡复习 · 到期 ' + queue.length + ' 张') : '知识卡复习'
+    if (!queue.length) {
+      bodyEl.innerHTML = '<div class="empty">' + esc(KC.EMPTY_HINT) + '</div>'
+      fit(); return
+    }
+    const c = queue[0]
+    const meta = '<div class="meta"><span>' + esc(KC.progress(1, queue.length)) + '</span>'
+      + '<span>·</span><span>' + esc(c.deck) + '</span>'
+      + '<span>·</span><span>' + (c.daysLeft === 0 ? '今天到期' : ('还有 ' + c.daysLeft + ' 天到期')) + '</span></div>'
+    const front = '<div class="kcard"><div class="lbl">正面 · 问题</div><div class="q">' + esc(c.front) + '</div>'
+      + (flipped ? '<div class="a">' + esc(c.back || '（这张没写背面）') + '</div>' : '') + '</div>'
+    // 没翻面：只给一个「显示答案」；翻了才给四档 —— 免得瞥一眼就按「良好」把自己骗了
+    const actions = flipped
+      ? '<div class="grades">' + RATINGS.map((r) => '<button class="g g' + r.v + '" data-r="' + r.v + '">' + r.name
+          + '<small>' + r.v + '</small></button>').join('') + '</div>'
+      : '<button class="btn primary" id="kflip" style="width:100%;height:34px">显示答案</button>'
+    bodyEl.innerHTML = meta + front + actions
+    fit()
+  }
+
+  async function answerCard(rating) {
+    const c = queue[0]
+    if (!c) return
+    // 先把这张从本地队列摘掉：点下去立刻看到下一张，不用等 IPC 回来
+    queue.shift()
+    flipped = false
+    renderReview()
+    let r = null
+    try { r = await window.orbApi.kcardAnswer(c.id, rating) } catch {}
+    // 主进程回的新队列是权威（FSRS 重排后到期集合可能变）—— 以它为准
+    if (r && Array.isArray(r.cards)) { queue = r.cards }
+    renderReview()
+    try { window.orbApi.kcardDueCount().then(pushBadge) } catch {}
+  }
+
+  /* ---- 卡库 tab ---- */
+
+  function renderLib() {
+    headEl.textContent = '知识卡库 · ' + lib.length + ' 张'
+    const q = libQuery.trim().toLowerCase()
+    const rows = q ? lib.filter((c) => (c.front + ' ' + c.back + ' ' + c.deck).toLowerCase().indexOf(q) >= 0) : lib
+    const head = '<div class="libbar"><input id="kq" placeholder="搜正面 / 背面 / 牌组…" value="' + esc(libQuery) + '">'
+      + '<span class="chip clickable" id="kreload" title="重新读库">↻</span></div>'
+    if (!rows.length) {
+      bodyEl.innerHTML = head + '<div class="empty">' + (q ? '没有匹配的卡。' : '卡库还是空的。\n在答案面板上点「存为复习卡」，或先在手机端存几张。') + '</div>'
+      return
+    }
+    bodyEl.innerHTML = head + rows.map((c) => {
+      const due = c.daysLeft === 0
+      return '<div class="item"><div class="body">'
+        + '<div class="f">' + esc(c.front) + '</div>'
+        + (c.back ? '<div class="b">' + esc(c.back) + '</div>' : '')
+        + '</div><span class="tag' + (due ? ' due' : '') + '">' + esc(c.deck) + (due ? ' · 到期' : '') + '</span>'
+        + '<button class="del" data-id="' + c.id + '" title="删掉这张">×</button></div>'
+    }).join('')
+  }
+
+  async function loadLib() {
+    try {
+      const r = await window.orbApi.kcardAll()
+      lib = (r && r.cards) || []
+    } catch { lib = [] }
+    renderLib()
+  }
+  async function pushBadge(p) { /* 主进程管通知，面板这里只是顺带留个钩子；真要角标走菜单 */ }
+
+  /* ---- tab 切换 / 事件 ---- */
+
+  tabReview.addEventListener('click', async () => {
+    if (tab === 'review') return
+    tab = 'review'; tabReview.classList.add('on'); tabLib.classList.remove('on')
+    flipped = false
+    try { const r = await window.orbApi.kcardQueue(); queue = (r && r.cards) || [];  } catch {}
+    renderReview()
+  })
+  tabLib.addEventListener('click', () => {
+    if (tab === 'lib') return
+    tab = 'lib'; tabLib.classList.add('on'); tabReview.classList.remove('on')
+    loadLib()
+  })
+
+  // 事件委托：翻面 / 四档评分 / 搜索 / 删除都走一个 click 监听
+  bodyEl.addEventListener('click', (e) => {
+    const flip = e.target.closest('#kflip')
+    if (flip) { flipped = true; renderReview(); return }
+    const g = e.target.closest('[data-r]')
+    if (g) { answerCard(Number(g.dataset.r)); return }
+    const del = e.target.closest('.del')
+    if (del) {
+      const id = Number(del.dataset.id)
+      // 删除不可逆，先确认一次（这是用户攒下来的复习历史）
+      if (!window.confirm('删掉这张卡？删了就找不回来了。')) return
+      window.orbApi.kcardRemove(id).then((r) => { if (r && r.ok) { const i = lib.findIndex((c) => c.id === id); if (i >= 0) lib.splice(i, 1); renderLib() } })
+      return
+    }
+    if (e.target.closest('#kreload')) { loadLib(); return }
+  })
+  bodyEl.addEventListener('input', (e) => {
+    if (e.target.id !== 'kq') return
+    libQuery = e.target.value
+    renderLib()
+    // 重渲染后焦点丢了，把光标放回搜索框末尾，不然打一半就没法继续打
+    const q = document.getElementById('kq')
+    if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length) }
+  })
+
+  document.getElementById('kclose').addEventListener('click', () => window.orbApi.kcardClose())
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') window.orbApi.kcardClose()
+    // 复习 tab 的键盘快捷键：空格翻面，1~4 评分（不用鼠标也能过一遍卡）
+    if (tab !== 'review') return
+    if (e.key === ' ' || e.key === 'Enter') {
+      if (document.activeElement && document.activeElement.tagName === 'INPUT') return
+      e.preventDefault(); if (!flipped) { flipped = true; renderReview() }
+      return
+    }
+    if (flipped && ['1', '2', '3', '4'].indexOf(e.key) >= 0) { e.preventDefault(); answerCard(Number(e.key)) }
+  })
+
+  // 首屏：直接拉一次到期队列
+  window.orbApi.kcardQueue().then((r) => {
+    queue = (r && r.cards) || []
+    
+    headEl.textContent = (r && r.header) || '知识卡复习'
+    renderReview()
+  }).catch(() => renderReview())
+</script>
+</body>
+</html>

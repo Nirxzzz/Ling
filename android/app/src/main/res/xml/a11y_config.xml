@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只为「截屏」存在：
+     · 整屏截图 takeScreenshot（API 30+）；
+     · 自动扫描时只截目标窗口 takeScreenshotOfWindow（API 34+），因此不必先藏浮窗。
+     窗口信息（canRetrieveWindowContent + flagRetrieveInteractiveWindows）**仅用于挑一个截图目标**（读窗口
+     类型 / 焦点等元数据），代码从不读节点、不读文本内容（不调用 getRoot()）。事件类型保持最小，不额外订阅。 -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeViewFocused"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
+    android:notificationTimeout="100"
+    android:description="@string/a11y_desc" />

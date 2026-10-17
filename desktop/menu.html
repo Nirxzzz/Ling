@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<script src="themes.js" data-auto></script>
+<style>
+  /* v1.28：底版/行样式/分隔线都来自 ui.css，这里只留菜单独有的内边距与字号 */
+  .menu { font-size: 13px; padding: var(--sp-1); }
+  /* v1.37：API 档案行 —— 档案名 + 模型名并排（模型名可能长，截断；同名模型靠档案名区分） */
+  .menu .lbl .hint { float: right; color: var(--tx-4); letter-spacing: 0; }
+  /* v1.49：扫描间隔 −/+ 步进，可调 5 秒 ~ 1 小时 */
+  .mi.static:hover, .mi.static:active { background: none; }
+  .mi .step { width: 22px; height: 20px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
+    color: var(--tx-2); background: rgba(var(--fg),.08); border: 1px solid var(--hairline-soft); font-size: 13px; line-height: 1; }
+  .mi .step:hover { background: rgba(var(--accent), .26); }
+  .mi .step:active { transform: scale(.9); }
+  .mi #k-interval { min-width: 44px; text-align: center; margin: 0 4px; }
+  .mi .model { color: var(--tx-4); font-size: 11px; max-width: 106px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+  <div class="menu card" id="menu">
+    <div class="lbl">模式</div>
+    <div id="modes"></div>
+    <div class="mi" data-a="detail"><span class="t">解析强度</span><span class="k" id="k-detail">标准</span></div>
+    <div class="mi" data-a="novice"><span class="t">纯小白讲解</span><span class="k" id="k-novice">关</span></div>
+    <div class="sep"></div>
+    <div class="mi" data-a="translate"><span class="t">划词翻译</span><span class="k" id="k-hotkey">⌘/</span></div>
+    <div class="mi" data-a="lang-cycle"><span class="t">翻译语言</span><span class="k" id="k-lang">自动</span></div>
+    <div class="mi" data-a="copy"><span class="t">复制即译</span><span class="k" id="k-copy">关</span></div>
+    <div class="sep"></div>
+    <div class="mi" data-a="scan"><span class="t">自动扫描</span><span class="k" id="k-scan">关</span></div>
+    <div class="mi static"><span class="t">扫描间隔</span><span class="step" data-a="interval-dec" title="缩短">−</span><span class="k" id="k-interval">20 秒</span><span class="step" data-a="interval-inc" title="加长">+</span></div>
+    <div class="mi" data-a="dim"><span class="t">全屏避让(淡出)</span><span class="k" id="k-dim">开</span></div>
+    <div class="sep"></div>
+    <div class="lbl">API 档案<span class="hint">点一下切换</span></div>
+    <div id="profiles"></div>
+    <div class="sep"></div>
+    <!-- [KCard] v1.72 知识卡入口：角标是到期张数，没到期显示「复习」 -->
+    <div class="mi" data-a="review"><span class="t">复习知识卡</span><span class="k" id="k-kcard">复习</span></div>
+    <div class="sep"></div>
+    <div class="mi" data-a="reset"><span class="t">回到默认位置</span></div>
+    <div class="mi danger" data-a="quit"><span class="t">退出</span></div>
+  </div>
+<script>
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  }
+  function chip(el, on, onText, offText) {
+    if (!el) return
+    el.textContent = on ? (onText || '开') : (offText || '关')
+    el.classList.toggle('on', !!on)
+  }
+  function fit() {
+    const h = document.getElementById('menu').offsetHeight + 8
+    window.orbApi.menuResize(h)
+    return h
+  }
+
+  let modeEls = {}
+  let profileEls = {}
+  // [KCard] v1.72：最近一次 menu:info 的返回，menu:update 只带增量字段时要靠它兜底
+  let lastInfo = {}
+
+  // v1.37：API 档案区块。一行一个档案：✓ 当前生效 / 档案名 / 模型名，点一下**立刻切换**（主进程落盘 + 面板闪提示）。
+  // 没有档案时留一行「API 设置…」，跟老行为接上（新手还没配过 API）。
+  function renderProfiles(list, currentLabel) {
+    const box = document.getElementById('profiles')
+    if (!box) return
+    box.innerHTML = ''
+    profileEls = {}
+    const arr = list || []
+    if (!arr.length) {
+      const d = document.createElement('div')
+      d.className = 'mi'
+      d.dataset.a = 'api'
+      d.innerHTML = '<span class="t">API 设置…</span><span class="k">还没配</span>'
+      box.appendChild(d)
+      return
+    }
+    arr.forEach((p) => {
+      const d = document.createElement('div')
+      d.className = 'mi' + (p.active ? ' on' : '')
+      d.dataset.a = 'profile:' + p.name
+      d.innerHTML = '<span class="t"><span class="chk">' + (p.active ? '✓' : '') + '</span>' + esc(p.name) + '</span>'
+        + '<span class="model">' + esc(p.model || '') + '</span>'
+      box.appendChild(d)
+      profileEls[p.name] = d
+    })
+    const m = document.createElement('div')
+    m.className = 'mi'
+    m.dataset.a = 'api'
+    m.innerHTML = '<span class="t"><span class="chk"></span>管理 / 新增档案…</span>' + (currentLabel ? '<span class="model">' + esc(currentLabel) + '</span>' : '')
+    box.appendChild(m)
+  }
+  function markProfile(name) {
+    Object.keys(profileEls).forEach((k) => {
+      const el = profileEls[k]
+      el.classList.toggle('on', k === name)
+      const c = el.querySelector('.chk')
+      if (c) c.textContent = (k === name) ? '✓' : ''
+    })
+  }
+
+  // v1.48：窗口预热复用 —— 每次右键主进程发 menu:open，这里刷新数据、量好高度再回 ready，主进程才摆位淡入
+  function load() { return window.orbApi.getMenuInfo().then(apply).catch(() => {}) }
+  function apply(i) {
+    if (!i) return
+    lastInfo = i
+    document.getElementById('k-hotkey').textContent = i.hotkey || ''
+    chip(document.getElementById('k-copy'), i.copy)
+    chip(document.getElementById('k-scan'), i.scan)
+    chip(document.getElementById('k-dim'), i.dim)
+    document.getElementById('k-lang').textContent = i.langLabel || '自动'
+    const kint = document.getElementById('k-interval')
+    if (kint) kint.textContent = i.intervalLabel || '20 秒'
+    document.getElementById('k-detail').textContent = i.detailLabel || '标准'
+    chip(document.getElementById('k-novice'), i.novice)
+    // [KCard] v1.72 知识卡角标：有到期就写「到期 N 张」，否则写张数 / 「复习」
+    const kk = document.getElementById('k-kcard')
+    if (kk) {
+      const due = Number(i.kcardDue) || 0, cnt = Number(i.kcardCount) || 0
+      kk.textContent = due > 0 ? ('到期 ' + due + ' 张') : (cnt > 0 ? (cnt + ' 张') : '复习')
+      kk.classList.toggle('on', due > 0)
+    }
+
+    const box = document.getElementById('modes')
+    box.innerHTML = ''
+    modeEls = {}
+    ;(i.modes || []).forEach((m) => {
+      const d = document.createElement('div')
+      d.className = 'mi'
+      d.dataset.a = 'mode:' + m.id
+      d.innerHTML = '<span class="t"><span class="chk">' + (m.id === i.mode ? '✓' : '') + '</span>' + esc(m.label) + '</span>'
+        + '<span class="k">' + esc(m.hint || '') + '</span>'
+      box.appendChild(d)
+      modeEls[m.id] = d
+    })
+    renderProfiles(i.profiles, i.currentLabel)
+  }
+  window.orbApi.onMenuOpen(() => { load().then(() => window.orbApi.menuReady(fit())) })
+
+  function markMode(id) {
+    Object.keys(modeEls).forEach((k) => {
+      const c = modeEls[k].querySelector('.chk')
+      if (c) c.textContent = (k === id) ? '✓' : ''
+    })
+  }
+
+  document.getElementById('menu').addEventListener('click', (e) => {
+    const el = e.target.closest('[data-a]')
+    if (!el) return
+    const a = el.dataset.a || ''
+    const k = el.querySelector('.k')
+    // 即时反馈
+    if (a.indexOf('mode:') === 0) markMode(a.slice(5))
+    else if (a.indexOf('profile:') === 0) markProfile(a.slice('profile:'.length))
+    else if (a === 'copy') chip(k, !k.classList.contains('on'))
+    else if (a === 'scan') chip(k, !k.classList.contains('on'))
+    else if (a === 'dim') chip(k, !k.classList.contains('on'))
+    else if (a === 'novice') chip(k, !k.classList.contains('on'))
+    window.orbApi.menuAction(a)
+  })
+  window.orbApi.onMenuLang((i) => { if (i && i.label) { const el = document.getElementById('k-lang'); if (el) { el.textContent = i.label; fit() } } })
+  window.orbApi.onMenuUpdate((d) => {
+    if (!d) return
+    if (d.intervalLabel) { const el = document.getElementById('k-interval'); if (el) { el.textContent = d.intervalLabel; fit() } }
+    if (d.detailLabel) { const el = document.getElementById('k-detail'); if (el) el.textContent = d.detailLabel }
+    if (d.hotkey) { const el = document.getElementById('k-hotkey'); if (el) { el.textContent = d.hotkey; fit() } }
+    if (d.profiles) { renderProfiles(d.profiles, d.currentLabel); fit() }
+    // [KCard] v1.72 评完一张分，主进程推 kcardDue 过来改角标（只改角标，别整份重渲染）
+    if (typeof d.kcardDue === 'number') {
+      lastInfo.kcardDue = d.kcardDue
+      const kk = document.getElementById('k-kcard')
+      if (kk) { kk.textContent = d.kcardDue > 0 ? ('到期 ' + d.kcardDue + ' 张') : '复习'; kk.classList.toggle('on', d.kcardDue > 0) }
+    }
+  })
+  window.addEventListener('blur', () => window.orbApi.menuClose())
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.orbApi.menuClose() })
+  load()
+</script>
+</body>
+</html>

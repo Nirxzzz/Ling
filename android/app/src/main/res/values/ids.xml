@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- v1.63 读屏（TalkBack）用的小球自定义操作 -->
+    <item type="id" name="a11y_solve" />
+    <item type="id" name="a11y_menu" />
+    <item type="id" name="a11y_translate_clip" />
+</resources>

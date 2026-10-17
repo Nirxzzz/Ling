@@ -1,0 +1,306 @@
+/* ——— 浮球AI 界面设计 token（v1.29）———
+   answer / translate / menu / scan / ask / hint 六个界面共用。
+   配色 = 小球本体的「薄荷绿 × 玫瑰金」（v1.23 球体渐变的同一对颜色）：
+     薄荷 = 主强调（选中 / 确认 / 高亮 / 圆点左半），玫瑰金 = 次强调（语言 chip / 渐变右半）。
+   图标描边、正文保持白/灰 —— 深玻璃上白描边对比度最高，别把图标也染色。
+   圆角、间距、字号、图标只在这里定；各页面只留自己独有的排版。改色改这里即可。 */
+
+:root {
+  /* —— 玻璃底板：渐变玻璃 = 球体渐变的低透明版（薄荷左上 → 玫瑰右下）
+     叠在中性灰底上。底色负责压住壁纸、保证可读；渐变负责跟小球一个色系 —— */
+  /* v1.60 配色（themes.js 的 applyTheme 写这几个变量）：--bg / --bg2 面板底左上 / 右下，--fg 正文色。
+     默认值 = v1.59 的深灰玻璃；页面加载后按设置换成「护眼」等预设。 */
+  --bg: 28, 28, 30;  --bg2: 28, 28, 30;  --fg: 255, 255, 255;
+  --heading: 140, 232, 199;  --answer: 255, 255, 255;  --glass-tint: .16;
+  --surface-panel: linear-gradient(135deg, rgba(var(--bg), var(--panel-alpha, .50)), rgba(var(--bg2), var(--panel-alpha, .50)));   /* 大面板（答案 / 翻译） */
+  --surface-card:  linear-gradient(135deg, rgba(var(--bg), var(--card-alpha, .95)), rgba(var(--bg2), var(--card-alpha, .95)));    /* 小卡片（菜单 / 确认 / 追问）；v1.49 .90→.95：跨窗口没有模糊，后面的字会透上来 */
+  --surface-menu:  rgba(var(--bg), .97);   /* 下拉 / 悬浮释义（纯色，不叠渐变） */
+  --surface-toast: rgba(var(--bg), .62);   /* 首次引导气泡 */
+
+  --hairline:      rgba(var(--fg), .20);
+  --hairline-soft: rgba(var(--fg), .10);
+  --btn-bg:        rgba(var(--fg), .14);
+  --btn-bg-hover:  rgba(var(--fg), .24);
+  --blur:  14px;
+  /* v1.49：阴影必须收在窗口留白以内（面板 6px、卡片 4px）。原来 0 10px 30px 会被窗口边缘切成一块方形灰底，
+     看着像玻璃后面又叠了一层背景。 */
+  --shadow: 0 0 0 .5px rgba(0, 0, 0, .35), 0 2px 3px -1px rgba(0, 0, 0, .32);
+
+  /* —— 圆角：四档 —— */
+  --r-lg:   14px;   /* 面板 / 卡片 */
+  --r-md:   10px;   /* 内容块（答案框、弹出层） */
+  --r-sm:   8px;    /* 按钮 / 输入框 / 列表项 */
+  --r-pill: 999px;  /* chip */
+
+  /* —— 间距：4px 栅格 —— */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;  --sp-4: 16px;
+
+  /* —— 文字：四级（alpha 可被「对比度」设置覆盖）—— */
+  --tx-1: rgba(var(--fg), var(--tx-1-a, .92));
+  --tx-2: rgba(var(--fg), var(--tx-2-a, .70));
+  --tx-3: rgba(var(--fg), var(--tx-3-a, .55));
+  --tx-4: rgba(var(--fg), var(--tx-4-a, .42));
+
+  /* —— 主色：薄荷绿（球体渐变左半）—— */
+  --mint:       95, 223, 180;   /* #5FDFB4 实色 */
+  --mint-light: 140, 232, 199;  /* #8CE8C7 浅，用于文字/描边 */
+  /* —— 副色：玫瑰金（球体渐变右半）—— */
+  --rose:       242, 159, 176;  /* #F29FB0 实色 */
+  --rose-light: 239, 192, 190;  /* #EFC0BE 浅 */
+
+  /* 语义别名：写组件时用 --accent / --accent-2，换配色只改上面四行 */
+  --accent:   var(--mint);
+  --accent-2: var(--rose);
+  --warn:   240, 190, 90;       /* 警示：权限缺失等需要点击处理的提示 */
+  --danger: 220, 80, 80;        /* 危险：退出等破坏性动作 */
+
+  /* 球体同款渐变：圆点、主按钮直接用它，界面跟小球是一个色系 */
+  --grad-orb: linear-gradient(135deg,
+    rgb(var(--mint)) 0%, rgb(var(--mint-light)) 32%,
+    rgb(var(--rose-light)) 66%, rgb(var(--rose)) 100%);
+
+  /* 背板渐变：同一角度、同一四个色，透明度压到 0.10~0.16 */
+  --grad-glass: linear-gradient(135deg,
+    rgba(var(--mint), var(--glass-tint)) 0%, rgba(var(--mint-light), calc(var(--glass-tint) * .62)) 32%,
+    rgba(var(--rose-light), calc(var(--glass-tint) * .62)) 66%, rgba(var(--rose), var(--glass-tint)) 100%);
+
+  --font: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+html, body {
+  margin: 0; width: 100%; height: 100%; background: transparent;
+  /* v1.29 排版：行高 1.75；v1.32 字号 / 浓度 / 对比度可由设置卡动态覆盖 */
+  font: var(--ui-font, 14px)/1.75 var(--font); color: var(--tx-1);
+  -webkit-font-smoothing: antialiased;
+}
+/* v1.49：面板 / 卡片的上 margin 会穿过 body 折叠出去，整页多出 6px → 根元素滚动条挤窄内容。flow-root 把它关在 body 里 */
+body { display: flow-root; }
+
+/* —— 两类底板 —— */
+.panel {                       /* 大面板：答案 / 翻译 —— 渐变玻璃 */
+  margin: 6px;
+  border-radius: var(--r-lg);
+  background: var(--grad-glass), var(--surface-panel);
+  -webkit-backdrop-filter: blur(var(--blur));
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  /* v1.49：max-height 要扣掉上下 margin 并按 border-box 算 —— 原来 100% 让整页多出 8px，
+     根元素冒出滚动条，内容被挤窄 6px */
+  box-sizing: border-box; max-height: calc(100% - 12px);
+  display: flex; flex-direction: column;
+}
+.card {                        /* 小卡片：菜单 / 确认 / 追问 —— 渐变玻璃 */
+  margin: var(--sp-1);
+  border-radius: var(--r-lg);
+  background: var(--grad-glass), var(--surface-card);
+  -webkit-backdrop-filter: blur(var(--blur));
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow);
+}
+
+/* —— 标题栏（答案 / 翻译面板共用）—— */
+.bar {
+  -webkit-app-region: drag; display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: 12px; color: var(--tx-2);
+  background: rgba(var(--fg), .06);
+  border-bottom: 1px solid var(--hairline-soft);
+}
+/* 圆点 = 小球本体的渐变缩略版，一眼对上色系 */
+.bar .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--grad-orb); flex: 0 0 auto;
+}
+.bar .title { flex: 1; }
+
+/* —— chip（模式 = 薄荷；翻译语言 = 玫瑰金）—— */
+.chip {
+  -webkit-app-region: no-drag;
+  font-size: 11px; padding: 2px var(--sp-2); border-radius: var(--r-pill);
+  background: rgba(var(--accent), .20); border: 1px solid rgba(var(--accent), .50);
+  color: var(--tx-1); white-space: nowrap;
+}
+.chip.rose {
+  background: rgba(var(--accent-2), .20); border-color: rgba(var(--accent-2), .50);
+  color: var(--tx-1);
+}
+.chip.clickable { cursor: pointer; user-select: none; }
+.chip.clickable:hover { background: rgba(var(--accent), .34); }
+.chip.rose.clickable:hover { background: rgba(var(--accent-2), .34); }
+
+/* —— 图标按钮：14px 线条图标，1.5 描边，统一尺寸与对齐 —— */
+.ibtn {
+  -webkit-app-region: no-drag;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: var(--btn-bg); color: var(--tx-1);
+  min-width: 22px; height: 22px; padding: 0 var(--sp-1);
+  border-radius: var(--r-sm); cursor: pointer; line-height: 1;
+  font: 12px var(--font);
+}
+.ibtn:hover { background: rgba(var(--accent), .22); }
+.ibtn.danger:hover { background: rgba(var(--danger), .32); }
+.ibtn svg {
+  width: 14px; height: 14px; display: block;
+  fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+  /* 坑：draggable-region 只认元素自己的盒子。svg 不标 no-drag 的话，
+     点图标会落进 .bar 的 drag 区 —— 点击被当成拖动起点，按钮永远没反应。 */
+  -webkit-app-region: no-drag;
+}
+
+/* —— 文字按钮（确认卡的「取消 / 开启」）—— */
+.btn {
+  border: none; height: 28px; padding: 0 14px; border-radius: var(--r-sm);
+  cursor: pointer; font: 12.5px var(--font);
+  background: var(--btn-bg); color: var(--tx-1);
+}
+.btn:hover { background: var(--btn-bg-hover); }
+/* 主按钮：默认走小球渐变 + 旧深色字（#14202e）；六套青春配色由 applyTheme 注入
+   --btn-primary-bg / --btn-primary-fg —— 完整颜色（rgb(...)，主色实底 + 按底色选的可读前景），
+   标签对比度 ≥ 4.5。这两个值直接当 background / color 用，不是 rgb(var(...))，别写成裸三元组。 */
+.btn.primary { background: var(--btn-primary-bg, var(--grad-orb)); color: var(--btn-primary-fg, #14202e); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); }
+
+/* —— 输入框（追问卡）—— */
+.field {
+  width: 100%; box-sizing: border-box; height: 28px; padding: 0 9px;
+  border-radius: var(--r-sm); border: 1px solid rgba(var(--fg), .22);
+  background: rgba(var(--fg), .08); color: var(--tx-1);
+  font: 13px var(--font); outline: none;
+}
+.field:focus { border-color: rgba(var(--accent), .75); background: rgba(var(--fg), .12); }
+.field::placeholder { color: rgba(var(--fg), .35); }
+
+/* —— 菜单项（右键菜单 / 语言下拉共用这套行样式）—— */
+.lbl { font-size: 10px; letter-spacing: .12em; color: var(--tx-4); padding: 6px 10px var(--sp-1); }
+/* 六套青春配色：强调色用于浅底标记，文字保持墨色；默认护眼不受影响。 */
+.palette-theme .lbl { color: rgb(var(--ink)); border-left: 3px solid rgb(var(--highlight)); }
+.palette-theme #body strong { color: rgb(var(--ink)); background: rgba(var(--highlight), .28); }
+.mi {
+  display: flex; align-items: center; gap: 10px; padding: 7px 10px;
+  border-radius: var(--r-sm); color: var(--tx-1); cursor: pointer; user-select: none;
+}
+.mi:hover { background: rgba(var(--accent), .22); }
+.mi.danger:hover { background: rgba(var(--danger), .28); }
+.mi .t { flex: 1; white-space: nowrap; }
+.mi .chk { display: inline-block; width: 14px; color: rgb(var(--accent)); }
+
+/* —— v1.48 交互过渡：悬停/按下不再瞬跳 ——
+   只过渡 background / filter / transform（合成层就能做，不触发重排）；按下缩一点给「点到了」的手感。 */
+.mi, .ibtn, .btn, .chip.clickable, .field {
+  transition: background-color .12s ease, border-color .12s ease, filter .12s ease, transform .16s cubic-bezier(.2, .9, .3, 1.2);
+}
+.ibtn:active, .btn:active { transform: scale(.94); transition-duration: .06s; }
+.mi:active { background: rgba(var(--accent), .32); transition-duration: .04s; }
+@media (prefers-reduced-motion: reduce) {
+  .mi, .ibtn, .btn, .chip.clickable, .field { transition: none; }
+  .ibtn:active, .btn:active { transform: none; }
+}
+.mi .k { color: var(--tx-4); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mi .k.on { color: rgb(var(--accent)); }
+.sep { height: 1px; margin: var(--sp-1) var(--sp-2); background: var(--hairline-soft); }
+
+/* —— 状态行（识别中 / 权限提示 …）—— */
+#state { display: none; color: var(--tx-2); margin-bottom: var(--sp-2); }
+#state .spin { display: inline-block; animation: blink 1s infinite; }
+#state.clickable {
+  cursor: pointer; display: inline-block;
+  padding: 6px 10px; border-radius: var(--r-sm);
+  background: rgba(var(--warn), .22); border: 1px solid rgba(var(--warn), .55);
+  color: rgba(255, 235, 190, .98);
+}
+#state.clickable:hover { background: rgba(var(--warn), .34); }
+@keyframes blink { 50% { opacity: .3 } }
+
+/* —— Markdown 正文（答案 / 翻译共用）——
+   v1.29 排版：段距 4→8、列表项 2→5、标题上下留白加大、代码块内边距加大 */
+#body { word-break: break-word; }
+#body p { margin: var(--sp-2) 0; }
+#body p.quote {
+  opacity: .75; color: var(--tx-2);
+  border-left: 2px solid rgba(var(--fg), .28);
+  padding-left: var(--sp-3); font-size: 13px; margin: var(--sp-2) 0;
+}
+#body h3, #body h4 {
+  margin: var(--sp-3) 0 var(--sp-2);
+  color: rgb(var(--heading));
+  font-size: 15px; line-height: 1.5;
+}
+#body h4 { font-size: 14px; }
+#body ul, #body ol { margin: var(--sp-2) 0; padding-left: 22px; }
+#body li { margin: 5px 0; }
+#body code {
+  background: rgba(var(--fg), .12); border-radius: var(--sp-1); padding: 1px 5px;
+  font: 12px/1.6 ui-monospace, Menlo, monospace; color: rgb(var(--heading));
+}
+#body pre {
+  background: rgba(var(--fg), .08); border-radius: var(--r-md);
+  padding: var(--sp-3); margin: var(--sp-2) 0; overflow-x: auto;
+}
+#body pre code { background: transparent; padding: 0; }
+#body hr { border: none; border-top: 1px solid rgba(var(--fg), .22); margin: var(--sp-3) 0; }
+
+/* —— 流式打字光标（v1.34.2）：挂在正在输出的行尾，done 后随整篇渲染自然消失 —— */
+.caret {
+  display: inline-block; width: 3px; height: 1em; margin-left: 2px;
+  border-radius: 1.5px; background: rgb(var(--mint-light));
+  box-shadow: 0 0 10px rgba(var(--mint), .85);
+  vertical-align: -0.15em;
+  animation: caretPulse 0.8s ease-in-out infinite;
+}
+@keyframes caretPulse { 0%, 100% { opacity: 1 } 50% { opacity: .2 } }
+
+/* —— 滚动条 —— */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: rgba(var(--fg), .25); border-radius: 3px; }
+
+/* ——— v1.46 选中可复制 ———
+   面板是 focusable:false 的 HUD，⌘C 收不到（键盘事件进不来），所以复制走「选区旁浮出的气泡」。
+   选区颜色用主色薄荷 —— 非聚焦窗口里 ::selection 一样生效（实测截图核对过），比系统灰蓝更贴这套玻璃。 */
+::selection { background: rgba(var(--accent), .40); color: inherit; }
+#wrap { user-select: text; -webkit-user-select: text; cursor: text; }
+
+.selcopy {
+  position: absolute; z-index: 40; display: none;          /* 位置由 selcopy.js 按选区算 */
+  align-items: center; gap: 5px;
+  height: 24px; padding: 0 9px; box-sizing: border-box;
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(var(--accent), .55);
+  background: var(--surface-menu);
+  color: var(--tx-1);
+  font: 12px/1 var(--font); white-space: nowrap;
+  cursor: pointer; user-select: none; -webkit-user-select: none;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .48);
+}
+.selcopy.on { display: inline-flex; animation: selcopyIn .12s ease-out; }
+@keyframes selcopyIn { from { opacity: 0; transform: translateY(3px) } to { opacity: 1; transform: none } }
+.selcopy:hover { background: rgba(var(--accent), .26); }
+.selcopy:active { background: rgba(var(--accent), .38); }
+.selcopy.ok { background: rgba(var(--accent), .34); border-color: rgba(var(--accent), .85); }
+.selcopy svg {
+  width: 12px; height: 12px; display: block; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+
+/* v1.58：公式排版（math.js）—— 分式上下叠、中间一条线；单独成行的公式缩进一点、稍大。
+ * 类名都带 lzm- 前缀：.mi 这种短名会撞上菜单项的样式（菜单项就叫 .mi） */
+.lzm-i, .lzm-d { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; }
+.lzm-i { display: inline; white-space: nowrap; }
+.lzm-d { display: block; margin: 4px 0 4px 14px; font-size: 1.06em; line-height: 1.9; }
+.lzm-frac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; margin: 0 2px; font-size: .92em; line-height: 1.25; }
+.lzm-frac > .lzm-num { padding: 0 3px; }
+.lzm-frac > .lzm-den { padding: 0 3px; border-top: 1.2px solid currentColor; }
+.lzm-frac.nol > .lzm-den { border-top: none; }
+.lzm-sqrt { border-top: 1.2px solid currentColor; padding: 0 2px; }
+.lzm-i sup, .lzm-i sub, .lzm-d sup, .lzm-d sub { font-size: .72em; line-height: 0; }
+.lzm-i sup, .lzm-d sup { vertical-align: super; }
+.lzm-i sub, .lzm-d sub { vertical-align: sub; }
+/* 链接：只加下划线和 ↗（不靠颜色） */
+a.lzm-lnk { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+
+/* v1.60 浅色配色（护眼 / 莫兰迪 / 马卡龙 …）：光标、警示条换成深色字也看得清的写法 */
+.light-theme .caret { background: rgb(var(--fg)); box-shadow: none; }
+.light-theme #state.clickable { color: var(--tx-1); }
+.light-theme .chip { background: rgba(var(--accent), .30); border-color: rgba(var(--fg), .30); }

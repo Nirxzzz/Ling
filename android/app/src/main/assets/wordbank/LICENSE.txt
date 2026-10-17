@@ -1,0 +1,37 @@
+内置词库（assets/wordbank/）来源与授权说明
+=============================================
+
+本开源副本只包含以下 5 个分级词表（junior / gaokao / cet4 / cet6 / ielts.txt）。
+它们由英文词频表截取分段生成，数据来源与授权如下：
+
+来源
+----
+Wiktionary 页面「Wiktionary:Frequency lists/PG/2006/04/1-10000」：
+https://en.wiktionary.org/wiki/Wiktionary:Frequency_lists/PG/2006/04/1-10000
+统计对象是 Project Gutenberg（公版图书数字化项目，https://www.gutenberg.org）
+语料中出现频率最高的 10000 个英文单词，按频率排序、区分度按词元归并。
+
+授权
+----
+- Wiktionary 文本内容采用 知识共享「署名-相同方式共享」许可（CC BY-SA 3.0，
+  双许可 GFDL）：https://creativecommons.org/licenses/by-sa/3.0/
+  https://en.wiktionary.org/wiki/Wiktionary:Copyrights
+- 底层语料来自 Project Gutenberg，均为公有领域（版权已过期的公版书）。
+- 因此本目录词表以 CC BY-SA 3.0 分发：可商用、可再分发，但需保留本署名说明；
+  若基于这些词表二次创作并分发，需同样以 CC BY-SA 授权。
+
+分级说明
+--------
+分级按词频区间切分（非官方考纲原文）：
+  junior.txt   基础（初中向）  频率第 1~2000 位
+  gaokao.txt   高考            频率第 2001~4000 位
+  cet4.txt     CET4            频率第 4001~6000 位
+  cet6.txt     CET6            频率第 6001~8000 位
+  ielts.txt    雅思拓展        频率第 8001~10000 位
+每行一个单词（UTF-8，无 BOM，LF 换行），无释义 —— 卡片上点「查」即可翻译。
+
+不在本副本中的内容
+------------------
+原发行版包含三份考研词表（kaoyan_bikao.txt / kaoyan_jichu.txt / kaoyan_chaogang.txt），
+其著作权归原作者 / 原出版方所有，授权链不完整，因此**未包含在本开源副本中**，
+也不适用上述 CC BY-SA 3.0 授权。请勿从其他渠道复制进本仓库。

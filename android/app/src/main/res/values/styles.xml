@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 翻译卡片：无标题、透明窗口底，卡片自己画圆角深色底；点卡片外面关闭 -->
+    <style name="TranslateCard" parent="@android:style/Theme.DeviceDefault.Dialog.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowCloseOnTouchOutside">true</item>
+        <item name="android:backgroundDimAmount">0.25</item>
+    </style>
+    <!-- v1.59：录屏授权中转页 —— 全透明、没有切换动画，用户只看到系统的「共享屏幕」框 -->
+    <style name="Invisible" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
+    <!-- v1.85.13：待办编辑页（通知跳转的全功能页）—— 半透明主题不走 edge-to-edge，
+         Brut.page 画不满系统栏区域（上下露黑带，实机截图复现）。换不透明纸底窗口；
+         窗口底色与 Brut.PAPER(0xFFFFF5EE) 一致，浅色状态栏图标。 -->
+    <style name="BrutPage" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">#FFF5EE</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>
