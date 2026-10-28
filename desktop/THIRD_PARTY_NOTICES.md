@@ -1,8 +1,26 @@
 # Third-party notices
 
-This file covers the desktop (Electron) build in this directory. The
-project's own code is licensed under the MIT license in [LICENSE](LICENSE).
-Third-party components remain under their own licenses.
+This file covers the desktop (Electron) build in this directory.
+
+The project's own code is licensed under the **GNU General Public License,
+version 3 only** (SPDX: `GPL-3.0-only`). Copyright (C) 2026 Ling contributors.
+The full text is in [LICENSE](LICENSE), shipped as the unmodified
+official GNU GPLv3 text; the version choice and the copyright holder
+are stated here, not by editing that text. Third-party components
+remain under their own licenses; the GPL does not relicense them.
+
+Earlier releases of this project were published under the MIT license.
+Those grants are not revoked, and code received under them stays
+available on those terms.
+
+## Corresponding Source
+
+The source of this program is published at <https://github.com/Nirxzzz/Ling>.
+That URL is a pointer, not by itself proof of GPLv3 section 6 compliance:
+anyone conveying a packaged build must also convey the Corresponding
+Source for the exact version that build was made from — the same sources and
+build materials, per GPLv3 section 6 — and later public commits are
+not a substitute for it.
 
 The table below is generated from `package-lock.json`: it lists every
 production dependency that ships inside `app.asar`, with the version and

@@ -5,7 +5,7 @@
 - 版本：`2.7.3`（`versionCode 273`）
 - 包名：`com.chun.lingzhu.opensource`
 - 入口 Activity：`com.chun.lingzhu.ChatActivity`（桌面图标；`MAIN` / `LAUNCHER`）
-- 自有代码许可：MIT，版权人写作 **Ling contributors**（见 [LICENSE](LICENSE)）
+- 自有代码许可：**GNU GPL v3 only**（SPDX：`GPL-3.0-only`），版权人 **Ling contributors**，年份 **2026**，许可证全文见 [LICENSE](LICENSE)（GNU 官方 GPLv3 正文逐字原文）；改用 GPL 不撤销此前按 MIT 给出的授权，当时已取得的副本仍可按 MIT 使用
 - 第三方组件与词表：见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
 ## 与官方 App 的关系
@@ -125,7 +125,7 @@ gradle assembleRelease --console=plain
 
 `junior.txt`、`gaokao.txt`、`cet4.txt`、`cet6.txt`、`ielts.txt`
 
-它们以 **CC BY-SA 3.0** 分发，署名与分级说明见 `app/src/main/assets/wordbank/LICENSE.txt`。代码的 MIT 许可不覆盖这些词表。
+它们以 **CC BY-SA 3.0** 分发，署名与分级说明见 `app/src/main/assets/wordbank/LICENSE.txt`。这些词表是独立随附的数据资产，本目录的 GPL-3.0-only 代码许可不覆盖它们，也不改变其原有授权；本文件不声称两者的授权可以互换或必然兼容。
 
 原发行版中的考研三级词库（`kaoyan_bikao.txt`、`kaoyan_jichu.txt`、`kaoyan_chaogang.txt`）著作权归原出版方，授权链不完整，**未包含**在本目录。源码里新装默认勾选的分级是 `cet4`（`WordBank.DEFAULT_LEVEL`），实际可选范围按 `assets/wordbank/` 里真实存在的文件算，不会指向缺失资产；如维护者改回 `junior`，以源码常量为准。富文本词库解析器仍保留，用户可自行导入合法来源的词库。
 
@@ -133,7 +133,7 @@ gradle assembleRelease --console=plain
 
 > 下面这些是 2.0.9 / 2.0.10 源码整理阶段的真实执行记录，**不是 2.7.3 的验收结果**。2.7.3 的改动没有由本次执行重新构建或运行测试。
 
-- **2.0.9**：已实际执行 `gradle testDebugUnitTest` 与 `gradle assembleDebug`，JUnit XML 汇总 **1289 tests，0 failures / 0 errors / 0 skips**；APK 内含 MIT 全文、三份第三方许可全文与 4 份 NOTICE，不含 `kaoyan*` 资产。
+- **2.0.9**：已实际执行 `gradle testDebugUnitTest` 与 `gradle assembleDebug`，JUnit XML 汇总 **1289 tests，0 failures / 0 errors / 0 skips**；当时那版 APK 内含 MIT 全文、三份第三方许可全文与 4 份 NOTICE，不含 `kaoyan*` 资产。这条按原记录保留：它描述的是当时按 MIT 分发的 2.0.9 产物与许可文件内容，不是当前 `2.7.3` 源码树的许可状态（当前自有代码为 GPL-3.0-only，APK 随包的 `assets/LICENSE` 已是 GPLv3 原文）。
 - 2.0.9 在 Android 14 专用只读模拟器（端口 5582）完成真实安装并启动 `ChatActivity`，进程存活，截图已目视。首启未填 API 时提示缺少接口 / 权限，点击「去填写」进入**首次配置引导**，不是直接跳 API 页。未接真实模型，未验证物理振动，也未做全面功能验收。
 - **2.7.3**：测试源码已随源码更新（含 `voice/` 下的 `DoubaoProtocolTest`、`VoiceAsrClientTest`、`VoiceSourceTest`），但本目录**还没有 `2.7.3` 的执行记录**；确认前不写通过数量，也不把上面的 2.0.9 记录当成 2.7.3 的结果。
 
@@ -170,6 +170,7 @@ git config core.hooksPath android/.githooks
 
 - `android/` 是根目录 Git 仓库的子目录，不是独立仓库。`core.hooksPath` 按仓库根目录解析，因此写 `android/.githooks` 而不是 `.githooks`；所有 `git` 命令同样应在仓库根目录执行，暂存区中的本目录路径形如 `android/app/...`。
 - 本目录公开的是源码：不构成安全审计，也不代表已对真实服务商、真实设备做过端到端验收。
+- **分发 APK 时的 GPL 义务**：本目录只是源码。把构建出的 APK 交给他人时，GPLv3 第 6 条要求同时提供与该二进制对应的完整源码（修改版则提供修改版源码），或按第 6 条作出有效的书面提供承诺。仅给出 <https://github.com/Nirxzzz/Ling> 这一地址不能证明它与某个具体 APK 严格对应，也不自动满足第 6 条；随包的 `app/src/main/assets/LICENSE` 与 `THIRD_PARTY_NOTICES.md` 提供许可文本，但不会替分发者完成源码提供义务。
 
 ## 目录结构
 
@@ -181,8 +182,9 @@ android/
 │       ├── main/
 │       │   ├── AndroidManifest.xml
 │       │   ├── assets/
-│       │   │   ├── licenses/        # Apache-2.0、MIT、Bouncy Castle、BSD-2-Clause 等
+│       │   │   ├── LICENSE          # 自有代码 GPLv3 全文（随 APK 分发，与根 LICENSE 逐字节一致）
 │       │   │   ├── THIRD_PARTY_NOTICES.md
+│       │   │   ├── licenses/        # Apache-2.0、MIT、Bouncy Castle、BSD-2-Clause 等第三方全文
 │       │   │   └── wordbank/        # 5 个 CC BY-SA 词表 + LICENSE.txt
 │       │   ├── java/com/chun/lingzhu/
 │       │   │   ├── anki/            # Anki 包解析 / 导入

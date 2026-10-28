@@ -1,8 +1,26 @@
 # Third-party notices
 
-This file covers the Android open-source candidate in this directory. The
-project's own code is licensed under the MIT license in [LICENSE](LICENSE).
-Third-party components remain under their own licenses.
+This file covers the Android open-source candidate in this directory.
+
+The project's own code is licensed under the **GNU General Public License,
+version 3 only** (SPDX: `GPL-3.0-only`). Copyright (C) 2026 Ling contributors.
+The full text is in [LICENSE](LICENSE), shipped as the unmodified
+official GNU GPLv3 text; the version choice and the copyright holder
+are stated here, not by editing that text. Third-party components
+remain under their own licenses; the GPL does not relicense them.
+
+Earlier releases of this project were published under the MIT license.
+Those grants are not revoked, and code received under them stays
+available on those terms.
+
+## Corresponding Source
+
+The source of this program is published at <https://github.com/Nirxzzz/Ling>.
+That URL is a pointer, not by itself proof of GPLv3 section 6 compliance:
+anyone conveying a compiled APK must also convey the Corresponding
+Source for the exact version that binary was built from — the same sources and
+build materials, per GPLv3 section 6 — and later public commits are
+not a substitute for it.
 
 License identifiers below were checked against the artifacts' published
 Maven Central POM metadata, not inferred from memory.
@@ -51,7 +69,12 @@ prompt, rewritten independently.
 
 `app/src/main/assets/wordbank/{junior,gaokao,cet4,cet6,ielts}.txt` are derived
 from the Wiktionary / Project Gutenberg frequency list and are distributed
-under **CC BY-SA 3.0**, not MIT.
+under **CC BY-SA 3.0**. They are plain text data shipped alongside this
+program, not part of its code, and they keep their own license rather than
+the project's `GPL-3.0-only` code license. Nothing here asserts that
+CC BY-SA 3.0 and the GNU GPL are compatible; the word lists are an
+independent asset and a reuser must satisfy the CC BY-SA 3.0 terms for the
+lists and the GPLv3 terms for the program separately.
 
 - Source: <https://en.wiktionary.org/wiki/Wiktionary:Frequency_lists/PG/2006/04/1-10000>
 - License: <https://creativecommons.org/licenses/by-sa/3.0/>
@@ -70,7 +93,7 @@ this fork. No third-party icon set or generated image is used.
 
 The Android build ships these files under `assets/`:
 
-- `assets/LICENSE` — this project's MIT license
+- `assets/LICENSE` — unmodified GNU GPLv3 text (project code license: `GPL-3.0-only`)
 - `assets/THIRD_PARTY_NOTICES.md` — this notice
 - `assets/licenses/Apache-2.0.txt` — Apache License 2.0 full text
 - `assets/licenses/BSD-2-Clause.txt` — BSD 2-Clause full text (zstd-jni)

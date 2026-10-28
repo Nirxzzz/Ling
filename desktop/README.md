@@ -7,7 +7,7 @@ Ling 是常驻桌面的悬浮小球：双击截屏识别屏幕内容，选中文
 - 版本：`1.64.1`
 - 应用标识：`com.ling.opensource`，程序名 `Ling`；设置页的版本行显示 `Ling v1.64.1 开源版`（渠道常量 `CHANNEL_LABEL` 为 `开源版`，不是上游的 `正式版`）
 - 用户数据目录：`ling-opensource`（与官方客户端隔离）
-- 自有代码许可：MIT（见 [LICENSE](LICENSE)）；第三方组件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- 自有代码许可：**GNU GPL v3 only**（SPDX：`GPL-3.0-only`），版权人 **Ling contributors**，年份 **2026**，许可证全文见 [LICENSE](LICENSE)（GNU 官方 GPLv3 正文逐字原文，`package.json` 与 `package-lock.json` 根条目同样声明 `GPL-3.0-only`）；第三方组件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，各自保留原有授权。此前以 MIT 公开的旧版本不因本次改用 GPLv3 而撤销：当时已按 MIT 取得的副本仍可按 MIT 使用，GPL 约束的是从当前版本及其衍生作品继续分发的情形。
 
 ## 功能
 
@@ -71,6 +71,7 @@ npm run pack       # 依次执行上面两条
 - macOS 包**未签名、未公证**（`identity: null`）。首次打开会被 Gatekeeper 拦截，需要在「系统设置 → 隐私与安全性」里选择「仍要打开」，或用自己的 Developer ID 重新签名后再分发。每次重新构建后，屏幕录制 / 辅助功能授权可能需要重新授予。
 - Windows 包**未做代码签名**，本目录也没有 Windows 真机运行记录。跨平台打包与 zip CRC 的结论来自 1.60.3 时期的历史记录，不适用于 1.64.1；请自行在 Windows 上构建并实测后再分发。
 - 打包资源不全（已核对本目录与 Git 历史）：`build.directories.buildResources` 指向的 `build/` 目录在当前树里不存在 —— `build/icon.png`、`build/icon.icns`、`build/icon.ico` 在上一版提交里存在，发布提交 `46c4cfb` 把这三个文件删掉了。此外 `build.files` 里的 `THIRD_PARTY_NOTICES.txt` 与 `chat-stream.js` 在本目录也不存在（实际存在的是 `THIRD_PARTY_NOTICES.md`，它本身也在 files 列表里）。按 `electron-builder` 的代码路径，图标候选全部落空时会退回 Electron 默认图标，缺失的 files 条目复制不到 asar 里；这两点本目录尚未实际打包，只有真正打包后才能确认。要用自己的图标，请补出 `build/icon.png` 或改配置指向实际存在的文件。
+- **分发打包产物时的 GPL 义务**：`npm run pack:*` 产出的 zip 若交给他人，GPLv3 第 6 条要求同时提供与该二进制对应的完整源码（含构建所需的 `package.json`、`package-lock.json` 与脚本；修改版则提供修改版源码，并注意其依赖的是仓库外的 Electron `37.10.3` 运行时），或按第 6 条作出有效的书面提供承诺。仅给出 <https://github.com/Nirxzzz/Ling> 不能证明它与某个具体 zip 严格对应，也不自动满足第 6 条。`app.asar` 内的 `LICENSE` 与 `THIRD_PARTY_NOTICES.md` 只提供许可文本。
 
 ## 数据与隐私
 

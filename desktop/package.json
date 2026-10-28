@@ -4,7 +4,7 @@
   "version": "1.64.1",
   "description": "全局悬浮小球：点击识别当前屏幕 / 划词翻译 → 半透明悬浮答案",
   "main": "main.js",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.js && node tool/smoke-main.js main.js",
