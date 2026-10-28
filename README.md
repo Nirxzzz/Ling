@@ -37,40 +37,40 @@ Ling 是一款常驻桌面的悬浮球工具：屏幕识别、划词翻译，结
 | macOS arm64 | `.zip`（未签名、未公证） | `cd desktop && npm ci && npm run pack:mac` | [desktop/README.md](desktop/README.md) |
 | Windows x64 | `.zip`（未签名） | `cd desktop && npm ci && npm run pack:win` | [desktop/README.md](desktop/README.md) |
 
-两端的具体依赖版本、签名配置、可复现性边界和产物状态，均以上述子目录 README 为准。桌面端当前 `package-lock.json` 还没有 `electron-builder` 的依赖树，`npm ci` 会因此失败；请先在 `desktop/` 执行 `npm install --package-lock-only` 再打包（详见子目录 README 的「本地打包」）。本文件只汇总已有执行记录；Android `2.7.3` 与桌面端 `1.64.1` 的最终构建、测试与烟测结果仍待主脑在集成后统一执行，本文件不预写通过数量。
+两端的具体依赖版本、签名配置、可复现性边界和产物状态，均以上述子目录 README 为准。桌面端 `package-lock.json` 为 `lockfileVersion 3`，`electron-builder` `26.15.3` 及其依赖已写入锁文件（`packages` 共 333 个条目，含根条目），`npm ci` 可直接安装，不需要先补锁文件；首次安装与打包需要联网下载 Electron `37.10.3` 运行时。本文件只汇总已有执行记录：Android `2.7.3` 的构建与单测、桌面端 `1.64.1` 的打包与产物运行都还没有在这份公开副本上记录，本文件不预写这些通过结论。
 
 ## 已执行的验证
 
-以下结果来自各自源码整理阶段的真实执行，按原记录保留；不因本文件的修改而重新验证，也不构成当前版本的验收结论。
+以下结果按原记录保留，来自记录当时的那次真实执行；本文件不重跑、也不把历史结果当成当前版本的验收结论。来源区分：Android 2.0.9 的记录来自当时的源码整理阶段；发布提交里引用的 Android 单测数量，以及签名 APK 安装那类结果，都来自生产源码树，不是在这份公开副本上执行；桌面端以本节列出的执行输出为准。
 
 ### Android
 
 - **2.0.9 历史记录（不是 2.7.3 的结果）**：`testDebugUnitTest` + `assembleDebug` 首轮 `15m27s` 通过；补齐 assets 许可文件后最终 `57s` 通过；JUnit XML 汇总 **1289 tests，0 failures / 0 errors / 0 skips**。
 - 2.0.9 曾在隔离的 Android 14 专用只读模拟器上完成真实安装并启动 `ChatActivity`，进程存活，截图已目视检查；首启未配置 API 时提示缺少接口 / 权限，点击「去填写」进入首次配置引导。
-- **2.7.3**：源码已更新到本仓库，最终 `gradle testDebugUnitTest` / `assembleDebug`、JUnit 汇总与设备烟测**待主脑在集成后执行**；确认前不写通过数量，也不把 2.0.9 的记录当成 2.7.3 的结果。
+- **2.7.3**：源码已更新到本仓库，但 `gradle testDebugUnitTest` / `assembleDebug`、JUnit 汇总与设备烟测都还没有在本仓库这份公开副本上执行并记录；确认前不写通过数量，也不把 2.0.9 的记录当成 2.7.3 的结果。
 
 ### 桌面端
 
-- 1.60.3 时期的记录：`npm ci` 成功；`npm test` 当时共 **70 项，0 失败**；另跑 `node test/anki.test.js`，**8/8 通过**。测试文件集合此后已有增减，**这不是 1.64.1 的结果**；当前 lock 还缺 `electron-builder` 依赖树，`npm ci` 需要先补齐（见上文）。
+- 1.60.3 时期的记录：`npm ci` 成功；`npm test` 当时共 **70 项，0 失败**；另跑 `node test/anki.test.js`，**8/8 通过**。测试文件集合此后已有增减，**这不是 1.64.1 的结果**。
 - 同一时期：macOS arm64 与 Windows x64 均由 `electron-builder` 基于 Electron `37.10.3` 打包成功，不依赖旧模板 zip；macOS 实现曾在真机运行（按题型自由组织章节、追问带原图，另检查了空配置启动、未配置更新源和设置页）。这些记录对应 1.60.3 的源码，不自动适用于 1.64.1。
 - Windows 包未在真机运行，只验证了打包与 zip CRC。
 - 补充核对：同用 `deepseek-v4-flash` 对 2 道文本题做新旧提示词对照，两版都算出平均速度 `40 km/h`，也都拒绝缺条件的几何题。样本只有 2 题，只说明这两处行为一致，**不构成准确率提升或 benchmark 结论**。
 - macOS 包未签名、未公证；Android Debug 包为非生产签名，不能覆盖官方安装。
 - 打包脚本使用 `--publish never`，打包过程未上传任何产物。
-- **1.64.1** 的构建、`npm test` 与运行效果**待主脑在集成后执行**，本文件不预写结论。
+- **1.64.1**：在这份公开副本上实际执行的是 `npm ci --ignore-scripts --no-audit --no-fund`（安装 332 个包，跳过了 Electron 二进制下载）、`node --test test/*.test.js`（**303 项通过，0 失败**）与 `npm test` 整体（含 `tool/smoke-main.js`，输出「模块加载通过（未发现模块级错误与启动期异常）」）。界面启动复用源码树已有的 Electron `37.10.3` 运行时，以隔离的临时用户数据目录直接启动这份源码（非打包产物），确认首次启动的新手卡与「配置接口」进入设置页；只到启动与设置入口这一层，语音页面、真实接口与云端链路均未验证，打包也没有做过。
 
 ## 已知限制
 
 - **没有真实供应商验收**：本轮没有提供第三方 Key / 腾讯云凭据，Android 语音识别、语音合成与桌面端语音对话均未跑真实云端链路；没有用假 Key 冒充成功。文本识别与翻译也未调用真实供应商做质量验收。
 - **没有 AEC 硬件保证**：两端都只是「请求系统回声消除 + 软件兜底判断」，未在任何物理设备上按机型验证；外放时仍可能把自己的声音识别成用户输入。两端界面都如实显示系统回报的状态，不承诺「外放不会自己打断自己」。
-- 桌面端 Windows 包**未在 Windows 真机上运行**，只验证了跨平台打包与 zip CRC；专注守护依赖 macOS 的前台应用查询，在 Windows 上不生效。
+- 桌面端 Windows 包**没有 Windows 真机运行记录**；跨平台打包与 zip CRC 的验证来自 1.60.3 时期的历史记录，不适用于 1.64.1。专注守护依赖 macOS 的前台应用查询，在 Windows 上不生效。
 - 桌面端没有自动更新安装器：更新只下载 zip 并在文件管理器中定位，由使用者自行替换；不配置 `LING_UPDATE_URL` 时无源。
 - 桌面端渲染进程 `sandbox` 为 `false`、未设置 CSP，`preload.js` 暴露的 IPC 面较大，只应加载仓库内的本地页面。
 - 桌面端流式解析不区分 `finish_reason=length`：整轮没有正文才报错，截断的正文会照常显示，不会被单独标成「未完成」。
 - 桌面端 Anki 只有 `.apkg` 解析模块，未接入界面；`collection.anki21b`（zstd 压缩）不在支持范围。
 - 在 macOS 上用浏览器调试工具 `evaluate` 访问窗口时，隔离世界不暴露 `orbApi`；主世界 CDP 可用。这是调试工具限制，不是产品缺陷。
 - iOS 按既定决定暂停，没有工程或 IPA。
-- Android 目录不带 Gradle wrapper、依赖校验和或依赖锁定，不承诺字节级可复现；桌面端有 `package-lock.json`，但当前缺少 `electron-builder` 的依赖树（见上文），同样不承诺字节级可复现。
+- Android 目录不带 Gradle wrapper、依赖校验和或依赖锁定，不承诺字节级可复现；桌面端有 `package-lock.json`，但打包需联网取 Electron 运行时、产物也不逐字节固定，同样不承诺字节级可复现。
 
 ## 许可与第三方资产
 

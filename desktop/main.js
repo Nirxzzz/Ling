@@ -34,6 +34,10 @@ const crypto = require('node:crypto')
 const { Transform } = require('node:stream')
 const { pipeline } = require('node:stream/promises')   // v1.60：下载用 pipeline，结束即文件 close，避免半截 part / 悬挂 promise
 
+/* 本构建不附内测包：渠道名与显示名固定取源文件里「非内测」分支的取值（源文件这两个常量由 PRESET.internal 决定）。
+ * 渠道名写成「开源版」而不是源文件的「正式版」：公开仓库的构建产物不是官方发布版，设置卡照实显示。 */
+const CHANNEL_LABEL = '开源版'
+const APP_NAME = 'Ling'
 // 开源构建没有内置接口：这个判定恒为 false，调用点照旧可用。
 function usingBuiltinApi() { return false }
 const { spawnSync, spawn } = require('node:child_process')
@@ -86,7 +90,7 @@ const EXAM_DETAILS = ['brief', 'standard', 'detailed']
 /* v1.74：去掉硬性字数封顶（brief 150 / standard 400 的老档位删掉）——字数上限会逼模型少写关键步骤，
  * 现在只按 brief / standard / detailed 控制深度（见 EXAM_DETAIL_RULES），不封顶。 */
 const EXAM_DETAIL_LABEL = { brief: '简略', standard: '标准', detailed: '详细' }
-// v1.59：默认解析强度 —— 内测版「详细」（用户要求），公测维持「标准」。PRESET 在文件头部已初始化，这里引用安全
+// v1.59：默认解析强度 —— 内测版「详细」（用户要求），公测维持「标准」。
 const EXAM_DETAIL_DEFAULT = 'standard'
 function examDetail() { return EXAM_DETAILS.includes(orbState.examDetail) ? orbState.examDetail : EXAM_DETAIL_DEFAULT }
 function isDeepSeekCfg(cfg) {

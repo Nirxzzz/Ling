@@ -58,7 +58,7 @@ gradle assembleDebug --console=plain
 # 产物：app/build/outputs/apk/debug/app-debug.apk
 ```
 
-以上步骤以系统 Gradle 8.14 为准；`2.7.3` 的最终构建与单元测试结果**待主脑在集成后统一执行**，本文件不预写通过结论或通过数量。
+以上步骤以系统 Gradle 8.14 为准；`2.7.3` 的构建与单元测试**尚未在这份公开副本上执行并记录**，本文件不预写通过结论或通过数量。
 
 ### Release 包与签名
 
@@ -135,7 +135,7 @@ gradle assembleRelease --console=plain
 
 - **2.0.9**：已实际执行 `gradle testDebugUnitTest` 与 `gradle assembleDebug`，JUnit XML 汇总 **1289 tests，0 failures / 0 errors / 0 skips**；APK 内含 MIT 全文、三份第三方许可全文与 4 份 NOTICE，不含 `kaoyan*` 资产。
 - 2.0.9 在 Android 14 专用只读模拟器（端口 5582）完成真实安装并启动 `ChatActivity`，进程存活，截图已目视。首启未填 API 时提示缺少接口 / 权限，点击「去填写」进入**首次配置引导**，不是直接跳 API 页。未接真实模型，未验证物理振动，也未做全面功能验收。
-- **2.7.3**：测试源码已随源码更新（含 `voice/` 下的 `DoubaoProtocolTest`、`VoiceAsrClientTest`、`VoiceSourceTest`），最终执行结果**待主脑在集成后统一执行**；确认前不写通过数量。
+- **2.7.3**：测试源码已随源码更新（含 `voice/` 下的 `DoubaoProtocolTest`、`VoiceAsrClientTest`、`VoiceSourceTest`），但本目录**还没有 `2.7.3` 的执行记录**；确认前不写通过数量，也不把上面的 2.0.9 记录当成 2.7.3 的结果。
 
 为公开副本调整过的测试边界（按源码现状）：
 
