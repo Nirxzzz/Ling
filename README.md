@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="desktop/build/icon.png" alt="Ling 悬浮球图标" width="104" height="104">
+
 # Ling · 灵珠
 
 ### 把屏幕上的疑问，变成可以理解、可以复习的知识。
