@@ -1,145 +1,163 @@
 <div align="center">
 
-<img src="desktop/build/icon.png" alt="Ling 悬浮球图标" width="104" height="104">
+<img src="desktop/build/icon.png" alt="Ling floating orb" width="104" height="104">
 
-# Ling · 灵珠
+# Ling
 
-### 本来只想看五分钟手机。后来，手机看了你半小时。
+### Your attention. Your AI. A little closer to real life.
 
-Ling 想插个嘴：先把注意力拿回来，再让 AI 帮你干点正事。
+An everyday AI companion that can step in rather than just wait for a prompt.
+A bridge between you and your agents and the things happening on your screens.
 
 **Android · macOS · Windows**
 
-[下载安装](https://github.com/Nirxzzz/Ling/releases) · [快速开始](#快速开始) · [功能一览](#功能一览) · [从源码运行](#从源码运行) · [反馈问题](https://github.com/Nirxzzz/Ling/issues)
+[Download](#download) · [Get started](#get-started) · [Agents and devices](#give-your-agent-a-way-in) · [Obsidian and Anki](#keep-the-tools-you-already-like) · [Build from source](#build-from-source)
 
 </div>
 
 ---
 
-## 事情往往是这样开始的
+## A very capable AI. In another window. Again.
 
-你打开手机，准备查一个单词。
+You are halfway through something. A question comes up. You know an AI could help.
 
-查之前，顺手看了一眼消息。消息里有个视频，视频下面有条评论，评论里又有人吵起来了。等你想起自己为什么拿起手机，那个单词已经不重要了——重要的是，怎么又过去半小时？
+So you leave what you were doing. Open a chat. Carry over a screenshot. Explain the context. Carry the answer back. Somewhere along the way you become the integration layer.
 
-电脑也没好到哪去。论文开着，教程放着，标签页越攒越多。遇到不懂的地方，你知道可以问 AI，但还得截图、切窗口、粘贴，再补一句「你看这个」。一套动作做完，刚才想到哪儿了来着？
+Meanwhile everything else seems perfectly capable of coming to you. Messages arrive. Feeds keep moving. Another app has something very important to say about absolutely nothing.
 
-**Ling 就想管管这两件事：注意力老被别人拿走，AI 又总差几步才到手边。**
+**Ling starts with a simple question: what if something in that crowd was actually on your side?**
 
-### 别人都在抢注意力，那我也来——不过，替你抢
+Not another destination to spend your day in. Something within reach that can help you understand a screen or keep a thought or hand a task to an agent. Sometimes you call it. Sometimes it steps in first.
 
-很多工具讲究「安静，不打扰」。挺好，但推荐流可没这么客气。
+## Yes. It is meant to interrupt.
 
-所以 Ling 选了一条有点冒犯的路：**侵入式介入。** 小球待在屏幕边上，词卡有机会冒出来，专注守护尝试把你从跑偏的节奏里拉回来。不是只等你想起「我该自律了」，也试着主动插一句：「诶，你刚才不是要做另一件事吗？」
+“Intrusive” is usually a complaint. Here it is a deliberate design choice.
 
-当然，这里面有个很容易翻车的地方：本来是来救注意力的，结果自己成了新的弹窗大户。那就属于劝人少吃夜宵，顺便递过去一桶炸鸡。
+A floating orb stays nearby. A vocabulary card can enter the moment. Focus features can try to break a drift into something you did not mean to spend your evening on.
 
-**所以，抢过来不是为了让你多看 Ling，而是让你有机会重新决定，接下来做什么。** 这是它想努力的方向，不是装上之后就能包治拖延症。各端能做的事也不完全一样，比如桌面专注守护的前台应用检测依赖 macOS，Windows 目前没有同等能力。
+The idea is to **compete for your attention so you can take it back**. Not to win another hour of engagement for Ling.
 
-### AI 已经很厉害了，能不能别每次都让我跑腿？
+There is an obvious catch. A tool that interrupts you can become part of the problem. So interruption is a means rather than the goal. The point is to put a choice back in your hands. It is not a promise to cure distraction.
 
-你可能有过这种感觉：模型什么都能聊，可真遇到事，自己倒先当上了它的搬运工。
+And attention is only the starting point. Ling is not meant to decide that your whole life should now be a study session. You might be reading or making something or following a conversation or figuring out what to do next. The useful part should follow you into the situation. Not force the situation into a preset category.
 
-「这段英文帮我看看。」复制过去。
+## The last mile of AI
 
-「不是这一段，是图里那个。」截图过去。
+A model can know a lot and still be awkward to reach. An agent can plan a task and still lack a useful connection to your phone or your personal knowledge.
 
-「刚才那个答案挺有用，我得记一下。」再搬回来。
+Ling is an attempt to close that gap.
 
-Ling 想把这些跑腿的步骤接起来。你在看什么，就从屏幕问起；一句没懂，就接着追问；答案值得留下，就存成知识卡，之后再复习。翻译、语音、记事、专注和设备互联，也都沿着这个思路往里接——具体哪些端有、哪些还没验收，下面摊开说。
+**A nearby interface for you. A controlled tool surface for your agents. A path between your devices and the knowledge you want to keep.**
 
-**这就是我们说的「AI 最后一公里」：不是再造一个让你专程进去聊天的地方，而是让 AI 走到你正在做的事情旁边。**
+That is the product direction. A more capable everyday companion rather than one narrowly defined utility. The current implementation has limits. They are listed below without pretending the direction is already the destination.
 
-### 所以，它到底算个什么？
+## Give your agent a way in
 
-叫学习工具，没错，但有点委屈它；叫全能助手，又容易让人以为它明天就能下楼取快递。
+You do not have to make Ling your only AI assistant. It can also provide tools to an agent you already use.
 
-更接近的说法是：**一个想帮你夺回注意力、也想把 AI 带进日常的随身助手。** 学习是它很重要的一站，但不想只停在这一站。「全能」是想去的方向，不是已经拿到的毕业证。
+The desktop client includes a local **Model Context Protocol server**. MCP-capable clients can request tools for memory and knowledge cards. Other tools cover review context and reminders and saving handouts. A paired Android phone adds a route to supported phone actions.
 
-还有件事先说：Ling 不卖模型，也不附赠额度。你选服务商、填自己的接口和 Key，它负责把入口放近一点，把过程接顺一点。发动机你挑，别再让你每次出门先组装一辆车。
+- **For your agent:** search or add memory. Search or create cards. Retrieve review context. Save a handout.
+- **For your phone:** request screen reading or open an allowed app through the optional phone link. Phone screen reading returns text rather than forwarding a raw screenshot to the external agent.
+- **For your control:** token authentication and permission scopes. Sensitive phone actions require approval on the phone. This is not unrestricted remote control.
 
-## 下载
+The MCP service binds to loopback on the desktop. A **stdio bridge** is included for clients that need that transport. Enable it in desktop settings and use the generated connection configuration. Keep the token private.
 
-想先试试？源码和安装包就在同一个仓库，不用再找第二个家。首页文件是源码，**[Releases](https://github.com/Nirxzzz/Ling/releases)** 里是打好的包。
+**What about Hermes or another agent?** The connection point is MCP rather than a vendor-specific integration. If your agent setup supports the required MCP transport and authentication then that is the interface to evaluate. There is no dedicated Hermes adapter in this repository. Hermes compatibility has not been tested.
 
-当前归档版本：**Android 2.7.3 / 桌面端 1.64.1**，对应 tag [`v2.7.3-1.64.1`](https://github.com/Nirxzzz/Ling/tree/v2.7.3-1.64.1)。
+The MCP and phone-link paths exist in source. They have not completed end-to-end acceptance for this release.
 
-| 平台 | 下载 | 安装前请注意 |
+## Three platforms. A phone and computer that can talk.
+
+Ling has an Android client and a shared desktop codebase for macOS and Windows. There are two distinct ways to connect Android with a desktop:
+
+- **LAN sync:** manually exchange knowledge cards and starred answer history over a private network. Transfers use AES-256-GCM. This is a snapshot exchange rather than continuous cloud sync.
+- **Phone Link:** explicitly pair the Android phone with the desktop. A persistent connection lets desktop MCP tools reach supported phone capabilities. Available actions depend on phone permissions and confirmation.
+
+These are **Android-to-desktop connections**. They do not form an automatic three-way mesh between a phone and two computers. Neither path has completed end-to-end acceptance for this release. The Windows build has not been run on a Windows machine.
+
+## Keep the tools you already like
+
+### Obsidian-friendly Markdown on Android
+
+Your notes do not have to become permanent residents of one application.
+
+Android notes use **Markdown files with YAML frontmatter**. They support `[[wiki links]]` with Obsidian-style short paths. Folder import and export use the Android system file picker. This gives you a plain-file route into an existing Markdown workflow.
+
+That is the sense in which Ling is Obsidian-friendly. It is **not an Obsidian plugin**. It does not provide live vault synchronization or promise full round-trip compatibility with every plugin and attachment convention. The desktop client currently has no notes interface. This workflow has not completed end-to-end acceptance for this release.
+
+### Bring an Anki deck. Keep learning.
+
+Android includes an actual **Anki `.apkg` import interface**. The parser handles `collection.anki21b` packages with zstd compression as well as older collection formats. Imported cards use Ling's own FSRS review progress. Anki review history is not imported.
+
+The desktop source includes an `.apkg` parser but **no import interface**. Its parser does not support `collection.anki21b`. There is no AnkiWeb sync. Android import has not completed end-to-end acceptance for this release.
+
+Ling also lets you save useful answers as knowledge cards. The idea is not to collect answers forever. It is to have a way back to something worth remembering.
+
+## What else is within reach?
+
+| Capability | Android | Desktop |
 | --- | --- | --- |
-| Android 8.0+ | [APK · 2.7.3](https://github.com/Nirxzzz/Ling/releases/download/v2.7.3-1.64.1/Ling-2.7.3-opensource-debug.apk) | **debug 签名**；独立包名，不能覆盖原官方版 |
-| macOS · Apple Silicon | [ZIP · 1.64.1](https://github.com/Nirxzzz/Ling/releases/download/v2.7.3-1.64.1/Ling-1.64.1-mac-arm64.zip) | 未做 Developer ID 签名、未公证；已在 macOS 启动验收 |
-| Windows · x64 | [ZIP · 1.64.1](https://github.com/Nirxzzz/Ling/releases/download/v2.7.3-1.64.1/Ling-1.64.1-win-x64.zip) | 未签名；**已构建，但尚未在 Windows 实机运行验证** |
+| Screen questions | Screen recognition and chat with follow-up questions | Double-click the orb for capture and a streaming answer panel |
+| Translation | Translation with your configured services | Selection translation through AI or DeepL or Baidu |
+| Knowledge and review | Knowledge cards with FSRS and five vocabulary collections | Save answers as cards and review with FSRS |
+| Records | Chat history and Markdown notes with tasks and reminders | Answer history with stars and caching. No notes interface |
+| Voice | Real-time transcription and voice conversation | Transcription and voice conversation with microphone or system audio or mixed input |
+| Focus and companionship | Focus features and companion bubbles | Companion bubbles and macOS foreground-app-based focus features |
 
-[查看版本说明与完整校验值](https://github.com/Nirxzzz/Ling/releases/tag/v2.7.3-1.64.1) · [下载 SHA-256 清单](https://github.com/Nirxzzz/Ling/releases/download/v2.7.3-1.64.1/sha256.txt)
+Cloud transcription uses Doubao or Alibaba Cloud. Voice conversation uses Tencent Cloud speech recognition followed by your configured model and Tencent Cloud speech synthesis. These need separate credentials. A model API key alone does not unlock every service.
 
-> 这是本仓库的**开源构建归档**，不是原官方发行渠道。没有生产签名的 Android release 包，也没有经过完整兼容性验证的跨平台正式安装器。请先阅读下方的已知限制，再决定是否用于日常工作。
+Windows does not have the macOS foreground-app-based focus capability. Cloud voice quality and the advanced paths above have not completed end-to-end acceptance for this release.
 
-## 快速开始
+## Download
 
-### 1. 先让小球住进来
+Source and downloads live in this same repository. The current archive is **Android 2.7.3 + desktop 1.64.1** at tag [`v2.7.3-1.64.1`](https://github.com/Nirxzzz/Ling/tree/v2.7.3-1.64.1).
 
-- **Android：** 安装 APK，按引导配置。使用悬浮球、截屏等功能时，再按用途授予相应权限。
-- **macOS：** 解压 ZIP，打开 `Ling.app`。若被 Gatekeeper 拦截，在确认下载来源与校验值后，到「系统设置 → 隐私与安全性」选择「仍要打开」。截屏、读取选区等能力需要对应的系统权限。
-- **Windows：** 解压 ZIP 后运行其中的 `Ling.exe`。此包尚无 Windows 实机验收记录，请自行确认运行情况。
-
-### 2. 给它接上你选的 AI
-
-打开设置，填好 **OpenAI 兼容接口地址（Base URL）、模型名和 API Key**，点「检测连接」，确认后保存。想让它看屏幕，记得选**能接收图片的模型**。只会读文字的模型，你把截图递过去，它也只能干瞪眼——严格说，它连瞪眼都做不到。
-
-还没有接口或 Key，也可以先看看界面；但云端识别和问答得配置好才能用。这里没有藏着一把万能钥匙，没配好时也不会偷偷换一家服务器。
-
-### 3. 拿眼前那个问题试试
-
-不用专门给它出考卷。就拿正在看的那段话、那个公式、那张图试试：桌面端双击小球，Android 用「识别屏幕」。没听懂就追问，觉得以后还用得上，就存成知识卡。先解决一件小事，比围观一百个「AI 改变一切」更实在。
-
-**关于费用与隐私：** 模型、翻译和语音服务可能由服务商收费。使用识别或翻译功能时，相应截图、选区或文本会发送到你配置的服务；云端语音功能也需要发送音频或文本。请先确认服务商政策，不要把敏感内容交给不信任的接口。
-
-## 功能一览
-
-### 先看看它能搭哪些把手
-
-| 能力 | Android | 桌面端 |
+| Platform | Download | Before you install |
 | --- | --- | --- |
-| 屏幕识别与 AI 问答 | 屏幕识别、聊天与追问 | 双击悬浮球截屏，浮层流式展示与追问 |
-| 翻译 | 翻译入口，使用自行配置的服务 | 选区快捷翻译；AI / DeepL / 百度引擎 |
-| 学习与复习 | 词库学习、知识卡与 FSRS 复习 | 答案存知识卡，按 FSRS 复习 |
-| 记录 | 聊天记录、记事与提醒 | 答案历史、星标与结果缓存；**没有笔记界面** |
-| 云端语音 | 实时转写、语音对话 | 实时转写、语音对话；可选麦克风 / 系统音频 / 混音 |
+| Android 8.0+ | [APK 2.7.3](https://github.com/Nirxzzz/Ling/releases/download/v2.7.3-1.64.1/Ling-2.7.3-opensource-debug.apk) | Debug-signed. Separate package identity. Cannot replace the original official app |
+| macOS Apple Silicon | [ZIP 1.64.1](https://github.com/Nirxzzz/Ling/releases/download/v2.7.3-1.64.1/Ling-1.64.1-mac-arm64.zip) | No Developer ID signing or notarization. The packaged app was run on macOS |
+| Windows x64 | [ZIP 1.64.1](https://github.com/Nirxzzz/Ling/releases/download/v2.7.3-1.64.1/Ling-1.64.1-win-x64.zip) | Unsigned. Built but not run on Windows |
 
-Android 随附初中、高考、四级、六级、雅思 **5 套词表**，词表单独按 CC BY-SA 3.0 授权；授权链不完整的考研词库没有纳入公开版。
+[Release notes](https://github.com/Nirxzzz/Ling/releases/tag/v2.7.3-1.64.1) · [SHA-256 checksums](https://github.com/Nirxzzz/Ling/releases/download/v2.7.3-1.64.1/sha256.txt) · [All releases](https://github.com/Nirxzzz/Ling/releases)
 
-### 还有些本领，需要自己接接线
+These are open-source build archives. They are not the original official distribution channel. There is no production-signed Android release package.
 
-- **两条独立的语音链路：** 实时转写使用豆包或阿里云；语音对话使用腾讯云识别 → 你配置的大模型 → 腾讯云合成。需要分别配置服务凭据，不能只填一个模型 Key 就使用全部语音功能。
-- **桌面互联：** 源码包含局域网同步、手机常连通道和本地 MCP 服务。
-- **专注与陪伴：** 桌面端提供专注守护与陪伴气泡；前台应用检测依赖 macOS，Windows 不具备同等的专注守护能力。
+**This introduction is in English. The current client interfaces and platform development guides are primarily in Chinese.** Changing the repository language does not change the app language.
 
-这些能力在源码里有，但「有代码」和「每条路都亲自跑通了」不是一回事。语音云链路、互联等部分还缺本次端到端验收，下面把账交代清楚。
+## Get started
 
-## 说点实在的：现在跑到哪儿了？
+1. **Install the appropriate archive.** Android uses the APK. On macOS extract the ZIP and open `Ling.app`. On Windows extract the ZIP and open `Ling.exe` with the unverified runtime status above in mind.
+2. **Bring your model.** Enter an OpenAI-compatible Base URL and model name and API key in settings. Check the connection and save. Screen questions need a model that accepts images.
+3. **Grant permissions for what you use.** Screen capture and overlays and selection access depend on platform permissions. If macOS blocks the app then verify the source and checksum before using Open Anyway in System Settings → Privacy & Security.
+4. **Try something already in front of you.** Ask about the screen. Follow up. Keep the useful part. Agent connections and phone pairing are optional next steps rather than prerequisites.
 
-介绍可以聊得热闹，验收不能靠气氛。下面分清「写了」「编过了」和「真的打开跑过了」，不拿一长串测试数字冒充万能通行证。
+Ling does not include service credentials or model credits. Missing configuration does not silently switch you to a bundled model server. Updates have no official source configured by default.
 
-- **Android 2.7.3：** 主源码与测试源码编译通过，2380 项单元测试通过；Android 14 模拟器验证了冷启动、笔记保存后重启保留、未配置接口时的提示，走查中没有发现 `FATAL EXCEPTION` 或 ANR。
-- **桌面端 1.64.1：** 302 项单元测试与 8 项模块加载冒烟通过；源码与最终 macOS 包均实际启动，走通接口配置、识别与追问、历史保留、存卡及复习调度，并检查了 HTTP 500 与取消中的界面恢复。
-- **下载产物：** 三个二进制归档均从 GitHub 重新下载，与本地交付文件的 SHA-256 一致。
+**Privacy and cost:** configured services may receive screenshots or selected text or audio depending on the feature. Providers may charge for requests. Use endpoints you trust and check their policies before sending sensitive content.
 
-**桌面问答验收使用本地 fixture 服务，证明请求、流式解析与界面流程接通，不证明真实模型的识别能力或答案质量。** Windows 实机、真实供应商质量、语音云链路、局域网同步、MCP、手机常连、剪贴板翻译、专注守护、陪伴气泡及更新下载尚未完成本次端到端验收。
+## What has actually been checked?
 
-更详细的执行记录：[Android](android/README.md#构建) · [桌面端](desktop/README.md#界面运行验收)。
+- **Android 2.7.3:** compilation and 2380 unit tests passed. An Android 14 emulator smoke run covered cold launch and note persistence across restart and missing-interface feedback. No fatal exception or ANR was observed in that run.
+- **Desktop 1.64.1:** 302 unit tests and 8 module-loading smoke checks passed. Source and the final macOS package were run through configuration and screen questions and follow-ups. History persistence and card saving and review scheduling were exercised. HTTP 500 handling and cancellation recovery were also checked.
+- **Published files:** all three binary archives were downloaded again from GitHub. Their SHA-256 hashes matched the local delivery artifacts.
 
-## 从源码运行
+The desktop question flow used a local fixture service. This checks protocol and UI behavior rather than real-model recognition quality. It does not certify the answers a provider will produce.
 
-这是一个单仓库项目：`android/` 与 `desktop/` 分别是两个客户端，不需要另找源码仓库。
+**Not end-to-end verified for this release:** Windows runtime. Real-provider quality. Cloud voice. LAN sync. MCP. Phone Link. Hermes compatibility. Android Anki import. Markdown folder exchange. Clipboard translation. Focus and companion features. Update downloads.
+
+Detailed records remain in the [Android guide](android/README.md) and [desktop guide](desktop/README.md).
+
+## Build from source
 
 ```bash
 git clone https://github.com/Nirxzzz/Ling.git
 cd Ling
 ```
 
-### 桌面端
+### Desktop
 
-需要 **Node.js 24+** 与 npm；首次安装、打包需要联网下载 Electron 运行时。
+Use **Node.js 24+** with npm. Initial installation and packaging require network access for Electron downloads.
 
 ```bash
 cd desktop
@@ -147,47 +165,50 @@ npm ci
 npm start
 ```
 
-测试使用 `npm test`；打包使用 `npm run pack:mac` 或 `npm run pack:win`。当前打包目标为 macOS arm64、Windows x64 的 ZIP 归档，不是自动安装器。
+Run `npm test` for the existing suite. Use `npm run pack:mac` or `npm run pack:win` for ZIP packaging.
 
-[桌面端开发、环境变量与打包说明 →](desktop/README.md)
+[Desktop development guide](desktop/README.md)
 
 ### Android
 
-需要 **JDK 17、系统 Gradle 8.14、Android SDK 35**，并先配置本地 SDK 路径。仓库**不带 Gradle wrapper**，因此这里使用 `gradle`，不是 `./gradlew`。
+Use **JDK 17 + system Gradle 8.14 + Android SDK 35**. Configure your local SDK path first. This repository does not include a Gradle wrapper.
 
 ```bash
 cd android
 gradle testDebugUnitTest assembleDebug
 ```
 
-APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。Debug 无需签名材料；Release 需要你自己的 keystore，缺失时会明确失败，不会回退到调试签名。
+The APK is written to `app/build/outputs/apk/debug/app-debug.apk`. Debug builds need no private signing material. Release builds require your own keystore and fail explicitly when it is missing. They do not fall back to debug signing.
 
-[Android 环境配置、签名与构建说明 →](android/README.md)
+[Android development and signing guide](android/README.md)
 
-两端均不承诺字节级可复现构建；Android 未附依赖锁定与校验和，桌面端虽有 `package-lock.json`，Electron 下载、签名和归档元数据仍会影响产物字节。
+Neither client promises byte-for-byte reproducible builds. Android has no dependency lock or checksum configuration. Desktop locks npm dependencies but runtime downloads and archive metadata still affect output bytes.
 
-## 丑话也得说在前面
+## A few boundaries worth knowing
 
-- **开源版与原官方版隔离。** Android 包名为 `com.chun.lingzhu.opensource`；桌面应用标识为 `com.ling.opensource`，默认数据目录为 `ling-opensource`。不要把开源归档当作原官方版的覆盖升级包。
-- **没有预置服务，也没有官方自动更新源。** 接口、翻译、语音凭据全部自填。桌面更新只下载 ZIP 并定位文件，不自动安装；未配置更新源时不启用更新。
-- **模型输出需要判断。** 当前桌面流式解析不会单独标记 `finish_reason=length`，截断答案可能仍然显示为普通正文；重要结论应自行核验。
-- **语音外放不保证无回声。** 系统回声消除加软件判断并不等于硬件级保证，尚未按物理设备逐一验证，外放可能被再次识别为输入。
-- **Anki 还不是可点击的导入功能。** 桌面源码有 `.apkg` 解析模块，但没有界面入口，也不支持 zstd 压缩的 `collection.anki21b`。
-- **iOS 暂停。** 本仓库没有 iOS 工程或 IPA；桌面端也没有笔记界面。
-- **桌面安全边界需谨慎。** 当前渲染进程 `sandbox=false`、未设置 CSP，preload 暴露的 IPC 面较大，只应加载仓库内的本地页面。公开源码不等于已完成安全审计。
+- **Separate identities:** Android uses `com.chun.lingzhu.opensource`. Desktop uses `com.ling.opensource` with `ling-opensource` as its default data directory. These builds do not replace the original official installation.
+- **No automatic update installer:** desktop updates only download a ZIP and reveal the file. No update source is enabled by default.
+- **No iOS build:** there is no iOS project or IPA here. macOS packaging targets Apple Silicon rather than Intel Macs.
+- **Model answers can be incomplete:** desktop streaming does not separately label `finish_reason=length`. Verify important conclusions.
+- **Voice is not guaranteed echo-free:** system echo cancellation and software checks have not been validated across physical devices.
+- **Desktop security needs care:** renderer sandboxing is disabled and no CSP is set. The preload exposes a broad IPC surface. Load only the bundled local pages. Public source is not a completed security audit.
 
-## 反馈与参与
+## Say hello or report a bug
 
-用着不对劲，欢迎到 [Issues](https://github.com/Nirxzzz/Ling/issues) 说一声。带上 **平台和系统版本、Ling 版本、怎么操作的、你以为会怎样、实际又怎样**，定位起来会快很多。截图和日志先遮掉 API Key、个人内容与服务凭据——来报 bug 就好，别顺手把家门钥匙也交了。
+[Open an issue](https://github.com/Nirxzzz/Ling/issues) with your platform and Ling version. Tell us what you did and what happened. A reproducible problem is much easier to fix than “it got weird.” Both are understandable. Only one gives us a starting point.
 
-想动手改也欢迎。哪个客户端有问题，就先读对应目录的 README；修复、兼容性和文档改进都很有用。提交时记得把密钥、签名文件和个人数据留在自己电脑上。
+Remove API keys and personal content from screenshots and logs before posting. Contributions to compatibility and documentation are welcome alongside code fixes. Keep credentials and signing material out of commits.
 
-## 许可与第三方资产
+## License and credits
 
-- **项目自有源码：** GNU General Public License version 3 only，SPDX `GPL-3.0-only`，© 2026 Ling contributors。完整条款见 [LICENSE](LICENSE)，软件按许可证约定「按现状」提供，不附担保。许可证附录中的示例不改变本项目的 only 授权选择。
-- **历史 MIT 授权：** 本次改用 GPL 不撤销此前已经按 MIT 给出的授权；当时取得的那份代码仍可按当时条款使用。
-- **第三方组件与资产：** 各自保留原授权，见 [Android 第三方声明](android/THIRD_PARTY_NOTICES.md) 与 [桌面端第三方声明](desktop/THIRD_PARTY_NOTICES.md)。本页不对第三方条款与 GPL 的组合适用性作概括保证。
-- **内置词表：** 独立随附的数据资产，按 CC BY-SA 3.0 分发，不属于项目自有代码的 GPL 授权范围。署名与来源见 [词表许可](android/app/src/main/assets/wordbank/LICENSE.txt)。
-- **分发二进制：** 须遵守 GPLv3 第 6 条的对应源码义务，按其允许的方式提供与二进制对应的完整源码及必要构建脚本。仅贴一个仓库首页地址不自动构成义务已履行；第三方修改版应提供自己的对应源码。
+Project-owned code is **GPL-3.0-only**. Copyright © 2026 Ling contributors. See [LICENSE](LICENSE) for the full terms and warranty disclaimer. The appendix examples do not change this project's only-version license choice.
 
-本仓库不包含原官方版的生产签名、内测密钥或生产配置。原官方成品及其历史不因本仓库的公开而改变。
+Earlier copies distributed under MIT retain the permissions granted at that time. The current license does not revoke those grants.
+
+Third-party components retain their own licenses. See the [Android notices](android/THIRD_PARTY_NOTICES.md) and [desktop notices](desktop/THIRD_PARTY_NOTICES.md). No blanket compatibility claim is made for third-party terms.
+
+The five bundled vocabulary datasets are separate **CC BY-SA 3.0** data assets rather than GPL-covered project code. Attribution and sources are in the [word-list license](android/app/src/main/assets/wordbank/LICENSE.txt).
+
+Binary redistribution must meet the corresponding-source requirements of GPLv3 Section 6 through an allowed distribution method. Provide the matching source and required build scripts. A generic repository link alone does not automatically meet that obligation. Modified binaries require their matching modified source.
+
+Production signing material and internal service credentials are not included.
