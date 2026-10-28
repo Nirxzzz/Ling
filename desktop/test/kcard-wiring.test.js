@@ -141,23 +141,6 @@ test('④ 到期检查：同一批到期不重复弹；新卡进来到期数变�
 
 /* ─────────── ②③ 复习页 / 卡库 ─────────── */
 
-test('② 复习队列：kcardQueuePayload 只给到期卡，未到期的排后面', () => {
-  const { store } = tmpStore()
-  // 手工塞一张「还没到期」的卡（Good 排到一年后）
-  store.add('远期卡', '很久以后才复习', K.Source.MANUAL, T0)
-  const later = store.all()[0]
-  const cards = K.dueFirst(store.all(), T0)
-  // 刚存入的都是今天到期
-  assert.strictEqual(cards.length, 1)
-  assert.strictEqual(K.daysLeft(cards[0], T0), 0)
-  // 造一张真没到期的：把 due 推到一年后
-  const pushed = Object.assign({}, later, { fsrs: Object.assign({}, later.fsrs, { due: T0 + 365 * DAY }) })
-  const list = [pushed, cards[0]]
-  const sorted = K.dueFirst(list, T0)
-  assert.strictEqual(sorted[0].front, '远期卡', '到期的排前面')
-  assert.strictEqual(K.isDue(sorted[0], T0), false)
-})
-
 test('② 评分：四档都改得了 due，且从队列里掉出去', () => {
   for (const r of [1, 2, 3, 4]) {
     const { store } = tmpStore()

@@ -169,6 +169,8 @@ contextBridge.exposeInMainWorld('orbApi', {
   linkPairRevoke: (id) => ipcRenderer.invoke('link:pair-revoke', String(id || '')),
   // v1.61：历史收藏（面板历史列表里的 ☆ / ★）
   starHistory: (t, star) => ipcRenderer.invoke('history:star', t, !!star),
+  // v1.80：点开一条历史 → 正文由主进程按 t 取回（列表里的 text 不是正文）
+  selectHistory: (t) => ipcRenderer.invoke('history:select', Number(t)),
 
   // v1.75：实时转写的配置面（只有设置卡的 Key 输入与「打开转写窗口」用这条线）。
   // 主进程逐条核 sender（设置窗口或转写窗口），并且只回 hasKey 布尔 —— 明文 Key 绝不回到渲染器。

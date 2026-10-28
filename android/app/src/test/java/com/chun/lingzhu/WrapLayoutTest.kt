@@ -53,9 +53,9 @@ class WrapLayoutTest {
         "① 平整,齐整(u): The path along the river stays level all winter.这条路沿着河，整个冬天都保持平整。" +
             "②提灯(c): She carried a small lantern through the orchard.她提着一盏小灯穿过果园。"
 
-    /** 200+ 字、没有任何标点的纯中文长句（契约 5 软断点） */
+    /** 225 字、没有任何标点的纯中文长句（契约 5 软断点） */
     private val longUnpunctuated =
-        "花坛边缘的砖块应当码放得平整而有序这是最基本的做法".repeat(8)
+        "花坛边缘的砖块应当码放得平整而有序这是最基本的做法".repeat(9)
 
     /** 标点密集的中文段落（契约 5 禁则） */
     private val punctuatedProse =

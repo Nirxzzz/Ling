@@ -867,9 +867,28 @@ function ansLog(s) {
 /* v1.48：用户流式途中点了关闭 —— 这一轮剩下的块别再把面板拽回来（以前会新建一块只剩尾巴的空面板）。
  * 下一次由用户发起的识别 / 追问 / 单击小球时复位。翻译面板同理。 */
 let answerDismissed = false, transDismissed = false
+
+/* v1.79 [KCard] 这一轮能不能存成复习卡，由主进程判 —— 面板不能拿正文前缀猜：
+ * 失败时面板里也是一段正文（用户实测「出错：接口 500 …」被当成问答存进了知识卡）。
+ * 三态只描述**最后一轮**的结局（知识卡只抽最后一轮）：
+ *   pending  新一轮刚开始 / 进程刚起来 —— 还没拿到正文，什么都不许存；
+ *   ok       这一轮真拿到了正文（正常 / 缓存命中 / 追问），且面板正文就是成功那一刻的原文；
+ *   failed   这一轮被失败收尾 —— 面板上那段是错误说明，不是答案。
+ * 只有「ok」不够：面板正文必须逐字等于成功那一刻的快照（kcardOkText）——
+ * 迟到的错误提示、别的进程留下的旧面板都对不上，一并拒掉。 */
+let kcardOutcome = 'pending'
+let kcardRoundText = ''   // 这一轮往面板推的原文（逐字累积，追问分隔行也算）
+let kcardOkText = ''      // 成功那一刻的原文快照 —— 只有它（或历史回看）能存
+/** 新一轮开始 = 面板要清空：结局与原文一并清（回到 pending）。 */
+function kcardRoundReset() { kcardOutcome = 'pending'; kcardRoundText = ''; kcardOkText = '' }
+/** 这一轮拿到了真答案：记下此刻面板上的原文。 */
+function markRoundOk() { kcardOutcome = 'ok'; kcardOkText = kcardRoundText }
+/** 这一轮被失败收尾：面板上那段是错误说明，不是答案。 */
+function markRoundFailed() { kcardOutcome = 'failed'; kcardOkText = '' }
 function pushAnswer(text, done = false) {
   ansLog(done ? text + '\n[DONE]' : text)
   if (answerDismissed) return
+  if (text) kcardRoundText += text
   sendToWin(placeAnswer(), 'answer:chunk', { text, done })
 }
 
@@ -2592,6 +2611,7 @@ async function streamChat(bodyFor, { stripNoQ = false, remember = true } = {}) {
         } else lastErr = new Error('模型 ' + model + ' 未返回内容')
       }
       else {
+        if (pushedText.trim()) markRoundOk()   // v1.79：这一轮真拿到模型正文（追问追加同样算）
         if (remember && pushedText.trim()) rememberAnswer(pushedText, '')
         // v1.49：去掉「识别到内容就暂停扫描 60 秒方便阅读」—— 用户要自动扫描一直按间隔跑，不停留。
         // v1.36：整段被 [无题目] 标记剥掉（pushedText 为空）时补一条提示，
@@ -2644,10 +2664,12 @@ async function askFollowUp(q, withShot, shown) {   // v1.60：shown = 面板上�
   answerDismissed = false
   if (withShot) return askWithNewShot(q, sq)
   if (!lastB64s || !lastB64s.length) {
+    markRoundFailed()   // v1.79：没有可追问的识别结果 —— 面板上这行不是答案
     pushAnswer('\n\n---\n\n**追问：** ' + sq + '\n\n还没有可追问的识别结果 —— 先点一下小球识别当前屏幕。\n', true)
     return
   }
   if (isSolving) {
+    markRoundFailed()   // v1.79：上一轮还在跑，这行提示不是答案（存下来是废卡）
     pushAnswer('\n\n---\n\n**追问：** ' + sq + '\n\n（上一个任务还在跑，稍等一下再问）\n', true)
     return
   }
@@ -2662,6 +2684,7 @@ async function askFollowUp(q, withShot, shown) {   // v1.60：shown = 面板上�
     if (lastHistId && a) { lastHistText += '\n\n---\n\n**追问：** ' + sq + '\n\n' + a; historyUpdate(lastHistId, lastHistText) }
     modeLog('追问：' + sq.slice(0, 40) + ' → ' + (a || '').length + ' 字')
   } catch (e) {
+    markRoundFailed()   // v1.79：追问失败 —— 面板上是错误说明，不是答案
     pushAnswer('出错：' + errText(e), true)
   } finally {
     clearTimeout(wd)
@@ -2673,6 +2696,7 @@ async function askFollowUp(q, withShot, shown) {   // v1.60：shown = 面板上�
 async function askWithNewShot(q, shown) {
   const sq = shown || q
   if (isSolving) {
+    markRoundFailed()   // v1.79：同上（带新截图的追问被挡）
     pushAnswer('\n\n---\n\n**追问（附新截图）：** ' + sq + '\n\n（上一个任务还在跑，稍等一下再问）\n', true)
     return
   }
@@ -2696,6 +2720,7 @@ async function askWithNewShot(q, shown) {
     modeLog('追问（附新截图 ' + shots.length + ' 张）：' + sq.slice(0, 40) + ' → ' + (a || '').length + ' 字')
   } catch (e) {
     const m = errText(e)
+    markRoundFailed()   // v1.79：带新截图的追问失败收尾，同上
     pushAnswer(m === SCREEN_NO_PERM ? '截不了新图：没有「屏幕录制」权限。' : m === SCREEN_NO_PICTURE ? '截不了新图：屏幕当前无画面。' : '出错：' + m, true)
   } finally {
     clearTimeout(wd)
@@ -2753,6 +2778,7 @@ async function solve(auto, fresh) {   // v1.49：auto = 自动扫描发起的一
   }
   isSolving = true
   answerDismissed = false
+  kcardRoundReset()   // v1.79：新一轮 = 面板要清空，没出正文之前不算可存
   // v1.73：busy 集中在这里发 —— 每一轮真正开跑就发一次；「重新识别」过去漏发，现在也盖上了。
   if (orbWin && !orbWin.isDestroyed()) orbWin.webContents.send('orb:busy')
   const solveWatchdog = setTimeout(() => { if (isSolving) { console.error('[orb] solve watchdog: force reset'); isSolving = false } }, 120000)
@@ -2787,7 +2813,7 @@ async function solve(auto, fresh) {   // v1.49：auto = 自动扫描发起的一
         } catch {}
       }
     }
-    if (!b64s || !b64s.length) { screenStreak++; showAnswerState('capture_failed'); return }
+    if (!b64s || !b64s.length) { screenStreak++; markRoundFailed(); showAnswerState('capture_failed'); return }
     screenStreak = 0
     // v1.26：把这次的截图留一份给「追问」用；新一轮识别 = 开一段新对话
     lastB64s = b64s
@@ -2800,6 +2826,7 @@ async function solve(auto, fresh) {   // v1.49：auto = 自动扫描发起的一
       pushNotice('↺ 缓存：这个画面' + X.ago(hit.c) + '识别过，直接用了上次的结果（没调接口）· 要重新问点 ↻')
       conv = [{ role: 'assistant', content: hit.v }]
       rememberAnswer(hit.v, ' · 缓存')
+      markRoundOk()   // v1.79：缓存命中的也是成功结果，照旧可存
       return
     }
     if (!auto) showAnswerState('solving')
@@ -2807,6 +2834,7 @@ async function solve(auto, fresh) {   // v1.49：auto = 自动扫描发起的一
     conv = ans && ans.trim() ? [{ role: 'assistant', content: ans }] : []
     if (key && ans && ans.trim()) solveCache().put(key, ans)
   } catch (e) {
+    markRoundFailed()   // v1.79：截屏被拦 / 接口出错 —— 这一轮的内容不能存成复习卡
     const msg = errText(e)
     try {
       if (msg === SCREEN_NO_PERM) {
@@ -3575,6 +3603,26 @@ ipcMain.handle('history:star', (_e, t, star) => {
   if (!histWriteAtomic(next)) return { ok: false, error: '写入失败' }
   return { ok: true, t: id, star: !!star }
 })
+/* v1.80：面板点开一条历史 → 正文由主进程按 t 取回。
+ * 列表里的 text 只是给列表看的（译文条目还拼了「**翻译**…」的展示头），面板不能拿它直接当正文，
+ * 也不允许把后续追问追加到一条旧历史里：只有 t 就是这一轮的 lastHistId 才保留截图与对话上下文，
+ * 否则清空 —— 之后的追问会照实回「还没有可追问的识别结果」，而不是拿别的记录当上文。 */
+ipcMain.handle('history:select', (_e, t) => {
+  if (isSolving) return { ok: false, error: '答案还在写，写完再看历史' }
+  const id = Number(t)
+  if (!Number.isFinite(id) || id <= 0) return { ok: false, error: '没有这条历史' }
+  let entry = null
+  try { entry = histStore().read().find((e) => e && e.t === id) || null } catch {}
+  if (!entry) entry = history.find((e) => e && e.t === id) || null
+  if (!entry || typeof entry.text !== 'string' || !entry.text.trim()) return { ok: false, error: '这条历史读不到了' }
+  if (id !== lastHistId) {
+    // 别的记录不是这一轮的上文：丢掉截图与对话，追问就不会把新内容写进那条旧历史。
+    lastB64s = []; conv = []; lastHistId = 0; lastHistText = ''
+  }
+  // 历史回看也是一条能存复习卡的合法来源：面板正文就是这条记录本身。
+  kcardOutcome = 'ok'; kcardRoundText = entry.text; kcardOkText = entry.text
+  return { ok: true, t: id, text: entry.text }
+})
 ipcMain.on('answer:retry', () => { modeLog('点「重新识别」→ 不用缓存'); solve(false, true) })
 ipcMain.handle('get:panelTitle', () => orbState.panelTitle || 'AI 屏幕解析')
 // v1.24：把刚写进去的内容记成 lastClipText，否则 700ms 后「复制即译」会把它当成一次新的复制，
@@ -3865,7 +3913,33 @@ function kcardAddFromTranscript(raw, deck) {
   const r = kcardStore().add(fb.front, fb.back, K.Source.ANSWER, kcardNow(), deck)
   return r.ok ? { ok: true, id: r.id, reason: '', front: fb.front } : { ok: false, id: 0, reason: r.reason, front: fb.front }
 }
+/* 面板交上来的原文现在能不能存成卡（v1.79）。判据是主进程这一轮的结局，不是正文前缀：
+ *   · 这一轮还在写 / 还没开始 → 不存；
+ *   · 只有「成功」那一轮的面板原文（逐字等于快照）能存；
+ *   · 历史回看是另一条合法来源：正文逐字等于落盘历史（或本进程的成功记录）里的某条。
+ * 于是迟到的错误提示、别的窗口留下的旧正文、接口 500 的错误说明都存不进来。 */
+function kcardSaveAllowed(raw) {
+  const t = String(raw || '')
+  if (!t.trim() || isSolving) return false
+  if (kcardOutcome === 'ok' && t === kcardOkText) return true
+  if (history.some((e) => e && e.text === t)) return true   // 本轮只关了「落盘历史」时的回看来源
+  try { return histStore().read().some((e) => e && typeof e.text === 'string' && e.text === t) } catch { return false }
+}
 ipcMain.handle('kcard:add', (_e, raw, deck) => {
+  // v1.79：恢复守卫必须排在存卡资格之前 —— 资格判定要读落盘历史，pending journal 还没重放时
+  // 读到的是旧内容：成功那一轮的原文可能还没进历史，会被误判成「没有可存的答案」；
+  // 反过来，坏 journal 也不能退化成 notsaveable，把真实原因盖掉。守卫失败就一个字都不写
+  // （journal 原样保留），日志与提示跟历史写盘走同一条路径。
+  try { X.runWriteGuard() } catch (err) {
+    // 提示与日志跟历史写盘失败走同一条路径：lanGuardNotice 已经写明「数据未写入」与原因。
+    modeLog('知识卡存卡：拒绝（' + lanGuardNotice(err) + '）')
+    return { ok: false, id: 0, reason: 'guard' }
+  }
+  if (!kcardSaveAllowed(raw)) {
+    modeLog('知识卡存卡：拒绝（这一轮没有成功答案）')
+    pushNotice(isSolving ? '答案还在写，写完才能存成复习卡' : '这一轮没有可存的答案（出错或未完成）')
+    return { ok: false, id: 0, reason: 'notsaveable' }
+  }
   const r = kcardAddFromTranscript(raw, deck)
   modeLog('知识卡存卡：' + (r.ok ? '成功 id=' + r.id + ' front=' + r.front.slice(0, 20)
     : '失败 ' + r.reason + (r.reason === 'guard' && _lanRecoverError ? '（' + _lanRecoverError.message + '）' : '')))
@@ -3880,11 +3954,15 @@ ipcMain.handle('kcard:add', (_e, raw, deck) => {
   pushNotice(tip)
   return r
 })
-/** 面板问「这一轮是不是已经存过了」（按钮要显示 ✓ 而不是「存」）。 */
+/** 面板问「这一轮存过没、能不能存」（按钮据此画 ✓ / 可点 / 灰掉）。 */
 ipcMain.handle('kcard:has', (_e, raw) => {
-  const fb = K.fromTranscript(String(raw || ''))
-  if (!fb.front) return false
-  return K.hasDup(kcardStore().all(), K.DEFAULT_DECK, fb.front)
+  const s = String(raw || '')
+  const fb = K.fromTranscript(s)
+  return {
+    saved: !!fb.front && K.hasDup(kcardStore().all(), K.DEFAULT_DECK, fb.front),
+    saveable: kcardSaveAllowed(s),
+    streaming: !!isSolving   // 面板据此把「还不能存」画成「等这一轮写完」而不是「没有可存内容」
+  }
 })
 
 /* ---- ② + ③ 复习页 / 卡库 ---- */
@@ -3893,11 +3971,14 @@ ipcMain.handle('kcard:has', (_e, raw) => {
 let kcardQueue = []
 let kcardQueueAt = 0
 
-/** 组一份「复习页要的队列」：到期的按到期排前面的那批。 */
+/* 组一份「复习页要的队列」：只放**现在真的到期**的卡（knowledge.dueList）。
+ * v1.79：以前用的是 dueFirst —— 那只是排序（到期的在前、没到期的按创建时间垫在后面），
+ * 于是刚评完「良好 / 简单」（推到 2 天后）的卡在同一份队列里立刻又冒出来，用户实报「评完还一直出这张」。
+ * dueFirst 仍留在 kcard:all（卡库列表要「全部卡，到期的排前面」）。 */
 function kcardQueuePayload() {
   const now = kcardNow()
   const all = kcardStore().all()
-  const due = K.dueFirst(all, now)
+  const due = K.dueList(all, now)
   return { now: now, due: due.map((c) => kcardView(c, now)), total: due.length, count: all.length }
 }
 /** 一张卡 → 渲染层要的形状（fsrs 内部字段不外泄，只给展示用的）。 */

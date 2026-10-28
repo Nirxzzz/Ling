@@ -70,8 +70,6 @@
       "companion-main.js",
       "bubble.html",
       "voice.html",
-      "THIRD_PARTY_NOTICES.txt",
-      "chat-stream.js",
       "LICENSE",
       "THIRD_PARTY_NOTICES.md"
     ],
@@ -89,7 +87,14 @@
       "electronLanguages": [
         "zh-CN",
         "en"
-      ]
+      ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Ling 需要麦克风权限来做实时语音转写（只在你点「开始转写」或「开始对话」后录音，音频直接上传给你选定的转写服务，不在本机保存）。",
+        "NSAudioCaptureUsageDescription": "Ling 需要「系统音频录制」权限来转写会议里对方的声音（只在你点「开始转写」并选「系统声音」或「会议双方」后采集系统声音，画面不读取、不上传、不保存；音频直接上传给你选定的转写服务，不在本机保存）。",
+        "NSCameraUsageDescription": null,
+        "NSBluetoothAlwaysUsageDescription": null,
+        "NSBluetoothPeripheralUsageDescription": null
+      }
     },
     "npmRebuild": false,
     "icon": "build/icon.png",

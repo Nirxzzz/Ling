@@ -10,6 +10,10 @@ const path = require('node:path')
 const T0 = 1750000000000
 const CHILD_FLAG = 'ORB_MAIN_RECOVERY_CHILD'
 const JOURNAL = 'lan-sync.journal.json'
+/** 成功那一轮的面板原文：journal 的历史里逐字记着它 —— 恢复后它才是合法的「历史回看」来源。 */
+const ANSWER_RAW = '新卡\n\n## 答案\n新背面'
+/** 历史里没有的原文（面板上残留的旧正文 / 迟到提示）：守卫生效后仍然一律拒绝。 */
+const STRAY_RAW = '野卡\n\n## 答案\n野背面'
 
 /* ------------------------------------------------------------------ 子进程 */
 
@@ -81,13 +85,17 @@ function runChild() {
     const out = {}
     try {
       if (scenario === 'restore') {
-        // 冷启动：先由 kcard:add 触发 journal 恢复，再新增，最后收藏一行。
-        out.add = handlers.get('kcard:add')({}, '新卡\n\n## 答案\n新背面', '默认')
+        // 冷启动：第一次 kcard:add 就地触发 journal 恢复（守卫排在资格判定之前），再新增，最后收藏一行。
+        // 这一枪的正文历史里没有：恢复本身不能把「随便一段正文」变成可存，仍要拿到 notsaveable。
+        out.stray = handlers.get('kcard:add')({}, STRAY_RAW, '默认')
+        out.add = handlers.get('kcard:add')({}, ANSWER_RAW, '默认')
         out.star = handlers.get('history:star')({}, T0, true)
       } else {
         // 坏 journal：写操作必须被拒绝，且不能碰原文件。
+        // 存卡先过守卫再判资格：正文就算合法（在历史里）也只能拿到 guard，不能退化成 notsaveable。
         out.star = handlers.get('history:star')({}, T0, true)
-        out.add = handlers.get('kcard:add')({}, '新卡\n\n## 答案\n新背面', '默认')
+        out.add = handlers.get('kcard:add')({}, ANSWER_RAW, '默认')
+        out.stray = handlers.get('kcard:add')({}, STRAY_RAW, '默认')
       }
     } catch (err) {
       out.fatal = String((err && err.stack) || err)
@@ -155,13 +163,18 @@ if (process.env[CHILD_FLAG] === '1') {
         ],
         history: [
           { t: T0, kind: 'clip', label: '老记录', text: '老内容', src: 'answer' },
-          { t: T0 + 100, kind: 'clip', label: '恢复收藏', text: '恢复内容', src: 'answer', star: true }
+          { t: T0 + 100, kind: 'clip', label: '恢复收藏', text: '恢复内容', src: 'answer', star: true },
+          // 成功那一轮留下的历史（回看来源）：恢复后正文逐字等于它，存卡才合法。
+          { t: T0 + 200, kind: 'solve', label: '通用', text: ANSWER_RAW, src: 'answer' }
         ],
         state: { deviceId: 'mac-test', records: [], bindings: {} }
       })
 
       const out = runMain(dir, 'restore')
-      assert.strictEqual(out.add.ok, true, '恢复后新增应成功')
+      // 恢复前这一轮还没重放：历史里没有的正文必须照旧拒绝（守卫不能把任何正文变成可存）。
+      assert.strictEqual(out.stray.ok, false, '历史里没有的原文不能借恢复存进库')
+      assert.strictEqual(out.stray.reason, 'notsaveable')
+      assert.strictEqual(out.add.ok, true, '恢复后成功历史的原文应可存')
       // 恢复的卡占 id 2，新卡必须是 id 3：若先新增再恢复，新卡会被 journal 覆盖掉。
       assert.strictEqual(out.add.id, 3, '新卡必须排在恢复后的库后面')
       assert.strictEqual(out.star.ok, true, '恢复后收藏应成功')
@@ -211,8 +224,11 @@ if (process.env[CHILD_FLAG] === '1') {
       const historyBefore = fs.readFileSync(path.join(dir, 'history.json'))
 
       const out = runMain(dir, 'bad')
+      // 守卫排在资格判定之前：正文合不合法都要先如实报「同步恢复失败」，不能被 notsaveable 盖掉。
       assert.strictEqual(out.add.ok, false)
       assert.strictEqual(out.add.reason, 'guard', '坏 journal 必须被守卫拦下')
+      assert.strictEqual(out.stray.ok, false)
+      assert.strictEqual(out.stray.reason, 'guard', '资格也不该抢在恢复失败之前报错')
       assert.strictEqual(out.star.ok, false)
       assert.match(String(out.star.error || ''), /同步恢复失败，数据未写入/)
       assert.doesNotMatch(String(out.star.error || ''), /抽不出内容/)

@@ -8,11 +8,11 @@ package com.chun.lingzhu
  *  - [SECTIONS]：二级页里的分组卡片（标题 + 白卡），每张卡归属一个分类。
  *    原来的折叠组（MainActivity.G_*）**原 id 保留**直接当卡片 id（跳转 / 旧存档键不变）；
  *    从旧组里拆出来的块用 `s.` 开头的新 id。
- *  - [ITEMS]：改版前设置页上的**每一个**设置项 / 入口 / 说明（盘点见 repair/…/设置项盘点.md），
- *    记录旧位置（[Item.old] = 旧分类 / 旧组）→ 新卡片（[Item.section]）。
+ *  - [ITEMS]：改版前设置页上的设置项 / 入口 / 说明，
+ *    记录旧位置（[Item.oldGroup] = 旧组 id）→ 新卡片（[Item.section]）。
  *
  * 只改呈现和组织，**不改任何存储键和默认值**：[Item.keys] 只是给人核对的键名清单，读写仍在 MainActivity 原代码里。
- * 单测（SettingsRegistryTest）钉：旧项一个不丢、每项恰好一个新位置、每个分类非空、每个旧折叠组都有归属。
+ * 单测（SettingsRegistryTest）钉：项 id 不重复、每项恰好一个新位置、每个分类非空、每个旧折叠组都有归属。
  */
 object SettingsRegistry {
     // ---------------- 一级分类（按用户心智排序）----------------
@@ -286,7 +286,7 @@ object SettingsRegistry {
      * 改版新增、不来自旧设置页的项：版本行 + 语音转写入口 + 专注守护 / 陪伴气泡两张卡。
      *
      * 这些都不是从旧设置页搬迁过来的（旧版没有语音、没有专注守护），所以按新项登记 —— 不塞进 [ITEMS]，
-     * 那张表是「旧项一个都不能丢」的盘点，混进新项会让 [INVENTORY_COUNT] 的语义失真。
+     * 那张表只收旧设置页上的项。
      */
     const val OLD_NEW = "new"
     val NEW_ITEMS: List<Item> = listOf(
@@ -296,7 +296,4 @@ object SettingsRegistry {
         i("NEW4", "陪伴气泡（多久露一次 · 本机短句 · 免打扰不冒泡）", OLD_NEW, S_COMPANION),
         i("NEW5", "语音对话（腾讯云识别与合成 · 当前大模型 · 音色 / 语速 / 音量 · 插话打断）", OLD_NEW, S_VOICE_TALK),
     )
-
-    /** 盘点出来的旧项总数（设置项盘点.md 第一节逐条列出）。改动旧项清单时这里要一起改，单测会核对 */
-    const val INVENTORY_COUNT = 118
 }

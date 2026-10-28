@@ -632,18 +632,26 @@
     const label = h.star ? '取消收藏' : '收藏'
     btn.title = label; btn.setAttribute('aria-label', label)
   })
-  histList.addEventListener('click', (e) => {
+  histList.addEventListener('click', async (e) => {
     if (e.target.closest('.hs')) return      // 收藏按钮的点击不当作「选中这条历史」
     const el = e.target.closest('.hi')
     if (el) {
       const h = histData[Number(el.dataset.i)]
-      if (h) {
-        started = false; rawText = h.text
-        stopFollow(); pendingAnchor = null   // v1.77：历史回看从开头看，不跟随
-        renderNow()
-        setTop(0)
-        stateEl.style.display = 'none'; closeHist(); resizeNow()
-      }
+      if (!h) return
+      if (typeof window.orbApi.selectHistory !== 'function') { showHistErr('当前版本不支持回看历史'); return }
+      // v1.80：正文由主进程按 t 取回 —— 列表里的 text 只是列表摘要（译文条目还带展示头），
+      // 拿它铺正文会和落盘内容对不上（存复习卡 / 再追问都会拿错原文）。
+      const gen = histGen
+      let r = null
+      try { r = await window.orbApi.selectHistory(h.t) } catch { r = null }
+      if (gen !== histGen) return           // 期间开了新一轮识别 / 又开关过历史 → 这次回看作废，别盖住新正文
+      if (!r || !r.ok) { showHistErr('打不开这条历史：' + ((r && r.error) || '没有响应')); return }   // 不假回看
+      resetBody()                            // 清正文 / 跟随 / 历史区（closeHist 也在这里）
+      rawText = r.text; targetText = r.text
+      started = true
+      renderNow()
+      setTop(0)                              // v1.77：历史回看从开头看
+      stateEl.style.display = 'none'; closeHist(); resizeNow()
       return
     }
     if (e.target.closest('#hb')) { closeHist(); resizeNow() }
@@ -674,34 +682,59 @@
   setInterval(syncAskBar, 400)
 
   /* [KCard] v1.72「存为复习卡」—— 面板把这一轮的原文整段交给主进程，
-     抽正反面（front=本轮问题行 / back=答案正文剥标记截 500）和去重都在 knowledge.js 里做，
-     面板只管按钮态：没存过显示「存为复习卡」，存过显示 ✓ 不可再点，重复存给提示不给静默。 */
+     抽正反面（front=本轮问题行 / back=答案正文剥标记截 500）和去重都在 knowledge.js 里做。
+     v1.79：**能不能存由主进程说**（kcard:has 回 {saved, saveable, streaming}）——
+     面板不靠正文猜：出错时正文也是一段字（「出错：接口 500 …」），老写法就把它存成了复习卡。
+     按钮三态：可存 / 已存 ✓ / 灰掉（还在写、或这一轮根本没有成功的答案）。 */
+  const KCARD_TIP = '把这一轮的问答存进知识卡，之后按 FSRS 安排复习'
   const kcardSaveBtn = document.getElementById('kcardSave')
-  let kcardSaved = false, kcardBusy = false
+  let kcardSaved = false, kcardBusy = false, kcardSaveable = false, kcardStreaming = false
   function paintKcardBtn() {
     if (kcardBusy) return
-    kcardSaveBtn.textContent = kcardSaved ? '✓ 已存' : '存为复习卡'
-    kcardSaveBtn.disabled = kcardSaved
-    kcardSaveBtn.style.opacity = kcardSaved ? '.7' : '1'
-    kcardSaveBtn.style.cursor = kcardSaved ? 'default' : 'pointer'
+    const locked = !kcardSaved && !kcardSaveable
+    kcardSaveBtn.textContent = kcardSaved ? '✓ 已存' : (kcardStreaming && !kcardSaveable ? '等这轮写完…' : '存为复习卡')
+    kcardSaveBtn.disabled = locked || kcardSaved   // 已存的那一轮也不再可点（点击处理器本来就会拒，这里别留一个假可点）
+    kcardSaveBtn.style.opacity = locked ? '.55' : (kcardSaved ? '.7' : '1')
+    kcardSaveBtn.style.cursor = (locked || kcardSaved) ? 'default' : 'pointer'
+    kcardSaveBtn.title = kcardSaved ? '这一轮已经存进知识卡了'
+      : (kcardStreaming ? '答案还在写，写完才能存'
+        : locked ? '这一轮没有成功的答案（出错或未完成），不能存成复习卡'
+          : KCARD_TIP)
   }
-  // 每一轮正文变了就重新问一次「这张存过没」（追问追加也算新的一轮）
-  let kcardProbeText = ''
+  // 每一轮正文变了就重新问一次「存过没 / 能不能存」（追问追加也算新的一轮）
+  let kcardProbeText = '', kcardProbeBusy = false
   function syncKcardSaved() {
     const t = rawText || ''
-    if (t === kcardProbeText) return
+    if (!t) {
+      kcardSaved = false; kcardSaveable = false; kcardStreaming = false
+      kcardProbeText = ''; paintKcardBtn(); return
+    }
+    // 同一段正文问过了，且这一轮不是在流式中（流式里 saveable 跟着写入变，收尾那一拍必须再问一次）
+    if (t === kcardProbeText && !kcardStreaming) return
+    if (kcardProbeBusy) return   // 上一次还在途：这次不记 probeText，它回来后下一拍自然会问新正文
     kcardProbeText = t
-    if (!t) { kcardSaved = false; kcardProbeText = ''; paintKcardBtn(); return }
-    window.orbApi.kcardHas(t).then((saved) => { kcardSaved = !!saved; paintKcardBtn() }).catch(() => {})
+    kcardProbeBusy = true
+    window.orbApi.kcardHas(t).then((r) => {
+      if (kcardProbeText !== t) return
+      // 只认 {saved, saveable, streaming} 这一种回答；形状不对按「不能存」画，绝不当成可存
+      const have = !!r && typeof r === 'object' && typeof r.saveable === 'boolean'
+      kcardSaved = have && !!r.saved
+      kcardSaveable = have && !!r.saveable
+      kcardStreaming = have && !!r.streaming
+    }).catch(() => {
+      if (kcardProbeText !== t) return
+      kcardSaved = false; kcardSaveable = false; kcardStreaming = false
+    }).then(() => { kcardProbeBusy = false; paintKcardBtn() })
   }
   kcardSaveBtn.addEventListener('click', () => {
-    if (kcardSaved || kcardBusy || !rawText) return
+    if (kcardSaved || kcardBusy || !rawText || !kcardSaveable) return
     kcardBusy = true
     kcardSaveBtn.textContent = '存卡中…'
     // 成败提示由主进程 pushNotice 走 answer:notice（面板只有那一条提示通道，不另开一套）
     window.orbApi.kcardAdd(rawText).then((r) => {
       kcardBusy = false
-      if (r && r.ok) { kcardSaved = true }
+      if (r && r.ok) kcardSaved = true
+      else if (r && r.reason === 'notsaveable') kcardSaveable = false   // 主进程拒绝：按它的判定灰掉，别留一个假可点
       paintKcardBtn()
     }).catch(() => { kcardBusy = false; paintKcardBtn() })
   })

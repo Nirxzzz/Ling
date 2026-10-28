@@ -92,7 +92,7 @@ class KaoyanBackTest {
     }
 
     @Test fun circledLineAfterBracketedBodyMergesToo() {
-        val bs = KaoyanBack.parse("【词组】① keep the lantern lit 让灯一直亮着\n②lantern slide 幻灯片")
+        val bs = KaoyanBack.parse("【词组】① keep the lantern lit 让灯一直亮着\n②lantern slide幻灯片")
         assertEquals(1, bs.size)
         assertEquals("词组", bs[0].tag)
         // ② 那条的英文短语与中文释义再被 wrap 拆开（英文→中文交界）
@@ -250,14 +250,14 @@ class KaoyanBackTest {
 
     @Test fun realPageBackParsesIntoOrderedBlocks() {
         val bs = KaoyanBack.parse(lantern)
-        // 音标 / 助记 / 词义 / 词组 / 真题例句 / 残句
-        assertEquals(listOf("", "助记", "词义", "词组", "真题例句", ""), bs.map { it.tag })
+        // 音标 / 助记 / 词义 / 词组 / 残句 / 真题例句（真题块一律稳定排到最后）
+        assertEquals(listOf("", "助记", "词义", "词组", "", "真题例句"), bs.map { it.tag })
         assertEquals("['læntən] n.", bs[0].text)
         assertEquals("lant(词根)+ ern(名词后缀)→提灯", bs[1].text)
         assertTrue("词义块保留三个义项", bs[2].text.split("\n").count { it.startsWith("①") || it.startsWith("②") || it.startsWith("③") } == 3)
-        assertEquals("真题块排到倒数第二", "真题例句", bs[4].tag)
-        assertEquals("残句排在最后一块并把 · 留着", true, bs[5].frag)
-        assertTrue(bs[5].text.startsWith("·"))
+        assertTrue("残句块标了 frag", bs[4].frag)
+        assertTrue("残句把 · 留着", bs[4].text.startsWith("·"))
+        assertEquals("真题块排到最后一块", "真题例句", bs[5].tag)
     }
 
     @Test fun parseMemoizedIsStable() {

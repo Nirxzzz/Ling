@@ -1,4 +1,3 @@
-import java.net.URI
 import java.util.Properties
 
 plugins {
@@ -6,12 +5,30 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// 签名信息放在 keystore.properties（不进补丁目录）；没有这个文件时 release 直接构建失败（见 buildTypes.release）
+// 签名信息放在 keystore.properties（不进补丁目录）。配置阶段只**读状态**、不抛异常 ——
+// 没有密钥的机器必须照样能跑 assembleDebug / testDebugUnitTest / help；
+// release 打包在执行阶段由 checkReleaseSigning 强制校验（见 android 块之后）。
+val ksFile = rootProject.file("keystore.properties")
 val ksProps = Properties().apply {
-    val f = rootProject.file("keystore.properties")
-    if (f.exists()) f.inputStream().use { load(it) }
+    if (ksFile.isFile) ksFile.inputStream().use { load(it) }
 }
 
+// 返回「缺什么」，null 表示 release 签名材料齐备。每次都从磁盘重读：
+// 配置阶段建 signingConfig 用一次，执行阶段闸门再验一次，避免中途被改掉。
+// 只校验字段是否为空、密钥库文件是否存在，绝不回显密码 / keyAlias 的取值。
+fun releaseSigningProblem(keystore: java.io.File): String? {
+    if (!keystore.isFile) return "android/keystore.properties 不存在"
+    val props = Properties().apply { keystore.inputStream().use { load(it) } }
+    val missing = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+        .filter { props.getProperty(it).isNullOrBlank() }
+    if (missing.isNotEmpty()) return "keystore.properties 缺少字段：" + missing.joinToString("、")
+    val storeFile = props.getProperty("storeFile").trim()
+    if (!keystore.parentFile.resolve(storeFile).isFile) return "storeFile 指向的密钥库文件不存在：$storeFile"
+    return null
+}
+
+// 配置阶段的结果：只有它为 null 才会建 signingConfigs.release。
+val releaseSigningProblemAtConfig: String? = releaseSigningProblem(ksFile)
 
 android {
     namespace = "com.chun.lingzhu"
@@ -41,9 +58,11 @@ android {
     }
 
     signingConfigs {
-        if (ksProps.getProperty("storeFile") != null) {
+        // 四项齐全且密钥库文件真实存在才建这个配置；缺任何一项就不建，
+        // release 打包会由 checkReleaseSigning 明确报错，而不是产出一个未签名的包。
+        if (releaseSigningProblemAtConfig == null) {
             create("release") {
-                storeFile = rootProject.file(ksProps.getProperty("storeFile"))
+                storeFile = rootProject.file(ksProps.getProperty("storeFile").trim())
                 storePassword = ksProps.getProperty("storePassword")
                 keyAlias = ksProps.getProperty("keyAlias")
                 keyPassword = ksProps.getProperty("keyPassword")
@@ -56,29 +75,19 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // **不许静默退回 debug 签名。**
+            // **不许静默退回 debug 签名，也不许产出未签名 APK。**
             //
-            // 原来的写法是：
-            //     signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
-            // 意思是「找不到 release 签名就用 debug 签名接着编」。
+            // 旧写法找不到 release 签名时会退回 debug 签名配置，缺密钥也**照常构建成功**：
+            // APK 产出、大小与 sha256 都正常，只有装到真机上才暴露 —— debug 签名与已装正式版不同，
+            // 覆盖升级直接 INSTALL_FAILED_UPDATE_INCOMPATIBLE，用户必须卸载重装、笔记全靠自己备份过；
+            // 而构建日志里一个字都看不出来。
             //
-            // 危险在于它**不会失败**：构建成功、APK 产出、大小和 sha256 都正常，
-            // 只有装到真机上才会暴露 —— debug 签名的包
-            //   · 和已装的 release 版本签名不同，覆盖升级直接 INSTALL_FAILED_UPDATE_INCOMPATIBLE
-            //   · 发出去后用户必须卸载重装，笔记数据全靠他自己有没有备份
-            //   · 而 CI/构建日志里一个字都看不出来
+            // 但在配置阶段直接 throw GradleException 又走到另一个极端：没有 keystore.properties 的机器
+            // 连 assembleDebug / testDebugUnitTest / help 都起不来 —— 这对公开仓库是常态。
             //
-            // 换台机器、忘了带 keystore.properties、或者只是路径写错，都会踩到。
-            // 所以这里改成宁可构建失败，也不产出一个「看起来正常」的错包。
-            val rel = signingConfigs.findByName("release")
-            if (rel == null) {
-                throw GradleException(
-                    "缺少 release 签名配置：根目录没有 keystore.properties，或里面缺 storeFile/storePassword/keyAlias/keyPassword。" +
-                        "拒绝用 debug 签名打包 —— 那样的 APK 装不上、也覆盖不了已装的正式版。" +
-                        "（只想本地跑一下请用 assembleDebug。）"
-                )
-            }
-            signingConfig = rel
+            // 所以校验放到执行阶段：只有真正要产出 release 产物的任务依赖 checkReleaseSigning，
+            // 缺材料时明确失败；这里保持 signingConfig 为空（AGP 只会生成未签名包，而那些出口已被闸门挡住）。
+            signingConfig = signingConfigs.findByName("release")
         }
     }
     compileOptions {
@@ -112,6 +121,52 @@ android {
                 "org/bouncycastle/pqc/**"
             )
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// release 签名闸门（执行阶段，而不是配置阶段）
+//
+// 只绑 release 变体自己产生产物的出口任务，名字全部由变体名推出：
+//   package<Variant>（APK，签名在打包内部完成）、package<Variant>Bundle（AAB）、
+//   package<Variant>UniversalApk（通用 APK）、sign<Variant>Bundle（AAB 签名，早于 AAB 打包）。
+// assembleRelease / bundleRelease / installRelease / 直接点任务 都经由它们，
+// 所以按变体绑定、不解析命令行里敲了哪些任务名，任何组合都绕不过去。
+// debug 与单测任务完全不依赖闸门：没有密钥的机器照样编译、跑测试。
+// 配置阶段是否真的建成了 release 签名配置。闸门只看这个布尔值 + 执行期重读的材料状态，
+// 不去读 project 的其它状态，行为与「命令行敲了哪些任务」无关。
+val releaseSigningConfigured = android.signingConfigs.findByName("release") != null
+
+val checkReleaseSigning = tasks.register("checkReleaseSigning") {
+    group = "verification"
+    description = "确认 release 签名材料齐全；缺任何一项都让 release 打包失败，绝不产出未签名或 debug 签名的包"
+    doLast {
+        // 材料在执行阶段再读一次：中途被改掉也拦得住。
+        val missing = releaseSigningProblem(ksFile)
+        if (releaseSigningConfigured && missing == null) return@doLast
+        // 配置期没有签名配置时 AGP 会产出未签名的 release 包 —— 那也是静默降级，同样必须失败。
+        val why = missing
+            ?: "release 构建没有绑定签名配置（keystore.properties 在配置阶段还不存在或不合规），重跑一次构建即可"
+        throw GradleException(
+            "缺少 release 签名配置（$why）。" +
+                "本仓库不会退回 debug 签名，也不会产出未签名的 release 包 —— 那样的 APK 装不上、" +
+                "也覆盖不了已安装的正式版。请在 android/keystore.properties 写入 " +
+                "storeFile/storePassword/keyAlias/keyPassword 后重试；" +
+                "只想本地编译、跑测试请用 assembleDebug / testDebugUnitTest。"
+        )
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        if (variant.buildType != "release") return@onVariants
+        val suffix = variant.name.replaceFirstChar { it.uppercase() }
+        val gateTargets = setOf(
+            "package$suffix", "package${suffix}Bundle",
+            "package${suffix}UniversalApk", "sign${suffix}Bundle",
+        )
+        project.tasks.matching { it.name in gateTargets }
+            .configureEach { dependsOn(checkReleaseSigning) }
     }
 }
 

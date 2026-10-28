@@ -3,6 +3,7 @@ package com.chun.lingzhu
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.UUID
@@ -163,15 +164,17 @@ class ApiProfilesTest {
         assertTrue(keyOnly.enabled)
     }
 
-    /** 开源副本没有内置接口：缺省一律关，只有显式存过的配置才会被采用。 */
-    @Test fun searchDefaultsOffWithoutBuiltIn() {
-        assertFalse(Prefs.resolveSearchConfig(null, null).enabled)
-        assertFalse(Prefs.resolveSearchConfig(null, ApiProfiles.LegacySearch(enabled = false)).enabled)
-        val storedOff = WebSearch.Config()
-        assertSame(storedOff, Prefs.resolveSearchConfig(storedOff, null))
+    /** 迁移函数本身对「没存过」永远返回关；开源副本没有内置接口，[Prefs.resolveSearchConfig] 的缺省也是关。 */
+    @Test fun newUsersDefaultToOffAndDeepSeek() {
+        val c = ApiProfiles.migrateSearchConfig(null)
+        assertFalse(c.enabled)
+        assertEquals(WebSearch.DEEPSEEK, c.provider)
+        assertFalse(c.enhance)
+        assertFalse(WebSearch.Config().enabled)
     }
 
-    @Test fun recommendedPresetTurnsOnDeepSeekWithoutSecretsOrEnhance() {
+    /** 推荐一键：开 + DeepSeek + 不打开增强，也不把已有 Key 换成任何内置密钥 */
+    @Test fun recommendedSearchConfigTurnsOnDeepSeekWithoutSecretsOrEnhance() {
         val base = WebSearch.Config(enabled = true, provider = WebSearch.TAVILY, tavilyKey = "tv", enhance = true)
         val c = ApiProfiles.recommendedSearchConfig(base)
         assertTrue(c.enabled)
@@ -194,31 +197,34 @@ class ApiProfilesTest {
         assertFalse(ApiProfiles.isOfficialDeepSeekBase(""))
     }
 
-    // —— 联网缺省的真值优先级（v2.7.x 公测内置 DeepSeek）：显式存过的 > 老键 > 缺省 ——
+    // —— 联网缺省的真值优先级（开源副本没有内置接口）：显式存过的 > 老键迁移 > 缺省关 ——
 
-
-    /** 缺省只有「公测 + 没自填接口 + 内置官方 DeepSeek」开搜索（Key 不进配置 / SP）；内测缺省保持一直以来的关 */
-    @Test fun freshInstallDefaultsSearchOnOnlyForPublicBuiltinDeepSeek() {
-        val pub = Prefs.resolveSearchConfig(null, null, isInternal = false, userBaseUrl = "", preset = builtinDeepSeek)
-        assertTrue(pub.enabled)
-        assertEquals(WebSearch.DEEPSEEK, pub.provider)
-        assertEquals("内置 Key 不复制进配置 / SP", "", pub.deepseekKey)
-        assertFalse("内测缺省不变", Prefs.resolveSearchConfig(null, null, isInternal = true, userBaseUrl = "", preset = builtinDeepSeek).enabled)
+    /** 开源副本没有内置接口：缺省一律关，只有显式存过的配置才会被采用。 */
+    @Test fun searchDefaultsOffWithoutBuiltIn() {
+        assertFalse(Prefs.resolveSearchConfig(null, null).enabled)
+        assertFalse(Prefs.resolveSearchConfig(null, ApiProfiles.LegacySearch(enabled = false)).enabled)
+        val storedOff = WebSearch.Config()
+        assertSame(storedOff, Prefs.resolveSearchConfig(storedOff, null))
     }
 
     /** 显式选择永远压过缺省：存过的配置（含明确关掉）原样用；老键明确关也保持关，不被缺省翻成开 */
     @Test fun explicitSearchChoicesWinOverTheDefault() {
         val storedOff = WebSearch.Config(enabled = false, provider = WebSearch.TAVILY, tavilyKey = "tv")
-        assertEquals(storedOff, Prefs.resolveSearchConfig(storedOff, null, isInternal = false, userBaseUrl = "", preset = builtinDeepSeek))
-        assertFalse(Prefs.resolveSearchConfig(null, ApiProfiles.LegacySearch(enabled = false), isInternal = false, userBaseUrl = "", preset = builtinDeepSeek).enabled)
+        assertSame("显式关掉的配置原样返回", storedOff, Prefs.resolveSearchConfig(storedOff, null))
+        assertFalse(Prefs.resolveSearchConfig(null, ApiProfiles.LegacySearch(enabled = false)).enabled)
+        // 存过的「开」也照原样用，缺省不参与改写
+        val storedOn = WebSearch.Config(enabled = true, provider = WebSearch.SEARXNG, searxngBase = "https://searx.example")
+        assertSame("显式开着的配置也原样返回", storedOn, Prefs.resolveSearchConfig(storedOn, ApiProfiles.LegacySearch(enabled = false)))
     }
 
-    /** host-key 隔离边界：非官方 host / 空 Key 的内置、自填接口都拿不到缺省开，自定义地址更拿不到内置 Key */
-    @Test fun defaultOnStaysOffForCustomBaseOrNonOfficialBuiltin() {
-        val proxy = builtinDeepSeek.copy(baseUrl = "https://proxy.example/v1")
-        assertFalse("内置但非官方 host 不开", Prefs.resolveSearchConfig(null, null, isInternal = false, userBaseUrl = "", preset = proxy).enabled)
-        assertFalse("Key 空就没有可复用的", Prefs.resolveSearchConfig(null, null, isInternal = false, userBaseUrl = "", preset = builtinDeepSeek.copy(apiKey = "")).enabled)
-        assertFalse("自填接口不被缺省覆盖", Prefs.resolveSearchConfig(null, null, isInternal = false, userBaseUrl = "https://api.deepseek.com", preset = builtinDeepSeek).enabled)
-        assertFalse("自定义地址拿不到内置 Key", ApiProfiles.reusableSearchKey(proxy.baseUrl, builtinDeepSeek.apiKey))
+    /** host-key 隔离边界：只有官方 HTTPS host + 非空 Key 才复用模型 Key，自定义 / 仿冒地址一律拿不到 */
+    @Test fun searchKeyReuseOnlyForOfficialHostWithKey() {
+        val key = "sk-model"
+        assertTrue(ApiProfiles.reusableSearchKey(WebSearch.DEEPSEEK_BASE, key))
+        assertTrue(ApiProfiles.reusableSearchKey(WebSearch.DEEPSEEK_BASE + "/v1", key))
+        assertFalse("自定义地址拿不到模型 Key", ApiProfiles.reusableSearchKey("https://proxy.example/v1", key))
+        assertFalse("仿冒 host 不可复用", ApiProfiles.reusableSearchKey("https://api.deepseek.com.evil.com", key))
+        assertFalse("Key 空就没有可复用的", ApiProfiles.reusableSearchKey(WebSearch.DEEPSEEK_BASE, ""))
+        assertFalse(ApiProfiles.reusableSearchKey(WebSearch.DEEPSEEK_BASE, "   "))
     }
 }

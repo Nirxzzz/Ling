@@ -54,8 +54,10 @@ class RichDeckTest {
     @Test fun onlyExactMagicDiverts() {
         // 只有整行等于魔数才走富文本；前后有别的字就走普通解析
         val plain = Words.parse("x#LING-RICH v1\norchard | 果园")
-        assertEquals(1, plain.size)
-        assertEquals("orchard", plain[0].front)
+        assertEquals("魔数不独占首行 → 两行各按普通词书解析", 2, plain.size)
+        assertEquals(listOf("x#LING-RICH v1", "orchard"), plain.map { it.front })
+        assertEquals("", plain[0].back)
+        assertEquals("果园", plain[1].back)
     }
 
     @Test fun bomBeforeMagicStillRich() {
@@ -144,7 +146,12 @@ class RichDeckTest {
     @Test fun decksOfRichTextParsesToRecordCount() {
         val deck = Words.parse(richDeck(3))
         assertEquals(3, deck.size)
-        assertTrue(deck.all { it.back.startsWith("【词义】") })
+        // parseRich 的契约是背面「不截断、不重排、不改写」：音标行与词义行都原样留着
+        for ((i, c) in deck.withIndex()) {
+            val n = i + 1
+            assertEquals("word$n", c.front)
+            assertEquals("[$n] v.\n【词义】第 $n 条", c.back)
+        }
     }
 
     @Test fun richCardsArePrettifiedVerbatim() {

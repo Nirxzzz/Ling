@@ -8,12 +8,14 @@ import org.junit.Test
 class UpdateSafeUrlTest {
     @Test
     fun encodesChinesePathKeepsAsciiUntouched() {
-        val raw = "https://updates.example.com/Ling/main/Ling-1.85.2-公测版.apk"
+        val raw = "https://updates.example.com/Ling/main/update/Ling-1.85.2-公测版.apk"
         val safe = Update.safeUrl(raw)
         assertTrue("中文必须被百分号编码", "公测版" !in safe)
         assertTrue(safe.endsWith("Ling-1.85.2-%E5%85%AC%E6%B5%8B%E7%89%88.apk"))
-        assertEquals("纯 ASCII 的 url 逐字不变（老通道零影响）", raw, safe.substring(0, raw.indexOf("update/")) + "update/" +
-            raw.substringAfter("update/").let { java.net.URLDecoder.decode(it, "UTF-8") })
+        val head = "https://updates.example.com/Ling/main/update/"
+        assertEquals("纯 ASCII 的路径前缀逐字不变（老通道零影响）", head, safe.substring(0, head.length))
+        assertEquals("编码后的文件名解回来就是原名",
+            raw.removePrefix(head), java.net.URLDecoder.decode(safe.removePrefix(head), "UTF-8"))
     }
 
     @Test

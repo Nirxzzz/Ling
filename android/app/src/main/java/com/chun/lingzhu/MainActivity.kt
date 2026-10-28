@@ -238,12 +238,12 @@ class MainActivity : Activity() {
      */
     private var overlayGranted = false
     /**
-     * 「接口配好了没」的快照。[Prefs.hasApi] 背后是 [Prefs.api]：要解析方案列表、搜索配置、Agent 列表、模块开关，
-     * 设置页建树 + 每次刷新会问上百次；而它的结论其实只由两个运行时输入决定 ——
-     * [Prefs.api] 里 `baseUrl.ifBlank { preset()?.baseUrl }`：自填地址，或内置方案（`Preset.get(presetId)`，
-     * 来自 BuildConfig 常量，进程内不变；Key / 模型 / 自定义方案列表都不影响“通不通”）。
-     * 所以快照键就是这两个输入：键没变结论必然相同，键一变立刻重算。
-     * 这些值只会被设置页的输入框 / 内置方案单选改（改了键立刻跟着变），以及 selectPreset()（同时清地址）。
+     * 「接口配好了没」的快照。[Prefs.hasApi] 背后是 [Prefs.api]：要解析搜索配置、Agent 列表、模块开关，
+     * 设置页建树 + 每次刷新会问上百次；而它的结论其实只由一个运行时输入决定 ——
+     * [Prefs.api] 的 `baseUrl`：这个开源副本不内置任何接口，地址只能是用户自己填的那个；
+     * Key / 模型 / 自定义方案列表都不影响“通不通”。
+     * 所以快照键就是这个输入：键没变结论必然相同，键一变立刻重算。
+     * 这个值只会被设置页「自行填写接口」的输入框改（改了键立刻跟着变）。
      * 这条结论只用于界面提示与卡片锁态，请求路径仍各自读 [Prefs.api]。
      */
     private var apiReadyKey: String? = null
@@ -427,9 +427,9 @@ class MainActivity : Activity() {
     /** 重算悬浮窗授权快照（[build] 开头 / [onResume] 各一次；系统权限只在这两处之间会变） */
     private fun refreshOverlayGranted() { overlayGranted = Settings.canDrawOverlays(this) }
 
-    /** 接口配好没有（[Prefs.hasApi] 的缓存版：键 = 自填地址 + 当前内置方案，变了就重算） */
+    /** 接口配好没有（[Prefs.hasApi] 的缓存版：键 = 自填地址，变了就重算） */
     private fun apiReady(): Boolean {
-        val key = prefs.baseUrl + "\u0000" + prefs.presetId
+        val key = prefs.baseUrl
         if (key != apiReadyKey) {
             apiReadyKey = key
             apiReadyCached = prefs.hasApi()

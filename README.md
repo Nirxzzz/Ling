@@ -15,7 +15,7 @@ Ling 是一款常驻桌面的悬浮球工具：屏幕识别、划词翻译，结
 
 - 版本 `2.7.3`（`versionCode 273`），包名 `com.chun.lingzhu.opensource`，桌面图标入口仍是 `com.chun.lingzhu.ChatActivity`。
 - 使用独立 `applicationId`，不能覆盖、升级或替换官方 `com.chun.lingzhu`，数据目录与 SharedPreferences 与官方 App 隔离。公开构建只保留一种构建变体（无 `flavorDimensions` / `productFlavors`）。
-- Debug 构建使用 Android 调试签名，不是生产签名；Release 构建需要使用者自备签名配置，缺配置时构建直接失败，不会静默退回 debug 签名。
+- Debug 构建使用 Android 调试签名，不是生产签名；Release 构建需要使用者自备签名配置：缺 `keystore.properties` 或其中任一项时，release 产物出口被执行阶段的 `checkReleaseSigning` 挡住并明确报错，不会静默退回 debug 签名、也不产出未签名 release 包。签名校验不在配置阶段抛异常，无签名材料的机器上 debug 构建与单测能正常进行（已实测）。
 - 不内置模型、DeepL、翻译服务或腾讯云的 Key，也不内置语音识别 Key；所有接口与 Key 由使用者自填，默认更新源为空。
 - 仅保留 5 套已署名的 CC BY-SA 3.0 词表，新装默认词库为 `cet4`（确实存在的那一级）；授权链不完整的考研词库未纳入。
 - 语音能力两条独立链路：**实时转写**（豆包 / 阿里云两家，逐字出稿）与**语音对话**（腾讯云识别 → 现有大模型 → 腾讯云合成 → 手机扬声器）。两者都不内置凭据，腾讯凭据与转写 Key 用 AndroidKeyStore 加密存放。
@@ -37,33 +37,32 @@ Ling 是一款常驻桌面的悬浮球工具：屏幕识别、划词翻译，结
 | macOS arm64 | `.zip`（未签名、未公证） | `cd desktop && npm ci && npm run pack:mac` | [desktop/README.md](desktop/README.md) |
 | Windows x64 | `.zip`（未签名） | `cd desktop && npm ci && npm run pack:win` | [desktop/README.md](desktop/README.md) |
 
-两端的具体依赖版本、签名配置、可复现性边界和产物状态，均以上述子目录 README 为准。桌面端 `package-lock.json` 为 `lockfileVersion 3`，`electron-builder` `26.15.3` 及其依赖已写入锁文件（`packages` 共 333 个条目，含根条目），`npm ci` 可直接安装，不需要先补锁文件；首次安装与打包需要联网下载 Electron `37.10.3` 运行时。本文件只汇总已有执行记录：Android `2.7.3` 的构建与单测、桌面端 `1.64.1` 的打包与产物运行都还没有在这份公开副本上记录，本文件不预写这些通过结论。
+两端的具体依赖版本、签名配置、可复现性边界和产物状态，均以上述子目录 README 为准。桌面端 `package-lock.json` 为 `lockfileVersion 3`，`electron-builder` `26.15.3` 及其依赖已写入锁文件（`packages` 共 333 个条目，含根条目），`npm ci` 可直接安装，不需要先补锁文件；首次安装与打包需要联网下载 Electron `37.10.3` 运行时。两端都已有本副本上的执行记录（见下节）：Android 构建、单测与冒烟通过，桌面端单测与两轮界面验收通过、macOS zip 已构建并启动过。这些记录不包含签名发布包、Windows 运行、真实供应商调用或模型质量结论。
 
 ## 已执行的验证
 
-以下结果按原记录保留，来自记录当时的那次真实执行；本文件不重跑、也不把历史结果当成当前版本的验收结论。来源区分：Android 2.0.9 的记录来自当时的源码整理阶段；发布提交里引用的 Android 单测数量，以及签名 APK 安装那类结果，都来自生产源码树，不是在这份公开副本上执行；桌面端以本节列出的执行输出为准。
+以下都是本仓库这份公开副本上真实执行过、并核对过输出或产物的结果；每条标明它对应的版本，跨版本不互推，也不把历史记录当成当前版本的结论。Android 2.0.9 那条早于本次公开整理，只作历史保留。
 
 ### Android
 
-- **2.0.9 历史记录（不是 2.7.3 的结果）**：`testDebugUnitTest` + `assembleDebug` 首轮 `15m27s` 通过；补齐 assets 许可文件后最终 `57s` 通过；JUnit XML 汇总 **1289 tests，0 failures / 0 errors / 0 skips**。
-- 2.0.9 曾在隔离的 Android 14 专用只读模拟器上完成真实安装并启动 `ChatActivity`，进程存活，截图已目视检查；首启未配置 API 时提示缺少接口 / 权限，点击「去填写」进入首次配置引导。
-- **2.7.3**：源码已更新到本仓库，但 `gradle testDebugUnitTest` / `assembleDebug`、JUnit 汇总与设备烟测都还没有在本仓库这份公开副本上执行并记录；确认前不写通过数量，也不把 2.0.9 的记录当成 2.7.3 的结果。
+- **2.0.9 历史记录（不是 2.7.3 的结果）**：`testDebugUnitTest` + `assembleDebug` 当时通过，JUnit 汇总 **1289 tests，0 failures / 0 errors / 0 skips**；2.0.9 也曾在隔离的 Android 14 专用只读模拟器上完成安装并启动 `ChatActivity`，首启未配置 API 时会引导去填写。这些对应当时按 MIT 分发的源码，不是当前 GPL-3.0-only 的状态。
+- **2.7.3（已实际执行）**：`gradle testDebugUnitTest assembleDebug` 构建成功（约 36 秒），主源码与测试源码均编译通过；`testDebugUnitTest` 共 153 个测试类、**2380 项，0 失败 / 0 错误 / 0 跳过**。
+- **2.7.3 APK**：`app-debug.apk`，15,315,144 字节，`applicationId=com.chun.lingzhu.opensource`，2.7.3 / 273，`sha256 972f938ab9706cf7f060a0d1495ff55493a2227be9270d7c81e9cbd175c229d2`。包内含 GPLv3 正文与 notices，词表只有 5 套 CC BY-SA 文件。**调试签名，不是生产签名，不能覆盖官方 App。**
+- **2.7.3 签名闸门（已实测）**：缺 `keystore.properties` 时配置阶段不再抛异常，debug 构建与单测正常进行；release 产物出口由执行阶段的 `checkReleaseSigning` 拦下并明确报错，没有退回 debug 签名，也没有产出未签名 release 包。本目录没有签出、安装或分发过 release 包。
+- **2.7.3 设备冒烟（Android 14 专用只读模拟器）**：安装后冷启动 `ChatActivity` 正常，保存笔记后杀进程冷启动仍可见，未填接口时「检测连接」如实提示缺少接口地址 / 模型、没有假成功，整轮 logcat 无 `FATAL EXCEPTION` 与 `ANR in`。只覆盖主干路径，不等于全面功能验收；未接真实供应商。
 
 ### 桌面端
 
-- 1.60.3 时期的记录：`npm ci` 成功；`npm test` 当时共 **70 项，0 失败**；另跑 `node test/anki.test.js`，**8/8 通过**。测试文件集合此后已有增减，**这不是 1.64.1 的结果**。
-- 同一时期：macOS arm64 与 Windows x64 均由 `electron-builder` 基于 Electron `37.10.3` 打包成功，不依赖旧模板 zip；macOS 实现曾在真机运行（按题型自由组织章节、追问带原图，另检查了空配置启动、未配置更新源和设置页）。这些记录对应 1.60.3 的源码，不自动适用于 1.64.1。
-- Windows 包未在真机运行，只验证了打包与 zip CRC。
-- 补充核对：同用 `deepseek-v4-flash` 对 2 道文本题做新旧提示词对照，两版都算出平均速度 `40 km/h`，也都拒绝缺条件的几何题。样本只有 2 题，只说明这两处行为一致，**不构成准确率提升或 benchmark 结论**。
-- macOS 包未签名、未公证；Android Debug 包为非生产签名，不能覆盖官方安装。
-- 打包脚本使用 `--publish never`，打包过程未上传任何产物。
-- **1.64.1**：在这份公开副本上实际执行的是 `npm ci --ignore-scripts --no-audit --no-fund`（安装 332 个包，跳过了 Electron 二进制下载）、`node --test test/*.test.js`（**303 项通过，0 失败**）与 `npm test` 整体（含 `tool/smoke-main.js`，输出「模块加载通过（未发现模块级错误与启动期异常）」）。界面启动复用源码树已有的 Electron `37.10.3` 运行时，以隔离的临时用户数据目录直接启动这份源码（非打包产物），确认首次启动的新手卡与「配置接口」进入设置页；只到启动与设置入口这一层，语音页面、真实接口与云端链路均未验证，打包也没有做过。
+- **1.64.1 单元测试**：`npm ci --ignore-scripts --no-audit --no-fund` 安装 332 个包（跳过 Electron 二进制下载）；`npm test` **302 项通过，0 失败**，`tool/smoke-main.js` **8/8 通过**。这是纯函数与模块级冒烟，**不启动**窗口与渲染进程。
+- **1.64.1 界面验收（两轮）**：先跑源码（隔离临时用户数据目录、复用 Electron `37.10.3`），再跑最终 zip 解出的 `Ling.app`；两轮都用真实鼠标 / 键盘操作，模型请求全部指向本机临时 fixture 服务。走通的路径：新手卡 → 设置页填接口 → 获取模型列表 → 检测连接 → 保存 → 退出重启后设置与引导状态仍在 → 双击截屏流式答案 → 追问（打包产物那轮带新截图并成功）→ 历史记录重启后仍在、可选中、星标可切换 → 存知识卡且存后按钮不可点 → 知识卡评分「良好」后到期顺延 2 天、当日到期队列为空、卡库计数 1 → HTTP 500 时面板显示错误且窗口可操作，干净配置下该轮「存为复习卡」不可点、主进程回 `notsaveable`，失败后再成功的一轮可以正常存 → 流式挂起时关闭面板后 busy 清除且不再自行弹回 → 退出码 0，无残留进程或单实例锁。
+- 边界：fixture 只证明**协议与接线**（请求构造、SSE 解析、错误显示、取消恢复、存卡资格、复习调度），**不证明**真实模型对截图的识别能力，也不证明答案质量。未验收：语音云链路（腾讯 / 豆包 / 阿里云）、局域网同步、MCP、手机常连、剪贴板翻译、专注守护、陪伴气泡、更新检查与下载、Windows 真机；桌面端没有笔记界面。这些是「未验证」，不是「不可用」。
+- **1.64.1 打包**：macOS arm64 zip 已构建（`Ling-1.64.1-mac-arm64.zip`，102,879,005 字节，`sha256 56fed7dc97bd12632752520917ca0fb0a5593ce4babfdc9958e641f0f2347216`），**未签名、未公证**（`identity: null`，`codesign` 为 ad hoc、无 TeamIdentifier），首次打开需在系统设置里选「仍要打开」。核对过最终产物的 `Info.plist`：`com.ling.opensource` / `1.64.1`，麦克风与系统音频用途说明存在，摄像头与蓝牙三项用途串已不在 plist 中；`app.asar` 顶层与 `build.files` 逐项一致，包内图标与 `desktop/build/icon.png` 逐像素相同。Windows zip 也在修复复习队列 / 存卡之后构建（`Ling-1.64.1-win-x64.zip`，134,543,299 字节，`sha256 52a9e2fb79330311273d127f742583decadf84d2941807b621de7b6c85cce055`，`unzip -t` 通过，`app.asar` 含上述修复），但**从未在 Windows 上启动过**。两个 zip 都未做代码签名，**没有签名的 release 包，也没有发布任何产物**。
 
 ## 已知限制
 
 - **没有真实供应商验收**：本轮没有提供第三方 Key / 腾讯云凭据，Android 语音识别、语音合成与桌面端语音对话均未跑真实云端链路；没有用假 Key 冒充成功。文本识别与翻译也未调用真实供应商做质量验收。
 - **没有 AEC 硬件保证**：两端都只是「请求系统回声消除 + 软件兜底判断」，未在任何物理设备上按机型验证；外放时仍可能把自己的声音识别成用户输入。两端界面都如实显示系统回报的状态，不承诺「外放不会自己打断自己」。
-- 桌面端 Windows 包**没有 Windows 真机运行记录**；跨平台打包与 zip CRC 的验证来自 1.60.3 时期的历史记录，不适用于 1.64.1。专注守护依赖 macOS 的前台应用查询，在 Windows 上不生效。
+- 桌面端 Windows 包**未做代码签名，也从未在 Windows 上启动过**（归档已构建且 `unzip -t` 通过，但没有 Windows 运行记录）；专注守护依赖 macOS 的前台应用查询，在 Windows 上不生效。
 - 桌面端没有自动更新安装器：更新只下载 zip 并在文件管理器中定位，由使用者自行替换；不配置 `LING_UPDATE_URL` 时无源。
 - 桌面端渲染进程 `sandbox` 为 `false`、未设置 CSP，`preload.js` 暴露的 IPC 面较大，只应加载仓库内的本地页面。
 - 桌面端流式解析不区分 `finish_reason=length`：整轮没有正文才报错，截断的正文会照常显示，不会被单独标成「未完成」。

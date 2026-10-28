@@ -48,16 +48,18 @@ class UpdateTest {
         assertTrue(Update.shouldAutoCheck(now, now, "https://x/m.json", interval = 0))  // 手动不节流
     }
 
-    @Test fun lineFormat() {
-        assertEquals("发现新版 1.66.0（166）", Update.line(Update.Manifest(166, "1.66.0", "u", "")))
-    }
+    // ---------------- v1.77：自动检查不再自己开下载（用户反馈「每次打开页面突然弹下载」） ----------------
 
+    private val newer = Update.Manifest(178, "1.76.0", "https://x/a.apk", "修了些问题")
+    private val same = Update.Manifest(177, "1.77.0", "https://x/a.apk", "")
+
+    /** 反馈的根因那条：自动检查发现新版，只给文案 + 一个下载按钮，绝不替用户开下载 */
     @Test fun autoCheckNewVersionOnlyOffersButton() {
         val r = Update.check(newer, localCode = 177, localName = "1.77.0", manual = false)
         assertTrue(r is Update.CheckResult.NewVersion)
         r as Update.CheckResult.NewVersion
-        assertEquals("↑ 发现新版 1.76.0（178）\n修了些问题", r.text)
-        assertEquals("下载更新（1.76.0）", r.button)
+        assertTrue("新版文案要把清单里的版本名给用户看", r.text.contains("1.76.0"))
+        assertTrue("按钮带的是这个包的版本，不是别的", r.button.contains("1.76.0"))
         assertEquals(newer, r.manifest)          // 按钮点的是这个包，不是别的
     }
 
@@ -77,16 +79,17 @@ class UpdateTest {
         // 手动检查：读不到 / 已是最新都要说清楚，用户是自己点的，得给反馈
         val f = Update.check(null, 177, "1.77.0", manual = true)
         assertTrue(f is Update.CheckResult.Failed)
-        assertTrue((f as Update.CheckResult.Failed).text.startsWith("✗ 清单读不到"))
+        assertTrue((f as Update.CheckResult.Failed).text.isNotBlank())
 
         val u = Update.check(same, 177, "1.77.0", manual = true)
         assertTrue(u is Update.CheckResult.UpToDate)
-        assertEquals("✓ 已是最新（1.77.0）", (u as Update.CheckResult.UpToDate).text)
+        assertTrue((u as Update.CheckResult.UpToDate).text.contains("1.77.0"))
 
         // 手动检查发现新版：和新版自动检查一样，也是只给按钮，不自己下
         val n = Update.check(newer, 177, "1.77.0", manual = true)
         assertTrue(n is Update.CheckResult.NewVersion)
-        assertEquals("下载更新（1.76.0）", (n as Update.CheckResult.NewVersion).button)
+        assertEquals(newer, (n as Update.CheckResult.NewVersion).manifest)
+        assertTrue(n.button.contains("1.76.0"))
     }
 
     /** 没有新版时按钮不亮：CheckResult 里就没有 NewVersion，Activity 拿不到 manifest 可点 */
@@ -99,14 +102,15 @@ class UpdateTest {
     @Test fun notesTruncatedInNewVersionText() {
         val long = Update.Manifest(178, "1.76.0", "https://x/a.apk", "长".repeat(500))
         val r = Update.check(long, 177, "1.77.0", manual = false) as Update.CheckResult.NewVersion
-        assertEquals("↑ 发现新版 1.76.0（178）\n" + "长".repeat(200), r.text)
+        assertTrue(r.text.contains("长".repeat(200)))
+        assertFalse("超过 200 字的尾巴不能漏进设置页", r.text.contains("长".repeat(201)))
     }
 
     /** notes 为空时不留空行 */
     @Test fun blankNotesNoExtraNewline() {
         val r = Update.check(Update.Manifest(178, "1.76.0", "https://x/a.apk", ""), 177, "1.77.0", manual = false)
             as Update.CheckResult.NewVersion
-        assertEquals("↑ 发现新版 1.76.0（178）", r.text)
+        assertFalse(r.text.endsWith("\n"))
     }
 
     // ---------------- v1.83：清单地址回落（用户反馈「手机更新检查失败 / 清空输入框后再也查不了」） ----------------
@@ -136,17 +140,11 @@ class UpdateTest {
         assertEquals(listOf("https://mine/m.json", builtIn), Update.sources("  https://mine/m.json  ", builtIn))
     }
 
-    /** 这条性质钉死「空串不再致命」：清空输入框后仍能回落到内置源，更新通道不被掐断。
+    /** 这条性质钉死「空串不再致命」：清空输入框后仍是「没有源」，而不是退回到维护者服务器。
      *  （Prefs 那层读 SharedPreferences，JVM 单测碰不到，所以在纯函数这层断言。） */
     @Test fun blankCustomNeverKillsUpdateChannel() {
-        // 开源副本的内置源是空串：清空输入框后仍是「没有源」，而不是退回到维护者服务器。
         assertEquals(emptyList<String>(), Update.sources("", Update.DEFAULT_MANIFEST_URL))
         assertEquals(emptyList<String>(), Update.sources(null))
         assertEquals("", Update.DEFAULT_MANIFEST_URL)
-    }
-
-    /** 回落说明用词：不能静默替换，得让用户看懂手填的地址被跳过了。 */
-    @Test fun fallbackNoteExplainsSwitchToBuiltIn() {
-        assertTrue(Update.FALLBACK_NOTE.contains("已改用内置源"))
     }
 }

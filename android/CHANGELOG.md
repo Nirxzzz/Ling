@@ -1,5 +1,45 @@
 # Changelog
 
+## 2.7.3（versionCode 273）— 未发布
+
+> 本条只记录在公开副本里实际发生的结果：构建、单元测试与冒烟都已真实执行。没有 tag、没有 Release，
+> 也没有对外分发的安装包；本机产物是 debug 签名 APK。
+
+### 签名闸门
+
+- 签名校验从**配置阶段**移到**执行阶段**：`app/build.gradle.kts` 在配置阶段只读取 `keystore.properties`
+  并记录缺失原因，不再抛 `GradleException`。此前的写法让没有密钥的机器连 `assembleDebug` /
+  `testDebugUnitTest` / `help` 都起不来，对公开仓库是常态性阻塞。
+- 新增 `checkReleaseSigning` 任务，由 `androidComponents.onVariants` 只绑到 release 变体的四个产物出口
+  （`package<Variant>`、`package<Variant>Bundle`、`package<Variant>UniversalApk`、`sign<Variant>Bundle`），不按命令行任务名匹配。
+  材料检查做两次：配置阶段决定是否建 `signingConfigs.release`，执行阶段重读磁盘再验一次；以下任一情况都让该任务抛错、
+  打包失败：`keystore.properties` 不存在；缺 `storeFile` / `storePassword` / `keyAlias` / `keyPassword` 任一项；
+  `storeFile` 指向的文件不存在；配置阶段没建出 `signingConfigs.release`（例如 keystore 在配置之后才出现，重跑构建即可）。
+- 仍然**不**退回 debug 签名、**不**产出未签名 release 包：`signingConfigs.release` 只在材料齐备时创建，
+  `buildTypes.release` 只写 `signingConfig = signingConfigs.findByName("release")`。闸门保证的是「材料齐备且签名配置已绑定」，
+  真正的签名由 AGP 完成；本仓库没有实际签出、安装或分发过 release 包。
+- debug 与单测任务不依赖闸门。已在无 `keystore.properties` 的机器上实测：debug 构建与单测正常进行，
+  缺签名材料的 release 出口（`packageRelease` / `signReleaseBundle` / `packageReleaseBundle`）由 `checkReleaseSigning` 报错失败。
+- 修掉 `MainActivity.kt` 里 `apiReady()` 对已删除的 `prefs.presetId` 的引用（快照键改为只取 `prefs.baseUrl`）后，
+  主源码与测试源码均编译通过。
+
+### 构建与测试（实际执行结果）
+
+- `gradle testDebugUnitTest assembleDebug` 构建成功（约 36 秒），主源码与测试源码均编译通过。
+- `assembleDebug` 产出 debug APK：15,315,144 字节，`applicationId=com.chun.lingzhu.opensource`，
+  `versionName 2.7.3` / `versionCode 273`，`sha256 972f938ab9706cf7f060a0d1495ff55493a2227be9270d7c81e9cbd175c229d2`。
+  这是调试签名包，不是生产签名，不能覆盖官方 App。
+- `testDebugUnitTest`：153 个测试类、**2380 项，0 失败 / 0 错误 / 0 跳过**。
+- 设备冒烟（Android 14 专用只读模拟器）：安装后冷启动 `ChatActivity` 正常；保存笔记后杀进程冷启动仍可见；
+  未填接口时「检测连接」如实提示缺少接口地址 / 模型，没有假成功；logcat 无 `FATAL EXCEPTION` / `ANR in`。
+  仅覆盖主干路径，未接真实供应商。
+- 没有产出签名的 release 包：本机没有 `keystore.properties`，release 产物出口由 `checkReleaseSigning` 拦下。
+
+### 版本
+
+- `versionName` 2.7.3，`versionCode` 273。
+- 尚未发布：没有 tag、没有 Release，也没有对外分发的产物；上面的 APK 只在本机临时目录。
+
 ## 2.0.10（versionCode 218）— 预发布，待主脑确认
 
 > 本条目记录已实施的源码改动，拟随预览 tag `preview-20261017-accuracy` 发布。

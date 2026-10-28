@@ -76,7 +76,8 @@ class KaoyanSenseNumberTest {
     }
 
     @Test fun `sense numbers survive wrap and layout`() {
-        val body = KaoyanBack.parse("【词义】① 平整,齐整\n② 有序,规整")[0].text
+        // ① 项带一行无序号续行，② 项没有：续行才该拿悬挂缩进
+        val body = KaoyanBack.parse("【词义】① 平整,齐整\n砖块要码放得齐整\n② 有序,规整")[0].text
         assertTrue("序号行都在", body.split("\n").count { it.startsWith("①") || it.startsWith("②") } == 2)
         val ls = KaoyanBack.layout(body)
         assertEquals(body, ls.joinToString("") { it.text })

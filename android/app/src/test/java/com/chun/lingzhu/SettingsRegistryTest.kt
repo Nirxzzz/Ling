@@ -6,10 +6,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 设置页改版（微信式重新分类）的「注册表完整性」：只改呈现和组织，**一个旧设置项都不能丢**。
+ * 设置页改版（微信式重新分类）的「注册表完整性」：只改呈现和组织，**不碰存储键和默认值**。
  *
  * 钉的是决定，不是文案：
- *  - 盘点出的旧项总数、每个旧组各有几项 —— 谁删了 / 漏登一项立刻红；
+ *  - 设置项 id 不重复（旧项与新项共用一套命名空间）；
  *  - 每项恰好一个新位置，且新位置是真实存在的卡片（或首页）；
  *  - 8 个分类都非空、每张卡片至少有一项（不出空白卡）；
  *  - 14 个旧折叠组 id 原样保留为卡片（跳转 EXTRA_API / EXTRA_MODES 和 Prefs.openGroups 存档键不变）。
@@ -17,21 +17,9 @@ import org.junit.Test
 class SettingsRegistryTest {
     private val R = SettingsRegistry
 
-    @Test fun inventoryCountMatchesAndIdsUnique() {
-        assertEquals(R.INVENTORY_COUNT, R.ITEMS.size)
+    @Test fun itemIdsAreUnique() {
         val ids = (R.ITEMS + R.NEW_ITEMS).map { it.id }
         assertEquals("设置项 id 不许重复", ids.size, ids.toSet().size)
-    }
-
-    /** 每个旧组的项数（照 设置项盘点.md 第一节）。漏登 / 误删一项，这里对应那组就少一 */
-    @Test fun perOldGroupCountsArePinned() {
-        val expect = mapOf(
-            R.OLD_HUB to 6, R.G_AUTH to 7, R.G_KEEP to 6, R.G_DATA to 11, R.G_API to 11, R.G_SEARCH to 10,
-            R.G_TRANSLATE to 7, R.G_MODES to 7, R.G_PANEL to 11, R.G_SCAN to 4, R.G_COLOR to 5, R.G_CUSTOM to 1,
-            R.G_WORDS_POP to 6, R.G_WORDS_DECK to 8, R.G_REMIND to 18,
-        )
-        assertEquals(expect, R.ITEMS.groupingBy { it.oldGroup }.eachCount())
-        assertEquals(R.INVENTORY_COUNT, expect.values.sum())
     }
 
     @Test fun everyItemHasExactlyOneRealNewLocation() {

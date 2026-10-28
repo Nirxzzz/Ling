@@ -58,11 +58,19 @@ gradle assembleDebug --console=plain
 # 产物：app/build/outputs/apk/debug/app-debug.apk
 ```
 
-以上步骤以系统 Gradle 8.14 为准；`2.7.3` 的构建与单元测试**尚未在这份公开副本上执行并记录**，本文件不预写通过结论或通过数量。
+以上步骤以系统 Gradle 8.14 为准。`2.7.3` 在这份公开副本上（无 `keystore.properties`）的实际执行：`gradle testDebugUnitTest assembleDebug` **构建成功**（约 36 秒）。
+
+- 编译：主源码与测试源码都编译通过。
+- `assembleDebug` 产出 debug APK：15,315,144 字节，`applicationId=com.chun.lingzhu.opensource`，`versionName 2.7.3` / `versionCode 273`，`sha256 972f938ab9706cf7f060a0d1495ff55493a2227be9270d7c81e9cbd175c229d2`。包内 `assets/` 含 GPLv3 正文与 notices，词表只有 `junior/gaokao/cet4/cet6/ielts` 五套（无 `kaoyan*`）。**这是调试签名包，不是生产签名，不能覆盖官方 App。**
+- 单元测试：153 个测试类、**2380 项，0 失败 / 0 错误 / 0 跳过**。
+- release 签名路径**没有**产出：本机没有 `keystore.properties`，release 产物出口由 `checkReleaseSigning` 拦下并明确报错（符合设计）。本目录没有签出、安装或分发过 release 包。
+- 设备烟测（Android 14 专用只读模拟器，进程 5598）：安装后冷启动 `ChatActivity` 正常；保存笔记后杀进程冷启动仍可见；未填接口时「检测连接」如实提示缺少接口地址 / 模型，没有假成功；整轮 logcat 无 `FATAL EXCEPTION`、无 `ANR in`。
+
+烟测只覆盖主干路径（启动、配置引导、记事持久化、空接口提示、导航），不等于全面功能验收；没有接真实供应商，也没有做多项设备兼容性验证。
 
 ### Release 包与签名
 
-`assembleRelease` / `bundleRelease` / `installRelease` 在**没有签名配置时会直接失败**（`GradleException`），不会静默退回 debug 签名。签名材料只放在本机，不进入仓库：
+release 变体产生产物的四个出口（`package<Variant>`、`package<Variant>Bundle`、`package<Variant>UniversalApk`、`sign<Variant>Bundle`）都依赖执行阶段的 `checkReleaseSigning`。缺失材料会被检查两次：配置阶段决定是否建 `signingConfigs.release`，执行阶段在 `checkReleaseSigning` 里重新读盘再验一次。以下任一情况都会让该任务抛 `GradleException`、打包失败：`keystore.properties` 不存在；缺 `storeFile` / `storePassword` / `keyAlias` / `keyPassword` 任一项；`storeFile` 指向的密钥库文件不存在；配置阶段没能建出 `signingConfigs.release`（例如 keystore 是在配置之后才放进去的，重跑一次构建即可）。`storeFile` 的相对路径按 `android/`（`keystore.properties` 所在目录）解析。材料齐备时 `signingConfigs.release` 才被创建并用于 release 变体。**不会静默退回 debug 签名，也不会产出未签名的 release 包**；闸门保证的是「材料齐备且签名配置已绑定」，真正的签名由 AGP 完成，本仓库没有实际签出并安装过 release 包。签名材料只放在本机，不进入仓库：
 
 1. 自己生成一个 release keystore（不要复用官方私钥）。
 2. 在 `android/keystore.properties` 写入你自己的配置（该文件已被忽略）：
@@ -85,7 +93,7 @@ gradle assembleRelease --console=plain
 
 ### 可复现性边界
 
-本目录可以构建出功能等价的 Debug/Release APK，但**不承诺字节级可复现**：没有 Gradle wrapper、依赖校验和或依赖锁定，APK 签名与 ZIP 时间戳也不固定。对外应表述为“可构建”，不要表述为“可逐字节复现官方包”。
+本目录的 debug 构建已实测可产出 APK（见上文），release 则必须先自备签名材料；两种产物都**不承诺字节级可复现**：没有 Gradle wrapper、依赖校验和或依赖锁定，APK 签名与 ZIP 时间戳也不固定。对外应表述为「可构建」，不要表述为「可逐字节复现官方包」。
 
 ## 密钥与更新
 
@@ -129,13 +137,11 @@ gradle assembleRelease --console=plain
 
 原发行版中的考研三级词库（`kaoyan_bikao.txt`、`kaoyan_jichu.txt`、`kaoyan_chaogang.txt`）著作权归原出版方，授权链不完整，**未包含**在本目录。源码里新装默认勾选的分级是 `cet4`（`WordBank.DEFAULT_LEVEL`），实际可选范围按 `assets/wordbank/` 里真实存在的文件算，不会指向缺失资产；如维护者改回 `junior`，以源码常量为准。富文本词库解析器仍保留，用户可自行导入合法来源的词库。
 
-## 测试范围（历史记录，不是 2.7.3 的验收结果）
+## 测试范围与执行记录
 
-> 下面这些是 2.0.9 / 2.0.10 源码整理阶段的真实执行记录，**不是 2.7.3 的验收结果**。2.7.3 的改动没有由本次执行重新构建或运行测试。
+`2.7.3` 在这份公开副本上执行 `testDebugUnitTest`：153 个测试类、**2380 项，0 失败 / 0 错误 / 0 跳过**。这个数字比上游生产树引用的计数少，原因是本副本按版权与机制调整了用例集合，见下表；它不是「全量等价验收」，也不与上游数字做对比结论。
 
-- **2.0.9**：已实际执行 `gradle testDebugUnitTest` 与 `gradle assembleDebug`，JUnit XML 汇总 **1289 tests，0 failures / 0 errors / 0 skips**；当时那版 APK 内含 MIT 全文、三份第三方许可全文与 4 份 NOTICE，不含 `kaoyan*` 资产。这条按原记录保留：它描述的是当时按 MIT 分发的 2.0.9 产物与许可文件内容，不是当前 `2.7.3` 源码树的许可状态（当前自有代码为 GPL-3.0-only，APK 随包的 `assets/LICENSE` 已是 GPLv3 原文）。
-- 2.0.9 在 Android 14 专用只读模拟器（端口 5582）完成真实安装并启动 `ChatActivity`，进程存活，截图已目视。首启未填 API 时提示缺少接口 / 权限，点击「去填写」进入**首次配置引导**，不是直接跳 API 页。未接真实模型，未验证物理振动，也未做全面功能验收。
-- **2.7.3**：测试源码已随源码更新（含 `voice/` 下的 `DoubaoProtocolTest`、`VoiceAsrClientTest`、`VoiceSourceTest`），但本目录**还没有 `2.7.3` 的执行记录**；确认前不写通过数量，也不把上面的 2.0.9 记录当成 2.7.3 的结果。
+更早的历史记录（不与上面的数字相加，也不能当成 2.7.3 的结果）：2.0.9 当时 `testDebugUnitTest` + `assembleDebug` 通过，JUnit 汇总 1289 tests / 0 失败，那版 APK 内含 MIT 全文与 4 份 NOTICE、不含 `kaoyan*`；2.0.9 也在 Android 14 专用只读模拟器（端口 5582）完成安装并启动 `ChatActivity`。这两条描述的是当时按 MIT 分发的产物，不是当前 GPL-3.0-only 的许可状态。
 
 为公开副本调整过的测试边界（按源码现状）：
 
@@ -148,7 +154,7 @@ gradle assembleRelease --console=plain
 | 未收录 | `AnswerFreeformWiringTest.kt` | 断言已过时的接线 |
 | 换成自撰样本 | `KaoyanBackTest` / `WrapLayoutTest` / `RichDeckTest` / `KaoyanSenseNumberTest` | 原用例读受限词库原文，改为 fixture，仅覆盖解析 / 排版逻辑 |
 
-`WordbankHygieneScanTest` 保留：它扫描 `assets/wordbank/` 下实际存在的文件做数据体检，不再涉及未分发的考研词库。测试数量少于上游生产工程，原因是排除依赖版权语料的用例、删除已移除的预设机制，以及调整过时的接线 / 默认断言——这是明确的范围差异，不是「全量等价验收」。
+`WordbankHygieneScanTest` 保留：它扫描 `assets/wordbank/` 下实际存在的文件做数据体检，不再涉及未分发的考研词库。换成自撰 fixture 的 4 个类（`KaoyanBackTest` / `WrapLayoutTest` / `RichDeckTest` / `KaoyanSenseNumberTest`）只覆盖解析 / 排版逻辑，不覆盖原受限语料的真实内容，因此在本副本通过也不代表对上游语料的行为等价。
 
 ## 已实现的主要能力（按源码）
 
