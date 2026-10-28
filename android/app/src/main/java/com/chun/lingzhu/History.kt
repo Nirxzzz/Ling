@@ -31,6 +31,46 @@ object History {
         } catch (_: Exception) { emptyList() }
     }
 
+    /**
+     * 结构严格解析：只给同步判断文件健康用。坏元素不再被 `mapNotNull` 悄悄丢掉
+     * （丢掉后同步会把它们当删除发墓碑），而是直接抛错让同步阻断。
+     */
+    internal fun parseStrict(json: String?): List<Entry> {
+        if (json == null) return emptyList()         // 文件不存在 = 合法空库
+        if (json.isBlank()) throw IllegalArgumentException("history.json 为空文件")
+        val a = JSONArray(json)
+        for (i in 0 until a.length()) {
+            val o = a.optJSONObject(i)
+                ?: throw IllegalArgumentException("history[$i] 不是对象")
+            val id = integral(o.opt("id"))
+                ?: throw IllegalArgumentException("history[$i].id 不是整数")
+            if (id <= 0L) throw IllegalArgumentException("history[$i].id 非正数: $id")
+            val text = o.opt("text")
+            if (text !is String || text.isBlank()) {
+                throw IllegalArgumentException("history[$i].text 缺失或为空白")
+            }
+            for (k in listOf("kind", "label", "src")) {
+                val v = o.opt(k)
+                if (v != null && v != JSONObject.NULL && v !is String) {
+                    throw IllegalArgumentException("history[$i].$k 不是字符串")
+                }
+            }
+            val star = o.opt("star")
+            if (star != null && star != JSONObject.NULL && star !is Boolean) {
+                throw IllegalArgumentException("history[$i].star 不是布尔值")
+            }
+        }
+        return parse(json)
+    }
+
+    private fun integral(v: Any?): Long? {
+        if (v !is Number) return null
+        val d = v.toDouble()
+        if (!d.isFinite()) return null
+        val l = v.toLong()
+        return if (l.toDouble() == d) l else null
+    }
+
     fun toJson(list: List<Entry>): String = JSONArray().apply {
         for (e in list) put(JSONObject().put("id", e.id).put("kind", e.kind).put("label", e.label).put("text", e.text).put("src", e.src).apply { if (e.star) put("star", true) })
     }.toString()
@@ -87,25 +127,65 @@ object History {
 
     /** 读写文件：内存副本 + 后台落盘（FileMemo，v1.63 起不在调用线程读写文件） */
     class Store(ctx: Context) {
-        private val file = File(ctx.applicationContext.filesDir, "history.json")
+        private val app = ctx.applicationContext
+        private val file = File(app.filesDir, "history.json")
         private val prefs = Prefs(ctx)
 
         /** 与 ChatStore 相反：最新的条目在**最前**（ChatStore 是末尾）——两个类都为此加过提醒，别搞混 */
-        fun list(): List<Entry> = FileMemo.get(file) { parse(it) }
+        fun list(): List<Entry> = synchronized(FileMemo) {
+            LanSyncStore.recover(app)   // 先重放未完成的同步事务，避免旧缓存回写
+            current()
+        }
+
+        /**
+         * 带健康状态的读取：解析 / IO 失败时 UI 仍按旧口径显示，但错误会留给
+         * [readForSync] 阻断同步，不会把「读不出来」当成空库发墓碑。
+         */
+        private fun current(): List<Entry> =
+            FileMemo.getChecked(file, { parse(it) }, { parseStrict(it) }).value ?: emptyList()
         private fun save(l: List<Entry>) = FileMemo.put(file, l) { toJson(it) }
 
         /** 返回这条的 id（关了保存时返回 -1，什么都不写） */
-        @Synchronized fun add(kind: String, label: String, text: String, src: String = ""): Long {
-            if (!prefs.saveHistory || text.isBlank()) return -1
+        fun add(kind: String, label: String, text: String, src: String = ""): Long = synchronized(FileMemo) {
+            if (!prefs.saveHistory || text.isBlank()) return@synchronized -1L
             val l = add(list(), Entry(System.currentTimeMillis(), kind, label, text, src))
             save(l)
-            return l.first().id
+            l.first().id
         }
-        @Synchronized fun update(id: Long, text: String) { if (id >= 0 && text.isNotBlank()) save(update(list(), id, text)) }
-        @Synchronized fun delete(id: Long) = save(list().filter { it.id != id })
-        @Synchronized fun keepStarred() = save(list().filter { it.star })
-        @Synchronized fun setStar(id: Long, on: Boolean) { if (id >= 0) save(setStar(list(), id, on)) }
-        fun get(id: Long): Entry? = list().firstOrNull { it.id == id }
-        @Synchronized fun clear() = FileMemo.clear(file, emptyList<Entry>())   // 与 P0-2 同款：typed clear，不留 Any 擦除隐患
+        fun update(id: Long, text: String) = synchronized(FileMemo) {
+            if (id >= 0 && text.isNotBlank()) save(update(list(), id, text))
+        }
+        fun delete(id: Long) = synchronized(FileMemo) { save(list().filter { it.id != id }) }
+        fun keepStarred() = synchronized(FileMemo) { save(list().filter { it.star }) }
+        fun setStar(id: Long, on: Boolean) = synchronized(FileMemo) {
+            if (id >= 0) save(setStar(list(), id, on))
+        }
+        fun get(id: Long): Entry? = synchronized(FileMemo) { list().firstOrNull { it.id == id } }
+        fun clear() = synchronized(FileMemo) {
+            LanSyncStore.recover(app)
+            FileMemo.clear(file, emptyList<Entry>())   // 与 P0-2 同款：typed clear，不留 Any 擦除隐患
+        }
+
+        /**
+         * 供 LanSyncStore 的同步事务使用：[FileMemo.put] 立即更新内存副本并进写队列（有序、不直接 writeText）。
+         * 调用方必须已经持有 `synchronized(FileMemo)`，并在事务末尾用 `FileMemo.flush()` 做落盘屏障。
+         */
+        internal fun replaceFromSync(list: List<Entry>) {
+            FileMemo.put(file, list) { toJson(it) }
+        }
+
+        /**
+         * 供 LanSyncStore 的恢复路径使用：整表替换缓存并**同步**落盘（落盘后才返回，失败抛异常）。
+         * 调用方必须已经持有 `synchronized(FileMemo)`。
+         */
+        internal fun putFromSync(list: List<Entry>) {
+            FileMemo.putAndWait(file, list) { toJson(it) }
+            // 权威恢复：整表已由 journal 覆盖，旧的加载失败不再适用。
+            FileMemo.clearLoadError(file)
+        }
+
+        /** 同步专用严格读取：返回健康状态而不是把坏文件当空库。调用方必须先恢复并持有 FileMemo 锁。 */
+        internal fun readForSync(): FileMemo.Loaded<List<Entry>> =
+            FileMemo.getChecked(file, { parse(it) }, { parseStrict(it) })
     }
 }

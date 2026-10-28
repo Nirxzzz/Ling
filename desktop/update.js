@@ -19,8 +19,11 @@ function manifestUrl() {
   return typeof u === 'string' ? u.trim() : ''
 }
 
-// 本轮支持打包的桌面平台资产键（多出来的键一律忽略；缺失 = 该平台明确不支持）
+/** 本轮支持打包的桌面平台资产键（多出来的键一律忽略；缺失 = 该平台明确不支持） */
 const ASSET_KEYS = ['darwin-arm64', 'win32-x64']
+
+/** 本平台没有资产时的统一文案。 */
+const NO_ASSET_TEXT = '当前平台暂无安装包'
 
 /** '1.60.0' → [1,60,0]；非「三段数字」→ null（保证严格数值比较，不认 1.60 / 1.60.0-beta） */
 function parseVersion(v) {
@@ -99,8 +102,26 @@ function assetFileName(version, key) {
   return 'Ling-' + v + '-' + k + '.zip'
 }
 
+/**
+ * 当前平台的资产与下载资格（纯函数，UI / 主进程共用）：
+ *   { key, asset, canDownload, message }
+ * - 平台不支持 / 清单省略了本平台键 → asset=null、message=NO_ASSET_TEXT、不可下载；
+ * - 通道版本低于本机 → 不可下载（不诱导回退），message 说明原因；
+ * - 同版本可重新下载；更高版本可升级。
+ */
+function downloadPlan(manifest, platform, arch, currentVersion) {
+  const key = platformKey(platform, arch)
+  const asset = key && manifest ? pickAsset(manifest, platform, arch) : null
+  if (!asset) return { key: key || null, asset: null, canDownload: false, message: NO_ASSET_TEXT }
+  const cmp = compareVersions(manifest.version, currentVersion)
+  const canDownload = cmp === 1 || cmp === 0
+  const message = canDownload ? '' : '本机版本高于通道（v' + currentVersion + ' > v' + manifest.version + '），不提供下载'
+  return { key: key, asset: asset, canDownload: canDownload, message: message }
+}
+
 module.exports = {
-  ASSET_KEYS,
+  ASSET_KEYS, NO_ASSET_TEXT,
   manifestUrl, parseVersion, compareVersions, isNewer, statusFor,
-  isHttpUrl, isSha256, platformKey, validateManifest, pickAsset, assetFileName
+  isHttpUrl, isSha256, platformKey, validateManifest, pickAsset, assetFileName,
+  downloadPlan
 }

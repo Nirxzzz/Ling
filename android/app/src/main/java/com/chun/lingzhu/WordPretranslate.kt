@@ -61,7 +61,7 @@ object WordPretranslate {
 
     /**
      * 这张卡要不要预翻译：**背面非空 = 词库自带释义，不用翻**（v1.81）。
-     * 红宝书三级自带完整书页式背面，再送 DeepL 翻一遍就是白烧一次额度；内置 5 级词库背面是空串，
+     * 三级书页式词库自带完整书页式背面，再送 DeepL 翻一遍就是白烧一次额度；内置 5 级词库背面是空串，
      * 照旧要翻。判断只看 back 是不是空白，不看内容长短。
      */
     fun needsTranslate(c: Words.Card): Boolean = c.back.isBlank()

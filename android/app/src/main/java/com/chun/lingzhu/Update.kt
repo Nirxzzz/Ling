@@ -18,11 +18,11 @@ import org.json.JSONObject
  * 不检查时零请求、零权限（INTERNET 已有）。
  */
 object Update {
-    /** 默认清单地址：本开源副本为空。
+    /** 默认清单地址：内置项目自建的 update/ 清单，装完即用，不用手填。
+     *  想换源就改build.gradle.kts 里对应 flavor 的 UPDATE_MANIFEST_URL，
+     *  或在设置页填（填了以设置页为准；留空 / 清空则回落到这里，见 [sources] 与 [Prefs.updateUrl]）。
      *
-     *  公开 fork 不应把用户导向维护者的官方更新通道（否则可能下载到与 fork 不同签名 /
-     *  不同 applicationId 的官方包）。用户在设置页填自己的清单地址后才启用检查；
-     *  留空 = 不自动检查。 */
+     *  buildConfigField 注入，这里只读，不硬编码。 */
     val DEFAULT_MANIFEST_URL = BuildConfig.UPDATE_MANIFEST_URL
 
     const val CHECK_INTERVAL_MS = 24L * 3600 * 1000
@@ -33,8 +33,8 @@ object Update {
     /**
      * 依次要试的清单地址：用户填的（非空）在前，内置源兜底；两者相同 / 为空时自动去重（纯函数，可单测）。
      *
-     * - 手填有效值 → [手填]（本开源副本内置源为空，因此不会出现第二个地址）；
-     * - 手填为 null / 空串 / 纯空白 → 只回内置源；内置源也为空时返回空列表 = 不检查更新；
+     * - 手填有效值 → [手填, 内置]；
+     * - 手填为 null / 空串 / 纯空白 → 只回内置源（修「清空输入框后更新通道被永久掐断」）；
      * - 手填 trim 后与内置源相同 → 只留一个；
      * - 手填带前后空格 → 用 trim 后的值。
      */

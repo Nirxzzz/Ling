@@ -37,7 +37,7 @@ class ScheduleActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Ui.theme = Prefs(this).theme()
+        Ui.applyTheme(Prefs(this))
         val (y, m) = Schedule.Month.ym(System.currentTimeMillis())
         year = y; month0 = m
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -235,7 +235,7 @@ class ScheduleActivity : Activity() {
             acts.addView(Button(this).apply {
                 text = "删掉"; tag = Brut.DANGER
                 setOnClickListener {
-                    AlertDialog.Builder(this@ScheduleActivity).setTitle("删掉这条记期？")
+                    ThemeDialogs.builder(this@ScheduleActivity).setTitle("删掉这条记期？")
                         .setMessage(Schedule.describe(r))
                         .setPositiveButton("删掉") { _, _ -> store.remove(r.id); Schedule.sync(this@ScheduleActivity); render() }
                         .setNegativeButton("算了", null).show()
@@ -403,7 +403,7 @@ class ScheduleActivity : Activity() {
         drawKind(); drawDays()
         Brut.style(box)   // 整张卡统一刷成 Brut 皮肤（输入框 → field、按钮 → 白底/薄荷绿、文字 → 墨色）
 
-        val dlg = AlertDialog.Builder(this)
+        val dlg = ThemeDialogs.builder(this)
             .setView(ScrollView(this).apply { addView(box) })
             .setNegativeButton("取消", null)
             .setPositiveButton(if (existing == null) "加上" else "保存", null)

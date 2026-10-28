@@ -21,7 +21,7 @@ class PrefsIntervalTest {
     @Test fun fmtIntervalWholeMinutes() {
         // 60 的整数倍：报「N 分钟」，不出现小数点
         assertEquals("1 分钟", Prefs.fmtInterval(60))
-        assertEquals("15 分钟", Prefs.fmtInterval(900))      // 默认档 = 15 分钟
+        assertEquals("15 分钟", Prefs.fmtInterval(900))      // 任一整数分钟档（默认档见下）
         assertEquals("60 分钟", Prefs.fmtInterval(3600))     // 1 小时
         assertEquals("1440 分钟", Prefs.fmtInterval(86400))  // 24 小时 = 上限
     }
@@ -40,7 +40,7 @@ class PrefsIntervalTest {
     }
 
     @Test fun intervalConstantsFormAValidRange() {
-        // 弹词间隔：5 秒 < 默认 900 秒 < 上限 86400 秒
+        // 弹词间隔：5 秒 < 默认 120 秒（2 分钟）< 上限 86400 秒
         assertTrue(Prefs.WORD_EVERY_SEC_MIN < Prefs.WORD_EVERY_SEC_DEF)
         assertTrue(Prefs.WORD_EVERY_SEC_DEF < Prefs.WORD_EVERY_SEC_MAX)
         // 卡片停留：3 秒 < 默认 20 秒 < 上限 600 秒

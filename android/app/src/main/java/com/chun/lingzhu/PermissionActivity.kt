@@ -56,7 +56,7 @@ class PermissionActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Ui.theme = Prefs(this).theme()
+        Ui.applyTheme(Prefs(this))
         // 旋转 / 进程重建：把上面这几个实例字段接回来。存 Item.id 不存下标 —— 项数、顺序随版本变，
         // 用 id 显式对齐 PermissionFlow.ORDER 里的真实项，认不出的 id 自然丢掉（不会还原成错的项）。
         savedInstanceState?.let { s ->

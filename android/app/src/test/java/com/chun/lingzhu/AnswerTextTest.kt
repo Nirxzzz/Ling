@@ -57,6 +57,42 @@ class AnswerTextTest {
         assertEquals("" to src, AnswerText.split(src))
     }
 
+    /**
+     * v2.1 性能：panel() 一遍拆出 render 全部要的字段，forPanel 委托它 —— 两者必须一致（钉死不漂移）。
+     * answerDuplicated = 答案长（正文保留了含答案段的完整第一轮，顶部行和正文必然重复）。
+     */
+    @Test fun panelMatchesForPanel() {
+        val short = "## 答案\nB. 鲸鱼\n\n## 一步步做\n1. 看"
+        val pShort = AnswerText.panel(short)
+        assertEquals("B. 鲸鱼", pShort.ans)
+        assertEquals("## 一步步做\n1. 看", pShort.body)
+        assertFalse(pShort.answerDuplicated)
+        assertEquals(AnswerText.forPanel(short), pShort.ans to pShort.body)
+
+        val long = "## 答案\n（1）a = 1\n（2）b = 2\n（3）c = 3\n（4）d = 4\n\n## 一步步做\n1. 看"
+        val pLong = AnswerText.panel(long)
+        assertTrue(pLong.ans.startsWith("（1）a = 1"))
+        assertEquals(long, pLong.body)
+        assertTrue("长答案：顶部行和正文里那一段是重复的", pLong.answerDuplicated)
+        assertEquals(AnswerText.forPanel(long), pLong.ans to pLong.body)
+
+        val none = "没有答案段"
+        val pNone = AnswerText.panel(none)
+        assertEquals("", pNone.ans)
+        assertEquals(none, pNone.body)
+        assertFalse(pNone.answerDuplicated)
+        assertEquals(AnswerText.forPanel(none), pNone.ans to pNone.body)
+    }
+
+    /** panel() 的第一轮 / 追问拆分和 splitFollowUps 一致：顶部答案永远来自第一轮 */
+    @Test fun panelFirstRoundComesBeforeFollowUps() {
+        val src = "## 答案\nB. 鲸鱼\n\n## 一步步做\n1. 看\n\n## 追问：为什么\n\n胎生。"
+        val p = AnswerText.panel(src)
+        assertEquals(AnswerText.splitFollowUps(src).first, p.firstRound)
+        assertTrue(p.body.endsWith("胎生。"))
+        assertFalse("短答案已从正文剥掉，顶部行不算重复", p.answerDuplicated)
+    }
+
     @Test fun noAnswerSection() {
         val src = "这是微信的设置页面。\n可以改头像。"
         assertEquals("" to src, AnswerText.split(src))
@@ -79,6 +115,38 @@ class AnswerTextTest {
         val (a, rest) = AnswerText.forPanel(src)
         assertEquals("", a)
         assertEquals(src, rest)
+    }
+
+    /** 自动扫描被动层：多道题里重复的「## 答案」要全部收下，解析不能混进来 */
+    @Test fun scanAnswersKeepsEveryExamSection() {
+        val src = "### 第 1 题\n## 答案\nA. 1\n\n## 解析\n第一题的推理过程。\n\n" +
+                  "### 第 2 题\n## 答案\n（1）2\n（2）3\n\n## 解析\n第二题的推理过程。"
+        assertEquals("A. 1\n\n（1）2\n（2）3", AnswerText.scanAnswers(src))
+    }
+
+    /** 旧的「**答案：**」格式同样支持多段，解析 / 理由留在外面 */
+    @Test fun scanAnswersKeepsEveryLegacyBoldSection() {
+        val src = "**答案：** B. 木块受到的合力为零\n理由：匀速说明合力为零。\n\n" +
+                  "**答案：**\n（1）−1\n（2）x = 2\n\n**为什么：** 1. 配方"
+        assertEquals("B. 木块受到的合力为零\n\n（1）−1\n（2）x = 2", AnswerText.scanAnswers(src))
+    }
+
+    /** 没有答案结构就返回空串 —— 调用方显示「点小球查看」，不得把整段解析当答案 */
+    @Test fun scanAnswersRefusesProseFallback() {
+        val src = "这是微信的设置页面。\n可以改头像，也可以改昵称。"
+        assertEquals("", AnswerText.scanAnswers(src))
+    }
+
+    /** 答案超过旧的 72 字阈值也必须完整返回（被动层不做首段 / 字数截断） */
+    @Test fun scanAnswersKeepsLongAnswerWhole() {
+        val long = "A. " + "很长的答案".repeat(30)
+        assertEquals(long, AnswerText.scanAnswers("## 答案\n$long\n\n## 一步步做\n1. 推导"))
+    }
+
+    /** 追问段不属于自动扫描这一轮的答案，被动层不展开 */
+    @Test fun scanAnswersIgnoresFollowUps() {
+        val src = "## 答案\nB. 鲸鱼\n\n## 解析\n哺乳动物。\n\n## 追问：为什么\n\n## 答案\n因为胎生。"
+        assertEquals("B. 鲸鱼", AnswerText.scanAnswers(src))
     }
 }
 

@@ -80,13 +80,18 @@ class ChatStoreTest {
         assertEquals(t0 + 1500L, out[1].at)              // 已有那条不动
     }
 
-    @Test fun capDropsOldestFromHead() {
+    /** v2.7.1：本地记录**不再按 200 条砍头** —— 用户要求原始聊天一条都不许丢 */
+    @Test fun keepsEveryMessageNoMatterHowLong() {
         var l = emptyList<ChatStore.Msg>()
         for (i in 1..250) l = ChatStore.add(l, u(i))
-        assertEquals(ChatStore.MAX, l.size)
+        assertEquals(250, l.size)
         assertEquals("问250", l.last().content)      // 最新的在末尾
-        assertEquals("问51", l.first().content)      // 最老的从头部被砍
-        assertEquals(listOf("问249", "问250"), ChatStore.trim(listOf(u(1), u(249), u(250)), 2).map { it.content })
+        assertEquals("问1", l.first().content)       // 最老的在头部，没被砍
+    }
+
+    /** 清空仍然照旧：手动清空是保留能力（[ChatStore.Store.clear] 在这之上还会删摘要 sidecar） */
+    @Test fun clearStillWorks() {
+        assertEquals(emptyList<ChatStore.Msg>(), ChatStore.clear())
     }
 
     // ---------------- 4. 滑窗 ----------------
@@ -208,6 +213,36 @@ class ChatStoreTest {
         assertFalse("聊天这轮走非流式", o.getBoolean("stream"))
         assertEquals("m", o.getString("model"))
         assertEquals(2, o.getJSONArray("messages").length())
+    }
+
+    /**
+     * v2.2.1 聊天接搜索：默认（不开搜索）请求体必须和以前**逐字一样** —— 不带 tools、stream=false。
+     * 这两条一旦变了，所有老用户的前缀缓存和请求形状都跟着变。
+     */
+    @Test fun bodyWithoutSearchKeepsOldShape() {
+        val cfg = ApiConfig("https://x/v1", "k", "m")
+        val o = JSONObject(ChatStore.body(cfg, listOf(u(1))))
+        assertFalse(o.has("tools"))
+        assertFalse(o.getBoolean("stream"))
+    }
+
+    /** 开搜索时聊天才是流式 + tools；工具表跟识屏那条线共用 [WebSearch.toolsJson] 的口径。 */
+    @Test fun bodyWithSearchIsStreamingAndCarriesTools() {
+        val cfg = ApiConfig("https://x/v1", "k", "deepseek-chat", "high",
+            WebSearch.Config(enabled = true, provider = WebSearch.DEEPSEEK, deepseekKey = "sk-search"))
+        val o = JSONObject(ChatStore.body(cfg, listOf(u(1)), stream = true, withTools = true))
+        assertTrue("开了搜索才走流式", o.getBoolean("stream"))
+        // v2.3.1 起工具表前缀是本机工具（AgentTools），位置不再固定，所以按名字查而不是按下标。
+        // 这条用例要守住的是：开搜索时联网工具**确实在场**，且 web_search 排在 web_fetch 前面。
+        val tools = o.getJSONArray("tools")
+        val names = (0 until tools.length()).map { tools.getJSONObject(it).getJSONObject("function").getString("name") }
+        assertTrue("必须有 web_search：" + names, names.contains(WebSearch.TOOL_SEARCH))
+        // 有 DeepSeek Key 时还应该带上 web_fetch（抓具体网页）
+        assertTrue("必须有 web_fetch：" + names, names.contains(WebSearch.TOOL_FETCH))
+        assertTrue("web_search 要排在 web_fetch 前面：" + names,
+            names.indexOf(WebSearch.TOOL_SEARCH) < names.indexOf(WebSearch.TOOL_FETCH))
+        // 历史 / system 的形状不变
+        assertEquals("system", o.getJSONArray("messages").getJSONObject(0).getString("role"))
     }
 
     @Test fun systemPromptUsesPersonaAndSaysNoScreenshot() {

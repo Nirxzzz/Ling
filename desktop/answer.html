@@ -11,10 +11,16 @@
   #histlist { display:none; border-top: 1px solid var(--hairline-soft); padding: 6px 10px; max-height: 40vh; overflow-y: auto; font-size: 12px; flex: 0 0 auto; }
   .hh { display:flex; align-items:center; gap:10px; color: var(--tx-2); padding: var(--sp-1) 0; }
   #hb { -webkit-app-region: no-drag; border:none; background: var(--btn-bg); color: var(--tx-1); padding:2px var(--sp-2); border-radius: var(--r-sm); cursor:pointer; font-size:12px; }
-  .hi { display:flex; gap: var(--sp-2); padding: 5px 6px; border-radius: var(--r-sm); cursor:pointer; }
+  .hi { display:flex; align-items:center; gap: var(--sp-2); padding: 5px 6px; border-radius: var(--r-sm); cursor:pointer; }
   .hi:hover { background: rgba(var(--accent), .18); }
   .ht { color: var(--tx-3); flex: 0 0 58px; }
-  .hp { color: var(--tx-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .hp { color: var(--tx-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex: 1 1 auto; min-width: 0; }
+  /* v1.74：历史条目的 ☆ / ★ —— 独立按钮，自己吃掉点击，不触发「打开这条历史」 */
+  .hs { -webkit-app-region: no-drag; flex: 0 0 auto; border:none; background:transparent; color: var(--tx-3); cursor:pointer; font-size:14px; line-height:1; padding:2px 4px; border-radius: var(--r-sm); }
+  .hs:hover { color: var(--tx-1); background: rgba(var(--accent), .22); }
+  .hs.on { color: rgb(var(--warn)); }
+  .hs.busy { opacity:.5; cursor:default; }
+  .herr { color: rgb(var(--danger)); padding: 3px 0 1px; font-size: 12px; }
   /* —— 做题模式：靠字号/对比度/缩进分区，不依赖颜色（屏幕常年开灰度滤镜）—— */
   #body .ans { margin: var(--sp-2) 0 var(--sp-3); padding: var(--sp-3); border-radius: var(--r-md); background: rgba(var(--accent), .16); border-left: 3px solid rgba(var(--accent), .9); }
   #body .ans .lab { font-size: 11px; letter-spacing: .10em; color: var(--tx-2); }
@@ -550,13 +556,32 @@
   const histList = document.getElementById('histlist')
   let histData = []
   function fmtT(ts){ const d = new Date(ts); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0') }
+  /* v1.74：每条历史带明确收藏按钮（☆ 收藏 / ★ 已收藏，点一下切换）。
+     只有主进程 history:star 回 ok:true 才改按钮态 —— 失败说明原因、不假切换。 */
+  function starBtnHTML(h, i) {
+    const on = !!h.star, label = on ? '取消收藏' : '收藏'
+    return '<button class="hs' + (on ? ' on' : '') + '" data-i="' + i + '" title="' + label + '" aria-label="' + label + '">' + (on ? '★' : '☆') + '</button>'
+  }
   function renderHist(){
     if (!histData.length) {
       histList.innerHTML = '<div class="hh"><button id="hb">← 返回</button><span>还没有记录 · 双击小球立即识别</span></div>'
       return
     }
-    const items = histData.map((h,i)=>'<div class="hi" data-i="'+i+'"><span class="ht">'+fmtT(h.t)+'</span><span class="hp">'+esc(h.text.slice(0,36))+'</span></div>').join('')
+    const items = histData.map((h,i)=>'<div class="hi" data-i="'+i+'"><span class="ht">'+fmtT(h.t)+'</span><span class="hp">'+esc(h.text.slice(0,36))+'</span>'+starBtnHTML(h,i)+'</div>').join('')
     histList.innerHTML = '<div class="hh"><button id="hb">← 返回</button><span>最近 ' + histData.length + ' 条</span></div>' + items
+  }
+  let histErrTimer = null
+  function showHistErr(msg) {
+    let el = document.getElementById('histErr')
+    if (!el) { el = document.createElement('div'); el.id = 'histErr'; el.className = 'herr'; histList.insertBefore(el, histList.children[1] || null) }
+    el.textContent = msg
+    resizeNow()
+    if (histErrTimer) clearTimeout(histErrTimer)
+    histErrTimer = setTimeout(() => {
+      histErrTimer = null
+      const n = document.getElementById('histErr')
+      if (n) { n.remove(); resizeNow() }
+    }, 3200)
   }
   /* v1.46：历史列表的开/关抽成一个函数 —— 除了标题栏那个按钮，
      主进程的「单击小球」也会远程让它打开（orb:click → answer:open-history）。 */
@@ -582,7 +607,33 @@
   }
   histBtn.addEventListener('click', () => toggleHist())
   window.orbApi.onOpenHistory(() => toggleHist(true))
+  let histStarBusy = false
+  histList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.hs')
+    if (!btn) return
+    e.preventDefault(); e.stopPropagation()   // 收藏按钮自己处理，别冒泡成「打开这条历史」
+    if (histStarBusy) return
+    const i = Number(btn.dataset.i)
+    const h = histData[i]
+    if (!h) return
+    if (typeof window.orbApi.starHistory !== 'function') { showHistErr('当前版本不支持收藏'); return }
+    const want = !h.star
+    histStarBusy = true
+    btn.disabled = true; btn.classList.add('busy')
+    let r = null
+    try { r = await window.orbApi.starHistory(h.t, want) } catch { r = null }
+    histStarBusy = false
+    btn.disabled = false; btn.classList.remove('busy')
+    const ok = r && r.ok
+    if (!ok) { showHistErr('收藏失败：' + ((r && r.error) || '没有响应')); return }  // 不假切换
+    h.star = !!r.star
+    btn.textContent = h.star ? '★' : '☆'
+    btn.classList.toggle('on', h.star)
+    const label = h.star ? '取消收藏' : '收藏'
+    btn.title = label; btn.setAttribute('aria-label', label)
+  })
   histList.addEventListener('click', (e) => {
+    if (e.target.closest('.hs')) return      // 收藏按钮的点击不当作「选中这条历史」
     const el = e.target.closest('.hi')
     if (el) {
       const h = histData[Number(el.dataset.i)]

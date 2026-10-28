@@ -19,6 +19,8 @@ import android.provider.Settings
 class WatchdogReceiver : BroadcastReceiver() {
     companion object {
         private const val REQ = 1001
+        private const val REQ_SOON = 1002          // 「很快回来看一眼」用独立请求码，不碰主链
+        private const val EXTRA_SOON = "soon"
         private const val KA_FILE = "ka"
         private const val KA_STREAK = "kaStreak"
         private const val KA_IDX = "kaIntervalIdx"
@@ -38,6 +40,56 @@ class WatchdogReceiver : BroadcastReceiver() {
                     Prefs(ctx.applicationContext).noteWatchdogKick()   // v1.65：设置页「看门狗」行用它显示已排上
                 }
             } catch (_: Exception) {}
+        }
+
+        /**
+         * 排一个精确闹钟（能精确就精确）。
+         *
+         * 没授权退 setAndAllowWhileIdle（至少 Doze 里也能醒，比 set 强）。
+         * 授权运行中被收回会抛 SecurityException → 退回 IDLE。
+         */
+        private fun setAlarm(ctx: Context, am: AlarmManager, atElapsed: Long, pi: PendingIntent) {
+            val mode = KeepAlivePlan.alarmMode(Build.VERSION.SDK_INT, RemindExact.exactGranted(ctx))
+            if (mode == KeepAlivePlan.AlarmMode.EXACT) {
+                try {
+                    am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, atElapsed, pi)
+                    return
+                } catch (_: SecurityException) {}
+            }
+            am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, atElapsed, pi)
+        }
+
+        /**
+         * 很快回来看一眼（[OrbService.onTaskRemoved] 用）：MIUI / ColorOS 从最近任务划掉会连进程一起清，
+         * 原生只调 onTaskRemoved 不杀。独立请求码 + extra，**不碰**主看门狗链和退避档位：醒来球还在就什么都不做。
+         * 注意：没锁卡片的 MIUI 划卡 ≈ 强行停止，闹钟会被系统一起撤 —— 这一层救不了那种情况。
+         */
+        fun kickSoon(ctx: Context, delayMs: Long) {
+            try {
+                val am = ctx.getSystemService(AlarmManager::class.java) ?: return
+                val pi = PendingIntent.getBroadcast(
+                    ctx, REQ_SOON, Intent(ctx, WatchdogReceiver::class.java).putExtra(EXTRA_SOON, true),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                setAlarm(ctx, am, android.os.SystemClock.elapsedRealtime() + delayMs, pi)
+            } catch (_: Exception) {}
+        }
+
+        /**
+         * 真去拉起小球（看门狗 / [ReviveJob] 共用）。门槛 [KeepAlivePlan.shouldRevive]；
+         * 返回 true = 已经发出启动。
+         *
+         * 闹钟 / Job 醒来都属后台起点，必须 startForegroundService；被系统拦（12+ 无豁免）就记一笔，设置页能看见。
+         */
+        fun revive(ctx: Context, how: String): Boolean {
+            if (!KeepAlivePlan.shouldRevive(Prefs(ctx).orbWanted, Settings.canDrawOverlays(ctx), OrbService.running)) return false
+            return try {
+                ctx.startForegroundService(Intent(ctx, OrbService::class.java).setAction(OrbService.ACTION_START).putExtra(OrbService.EXTRA_REVIVE, how))
+                true
+            } catch (_: Exception) {
+                Prefs(ctx.applicationContext).noteWatchdogFail()
+                false
+            }
         }
 
         /** 外部入口（设置页改动 / 服务起来时）：回最短档重排 */

@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 开源副本图标底色：纯白，前景为 res/drawable/ic_launcher_foreground.xml 的原创几何图形 -->
+    <!-- v1.75.2 图标底色：纯白（用户要求）。旧版 PNG 图标（mipmap-*/ic_launcher.png）同样合成到纯白底 -->
     <color name="ic_launcher_background">#FFFFFFFF</color>
+
+    <!-- v2.7.3 冷启动窗口占位底：中性浅灰，不写任何主题的纸色（护眼薄荷 / 瑞士纸 / 玻璃透明），
+         避免深色主题下闪白。真正的窗口底由 Brut.page 在 onCreate 里按当前主题动态设置。 -->
+    <color name="brut_window_bg">#FFF5F5F5</color>
+
+    <!-- v2.7.3 系统 PopupMenu 的平面背景色（不用反射没法给 popup 塞 Drawable 材质）。
+         浅主题用近白，深主题用近黑；非 palette 专属色，是中性卡色。 -->
+    <color name="popup_bg_light">#FFFFFFFF</color>
+    <color name="popup_bg_dark">#FF1C1C1C</color>
 </resources>

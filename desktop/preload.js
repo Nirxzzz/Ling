@@ -29,6 +29,11 @@ contextBridge.exposeInMainWorld('orbApi', {
   scanCancel: () => ipcRenderer.send('scan:cancel'),
   scanResize: (h) => ipcRenderer.send('scan:resize', h),
 
+  // v1.61.1 首次新手卡（hint.html 专用；主进程核对 sender 是不是 hintWin）
+  hintResize: (h) => ipcRenderer.send('hint:resize', h),
+  hintAction: (a) => ipcRenderer.send('hint:action', a),
+  onHintSide: (cb) => ipcRenderer.on('hint:side', (_e, s) => cb(s)),
+
   // 追问（v1.26）
   askOpen: () => ipcRenderer.send('answer:ask-open'),
   // v1.65 通识：点名词词块解释
@@ -56,6 +61,11 @@ contextBridge.exposeInMainWorld('orbApi', {
   onAnswerMode: (cb) => ipcRenderer.on('answer:mode', (_e, m) => cb(m)),
   onOrb: (cb) => { ipcRenderer.on('orb:busy', () => cb(true)); ipcRenderer.on('orb:idle', () => cb(false)) },
   onScan: (cb) => { ipcRenderer.on('orb:scan', (_e, on) => cb(on)) },
+  // v1.76 专注守护 / 陪伴：小球守护环状态 + 球旁气泡（bubble.html 复用这份 preload）
+  onGuard: (cb) => { ipcRenderer.on('orb:guard', (_e, g) => cb(g)) },
+  onBubble: (cb) => { ipcRenderer.on('bubble:show', (_e, b) => cb(b)) },
+  bubbleResize: (h) => ipcRenderer.send('bubble:resize', h),
+  bubbleClose: () => ipcRenderer.send('bubble:close'),
   onOrbMode: (cb) => ipcRenderer.on('orb:mode', (_e, label) => cb(label)),
   onCopyMode: (cb) => ipcRenderer.on('trans:copyMode', (_e, on) => cb(on)),
   onTransChunk: (cb) => ipcRenderer.on('trans:chunk', (_e, d) => cb(d)),
@@ -71,6 +81,11 @@ contextBridge.exposeInMainWorld('orbApi', {
   cancelSettings: () => ipcRenderer.send('settings:cancel'),
   settingsResize: (h) => ipcRenderer.send('settings:resize', h),
   openExternal: (url) => ipcRenderer.send('settings:openexternal', url),
+
+  // v1.63：设置搜索的 AI 语义匹配（仅设置卡）。只上行 query + requestId；
+  // 主进程核对 sender、限长、只回目录白名单里的 id。取消是单向的 fire-and-forget。
+  searchSettings: (o) => ipcRenderer.invoke('settings:search', { query: String((o && o.query) || ''), requestId: String((o && o.requestId) || '') }),
+  cancelSettingsSearch: (requestId) => ipcRenderer.send('settings:search-cancel', String(requestId || '')),
 
   // v1.37：API 档案一键切换 / 拉模型列表 / 检测连接 + 面板上的一行提示
   switchProfile: (name) => ipcRenderer.send('settings:switchprofile', name),
@@ -118,5 +133,49 @@ contextBridge.exposeInMainWorld('orbApi', {
   // v1.74：桌面内置更新通道 —— 只暴露「检查 / 下载」两个无参调用。
   // 下载目标（URL / sha256 / 落盘路径）全在主进程按上次 check 过的本平台资产决定，渲染器传不了任何 URL / 路径。
   checkUpdate: () => ipcRenderer.invoke('update:check'),
-  downloadUpdate: () => ipcRenderer.invoke('update:download')
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+
+  // v1.61：局域网同步（仅设置卡使用；主进程只接受设置窗口的调用）
+  // 连接串只通过 status/start 返回给设置页，复制也走主进程 —— 不把剪贴板能力开放给其他面板。
+  lanSyncStatus: () => ipcRenderer.invoke('lan-sync:status'),
+  lanSyncStart: () => ipcRenderer.invoke('lan-sync:start'),
+  lanSyncStop: () => ipcRenderer.invoke('lan-sync:stop'),
+  lanSyncCopy: (i) => ipcRenderer.invoke('lan-sync:copy', i),
+  // v1.62：冲突列表 / 三选解决（只接受 KEEP_BASE / KEEP_COPY / KEEP_BOTH）
+  lanConflicts: () => ipcRenderer.invoke('lan-sync:conflicts'),
+  lanResolveConflict: (copyUid, pick) => ipcRenderer.invoke('lan-sync:resolve', String(copyUid || ''), String(pick || '')),
+  // v1.64：MCP（本机外部 Agent）+ 手机常连（持久配对）。都只给设置页用，主进程逐条校验 sender。
+  // token 只在 mcpClientCreate 那一次回包里有；其余接口一律不返回 token / 哈希 / 配对密钥。
+  mcpStatus: () => ipcRenderer.invoke('mcp:status'),
+  mcpSetEnabled: (on) => ipcRenderer.invoke('mcp:set-enabled', !!on),
+  mcpSetPort: (p) => ipcRenderer.invoke('mcp:set-port', Number(p) || 0),
+  mcpClientCreate: (o) => ipcRenderer.invoke('mcp:client-create', {
+    name: String((o && o.name) || ''),
+    scopes: Array.isArray(o && o.scopes) ? o.scopes.map(String).slice(0, 4) : []
+  }),
+  mcpClientRevoke: (id) => ipcRenderer.invoke('mcp:client-revoke', String(id || '')),
+  mcpRootsAdd: () => ipcRenderer.invoke('mcp:roots-add'),
+  mcpRootsRemove: (p) => ipcRenderer.invoke('mcp:roots-remove', String(p || '')),
+  mcpRootsReset: () => ipcRenderer.invoke('mcp:roots-reset'),
+  mcpOpenHandouts: () => ipcRenderer.invoke('mcp:open-handouts'),
+  mcpAuditList: (limit) => ipcRenderer.invoke('mcp:audit-list', Number(limit) || 20),
+  mcpAuditExport: () => ipcRenderer.invoke('mcp:audit-export'),
+  mcpAuditCopy: () => ipcRenderer.invoke('mcp:audit-copy'),
+  mcpRollback: (id) => ipcRenderer.invoke('mcp:rollback', String(id || '')),
+  linkStatus: () => ipcRenderer.invoke('link:status'),
+  linkSetEnabled: (on) => ipcRenderer.invoke('link:set-enabled', !!on),
+  linkSetPort: (p) => ipcRenderer.invoke('link:set-port', Number(p) || 0),
+  linkPairCreate: (name) => ipcRenderer.invoke('link:pair-create', { name: String(name || '') }),
+  linkPairRevoke: (id) => ipcRenderer.invoke('link:pair-revoke', String(id || '')),
+  // v1.61：历史收藏（面板历史列表里的 ☆ / ★）
+  starHistory: (t, star) => ipcRenderer.invoke('history:star', t, !!star),
+
+  // v1.75：实时转写的配置面（只有设置卡的 Key 输入与「打开转写窗口」用这条线）。
+  // 主进程逐条核 sender（设置窗口或转写窗口），并且只回 hasKey 布尔 —— 明文 Key 绝不回到渲染器。
+  voiceStatus: () => ipcRenderer.invoke('voice:status'),
+  voiceSelectProvider: (p) => ipcRenderer.invoke('voice:select-provider', String(p || '')),
+  voiceSaveKey: (provider, apiKey) => ipcRenderer.invoke('voice:save-key', { provider: String(provider || ''), apiKey: String(apiKey || '') }),
+  voiceDeleteKey: (provider) => ipcRenderer.invoke('voice:delete-key', String(provider || '')),
+  voiceOpen: () => ipcRenderer.invoke('voice:open'),
+  voiceOpenMicSettings: () => ipcRenderer.send('voice:open-mic-settings')
 })

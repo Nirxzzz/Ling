@@ -11,10 +11,10 @@ import org.junit.Test
  * 一改提示词就误报，也没能证明质量。质量由父级用真实模型跑样题 smoke 验证，不是字符串断言。
  *
  * 仍然锁住的契约（这些一坏，面板 / 设置就出问题）：
- *  - 纯小白开关决定走哪套格式（小白独立格式 vs 普通三段式）；
+ *  - 纯小白开关真的换一套格式（小白做题格式 vs 普通三段式）；
  *  - 三段式标题 `## 答案 / ## 解析 / ## 考点` 与多题标记 `### 第 N 题`（面板排版靠它）；
  *  - 关键词清单开关：开着才带 TERMS_RULE，且固定在输出最后一行；
- *  - directive 覆盖层：压在 persona 之后、TERMS_RULE 之前；空则不加；
+ *  - directive 覆盖层：压在 TERMS_RULE 之前；空则不加；
  *  - 记忆卡位置；what/why 开关拼装；预算 / 错误识别 / 翻译 / 去标记等纯函数行为。
  */
 class PromptsTest {
@@ -23,12 +23,12 @@ class PromptsTest {
 
     @Test fun noviceSelectsIndependentFormat() {
         val nvExam = Prompts.system(Prompts.MODE_EXAM, "standard", true)
-        assertTrue("小白做法走独立格式", nvExam.contains("纯小白") && nvExam.contains("## 一步步做"))
+        assertTrue("小白做题走独立格式", nvExam.contains("## 一步步做"))
         assertFalse("小白格式不和普通三段式混", nvExam.contains("## 解析"))
+        assertTrue("非小白做题走三段式", Prompts.system(Prompts.MODE_EXAM, "standard", false).contains("## 解析"))
 
-        assertFalse(Prompts.system(Prompts.MODE_EXAM, "standard", false).contains("纯小白"))
-        assertFalse("通用模式非小白不带小白写法", Prompts.system(Prompts.MODE_GENERAL, "standard", false).contains("纯小白"))
-        assertTrue("通用模式开小白要带上", Prompts.system(Prompts.MODE_GENERAL, "standard", true).contains("纯小白"))
+        assertFalse("通用模式非小白不补通俗要求",
+            Prompts.system(Prompts.MODE_GENERAL, "standard", false) == Prompts.system(Prompts.MODE_GENERAL, "standard", true))
     }
 
     // ---------- 面板排版契约：三段式标题 + 多题标记 ----------
@@ -48,10 +48,9 @@ class PromptsTest {
 
     @Test fun customModeUsesUserPromptVerbatim() {
         val p = Prompts.system(Prompts.MODE_CUSTOM, "standard", false, "  把画面里的英文翻成中文  ")
-        assertTrue("用户原文照进（只做 trim）", p.contains("把画面里的英文翻成中文\n"))
+        assertTrue("用户原文照进（只做 trim）", p.contains("把画面里的英文翻成中文"))
         assertFalse("用了用户提示就不该再塞内置示例 / 三段式", p.contains(Prompts.CUSTOM_EXAMPLE) || p.contains("## 解析"))
         assertTrue("留空回落内置示例", Prompts.system(Prompts.MODE_CUSTOM, "standard", false, " \n").contains(Prompts.CUSTOM_EXAMPLE))
-        assertTrue("小白开着补小白写法", Prompts.system(Prompts.MODE_CUSTOM, "brief", true, "x").contains("纯小白"))
     }
 
     // ---------- 关键词开关：开着才带，且固定在最后一行 ----------
@@ -70,19 +69,15 @@ class PromptsTest {
     @Test fun directiveOverridesButStaysBeforeTerms() {
         val p = Prompts.system(Prompts.MODE_EXAM, "standard", false, "", terms = true, directive = "只给答案，别展开")
         assertTrue(p.contains("只给答案，别展开"))
-        assertTrue("覆盖层压过内部默认（在 persona 之后）", p.indexOf("只给答案，别展开") > p.indexOf(Prompts.PERSONA))
         assertTrue("但不能把关键词清单砍掉（面板靠它拆词块）", p.indexOf("只给答案，别展开") < p.indexOf(Prompts.TERMS_RULE))
         assertEquals("空 directive 不加任何东西",
             Prompts.system(Prompts.MODE_EXAM, "standard", false),
             Prompts.system(Prompts.MODE_EXAM, "standard", false, "", terms = true, directive = "   "))
     }
 
-    // ---------- 人格与记忆卡位置 ----------
+    // ---------- 记忆卡位置 ----------
 
-    @Test fun personaAndCardPlacement() {
-        for (m in Prompts.MODES) for (d in Prompts.DETAILS) for (nv in listOf(false, true)) {
-            assertTrue("$m/$d/novice=$nv 缺 PERSONA", Prompts.system(m, d, nv, "x").contains(Prompts.PERSONA))
-        }
+    @Test fun cardPlacement() {
         Prompts.card = null
         assertFalse("空卡不拼", Prompts.system(Prompts.MODE_EXAM, "standard", false).contains("关于用户"))
         Prompts.card = Card()
@@ -90,8 +85,7 @@ class PromptsTest {
         Prompts.card = Card(name = "阿哲", goal = "考研数学", topics = listOf(CardTopic("傅里叶变换", 1L)))
         val with = Prompts.system(Prompts.MODE_EXAM, "standard", false)
         assertTrue(with.contains("他叫：阿哲") && with.contains("他正在做：考研数学"))
-        assertTrue("记忆卡在 persona 之后、TERMS_RULE 之前",
-            with.indexOf(Prompts.PERSONA) < with.indexOf("关于用户") && with.indexOf("关于用户") < with.indexOf(Prompts.TERMS_RULE))
+        assertTrue("记忆卡在 TERMS_RULE 之前", with.indexOf("关于用户") < with.indexOf(Prompts.TERMS_RULE))
         Prompts.card = null
     }
 
@@ -126,27 +120,30 @@ class PromptsTest {
 
     @Test fun unknownDetailFallsBackToStandard() {
         assertEquals(Prompts.exam("standard", false), Prompts.exam("bogus", false))
-        assertEquals(Prompts.personaBlock("standard"), Prompts.personaBlock("bogus"))
     }
 
-    // ---------- 篇幅纪律按模式收敛（v1.77）----------
+    // ---------- 单词翻译模式：可见性与关键词判据（提示词措辞质量交给真模型验，不在这里钉） ----------
+
+    /** 标签与可选列表：单词翻译是模式名，但不进设置 / 抽屉的可选列表（只有双击能进） */
+    @Test fun wordModeLabelAndVisibility() {
+        assertEquals("单词翻译", Prompts.MODE_LABEL.getValue(Prompts.MODE_WORD))
+        assertFalse(Prompts.MODES.contains(Prompts.MODE_WORD))
+        assertEquals("单词翻译", Modes.label(Prompts.MODE_WORD, emptyList()))
+    }
 
     /**
-     * 「内容驱动篇幅」只对做题 / 遇到题目成立：自定义模式按用户自己写的要求、通用的非题保持简短，
-     * 不能被做题型那一句覆盖掉。这里只锁**结构性行为**（三者互不相同、都带人格），不逐字钉新文案。
+     * `wantsTerms` 是「提示词末尾拼不拼关键词清单行」和「首轮没清单行要不要纯文本补问一次」的**同一个判据**：
+     * 分开写时单词翻译模式没有清单行、兜底条件却恒真，每查一个词都会白发一次请求，还往卡片尾巴塞一行清单。
+     * 这里只锁「判据与提示词实际产出一致」这一条行为，不钉任何提示词文案。
      */
-    @Test fun personaLengthIsScopedByMode() {
-        val exam = Prompts.personaBlock("standard", Prompts.MODE_EXAM)
-        val custom = Prompts.personaBlock("standard", Prompts.MODE_CUSTOM)
-        val general = Prompts.personaBlock("standard", Prompts.MODE_GENERAL)
-        assertFalse("自定义不该被套上做题型篇幅", exam == custom)
-        assertFalse("通用的标准档不该和纯做题同一句", exam == general)
-        // brief / detailed 两档本就是「短 / 不设上限」，各模式同义，不受模式影响
-        for (m in Prompts.MODES) {
-            assertEquals(Prompts.personaBlock("brief", Prompts.MODE_EXAM), Prompts.personaBlock("brief", m))
-            assertEquals(Prompts.personaBlock("detailed", Prompts.MODE_EXAM), Prompts.personaBlock("detailed", m))
+    @Test fun wantsTermsMatchesActualPrompt() {
+        for (m in Prompts.MODES + Prompts.MODE_WORD) for (terms in listOf(false, true)) {
+            val p = Prompts.system(m, "standard", false, "x", terms = terms)
+            assertEquals("$m/terms=$terms：判据与提示词必须一致", p.contains(Prompts.TERMS_RULE), Prompts.wantsTerms(m, terms))
         }
-        for (m in Prompts.MODES) assertTrue("$m 缺 PERSONA", Prompts.personaBlock("standard", m).contains(Prompts.PERSONA))
+        assertFalse("单词翻译永不补问清单", Prompts.wantsTerms(Prompts.MODE_WORD, true))
+        assertTrue("其它模式跟着开关", Prompts.wantsTerms(Prompts.MODE_GENERAL, true) && Prompts.wantsTerms(Prompts.MODE_EXAM, true))
+        assertFalse("开关关着谁都不带", Prompts.wantsTerms(Prompts.MODE_EXAM, false))
     }
 
     // ---------- 纯函数行为 ----------
@@ -170,6 +167,50 @@ class PromptsTest {
         assertTrue(Prompts.translate("hello", "ja").contains("一律译成自然的日文"))
         assertTrue(Prompts.translate("hello", "nope").contains("中英互译"))
         assertTrue(Prompts.translate("hello", "auto").endsWith("原文：\nhello"))
+    }
+
+    /**
+     * 摘「中英互译」段绝不能吞掉后面的解析：模型的解析常用 `### 第 N 题` / `### 解析` 这类三级标题，
+     * 摘段边界必须认任意级标题（只认 `## ` 会一路删到下一个二级标题或结尾）。
+     */
+    @Test fun sectionStopsAtAnyHeadingLevel() {
+        val out = "知识就是力量。\n\n## AI 解析\n\n### 解析\n关键词：Knowledge 名词\n\n## 中英互译\n\n英文：Knowledge is power.\n中文：知识就是力量。"
+        assertEquals("英文：Knowledge is power.\n中文：知识就是力量。", Prompts.section(out, Prompts.BILINGUAL_HEAD)?.trim())
+        val kept = Prompts.withoutSection(out, Prompts.BILINGUAL_HEAD)
+        assertTrue("三级标题的解析必须留下", kept.contains("### 解析") && kept.contains("关键词：Knowledge 名词"))
+        assertFalse("互译段本身要摘掉", kept.contains(Prompts.BILINGUAL_HEAD))
+        assertEquals("没有这一段就原样返回", "a\n\nb", Prompts.withoutSection("a\n\nb", Prompts.BILINGUAL_HEAD))
+    }
+
+    /**
+     * 互译段必须是真对照：模型把一句抄成两行（只有标点 / 大小写 / 空格差别）、或两行语言对不上时一律不收，
+     * 返回 null 让调用方如实说缺 —— 收下来就是把同一句话冒充成两种语言。
+     */
+    @Test fun bilingualSectionRejectsFakePair() {
+        val ok = Prompts.bilingualSection("英文：Knowledge is power.\n中文：知识就是力量。")
+        assertEquals(Prompts.BILINGUAL_HEAD + "\n英文：Knowledge is power.\n中文：知识就是力量。", ok)
+        // 全角冒号 + 加粗 + 列表符：装饰要去掉，收进来的仍是这两句
+        assertEquals(ok, Prompts.bilingualSection("- **英文**：Knowledge is power.\n- **中文**：知识就是力量。"))
+        // 同一句抄两遍（大小写 / 空格 / 标点不同）不算互译
+        assertTrue(Prompts.bilingualSection("英文：Knowledge is power\n中文：knowledge is power.") == null)
+        assertTrue(Prompts.bilingualSection("英文：Knowledge is power.\n中文：Knowledge is power.") == null)
+        // 语言对不上：英文那行其实是中文；中文那行没有汉字
+        assertTrue(Prompts.bilingualSection("英文：知识就是力量。\n中文：知识就是力量。") == null)
+        assertTrue(Prompts.bilingualSection("英文：Knowledge is power.\n中文：ok") == null)
+        // 缺一条就没有对照
+        assertTrue(Prompts.bilingualSection("英文：Knowledge is power.") == null)
+        assertTrue(Prompts.bilingualSection("  ") == null)
+    }
+
+    /** 两个方向都能拼出对照；同语种 / 同一句 / 非中英一律不拼（缺的那一半只能由模型真翻）。 */
+    @Test fun bilingualPairUsesExistingTextOnly() {
+        assertEquals(Prompts.BILINGUAL_HEAD + "\n英文：Knowledge is power.\n中文：知识就是力量。",
+            Prompts.bilingualPair("Knowledge is power.", "知识就是力量。"))
+        assertEquals(Prompts.BILINGUAL_HEAD + "\n英文：Knowledge is power.\n中文：知识就是力量。",
+            Prompts.bilingualPair("知识就是力量。", "Knowledge is power."))
+        assertTrue("同语种不能拼", Prompts.bilingualPair("坚持每天学习。", "坚持每天学习。") == null)
+        assertTrue("同一句不能拼", Prompts.bilingualPair("坚持每天学习。", "坚持每天学习") == null)
+        assertTrue("非中英不拼", Prompts.bilingualPair("毎日勉強します。", "Every day I study.") == null)
     }
 
     @Test fun noQuestionMarkerIsStripped() {

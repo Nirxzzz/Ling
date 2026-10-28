@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * DeepL（v1.61，对齐电脑版 Ling v1.59）：POST /v2/translate，一次性返回。
  * Key 以 ":fx" 结尾是免费版（api-free.deepl.com），否则是 Pro（api.deepl.com）。只给译文，没有词性 / 要点。
- * 本开源副本不内置任何 Key；用户在设置页填自己的 DeepL API Key 后才可用。
+ * 开源副本不内置任何 Key：用户在设置页填入自己的 DeepL Key。
  */
 class DeepL(private val key: String, private val endpoint: String? = null) {
     companion object {

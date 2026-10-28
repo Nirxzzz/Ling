@@ -30,6 +30,7 @@ object Cache {
      * TTL 按**内容的时效**分档，不是一个值打天下：
      *
      * - [TTL_SOLVE_MS] 识别 / 追问 = 7 天。答题内容有过期风险（同一道题隔一周再做，答案可能是旧的），宁可多花一次钱。
+     *   **联网搜索开着时不要用这一档**：搜到的答案有时效，调用方整段绕过识别 / 追问缓存（OrbService 已按 searchConfig.enabled 判断）。
      * - [TTL_TRANSLATE_MS] 翻译 / 弹词预翻译 = 30 天。词典、释义、句子译文这类东西基本不变，
      *   7 天太短 —— 单词书里同一个词反复翻，每次都白花一次调用。
      * - [TTL_SEARCH_MS] 联网搜索 = 6 小时。「现在多少钱」这类半天内就会变。
@@ -191,9 +192,17 @@ object Cache {
     const val FOLLOW_MAX = 200
     fun followStore(ctx: Context) = Store(ctx, "follow", FOLLOW_MAX, TTL_SOLVE_MS)
 
-    /** 识别的键：画面 + 会影响回答的所有设置（v1.66 起含「识别关键词」开关：开着时加后缀 —— 老版本存的答案没有关键词行，不能命中） */
+    /**
+     * 识别的键：画面 + 会影响回答的所有设置（v1.66 起含「识别关键词」开关：开着时加后缀 —— 老版本存的答案没有关键词行，不能命中）。
+     * v2.2：搜索配置进键（开关 / 引擎 / 深度 / 增强 / 凭据身份只进非密指纹），换搜索配置不会命中旧答案。
+     * 联网搜索开着时答案带时效，调用方应整段绕过 7 天识别缓存（见 [TTL_SOLVE_MS] 的说明）—— 这里只负责把配置隔离开。
+     */
     fun solveKey(fp: String, o: Solver.Options, api: ApiConfig): String =
-        key("solve", fp, o.mode, o.detail, o.novice.toString(), o.customPrompt + (if (o.terms) "\u0000terms" else ""), api.base, api.model, api.thinkingEffort)
+        key(
+            // 屏幕提示词精简（去掉附加人设/风格，只留做题与功能）：命名空间升到 -2，老版本存的答案不再命中，旧数据自然过期
+            "solve-screen-2", fp, o.mode, o.detail, o.novice.toString(), o.customPrompt + (if (o.terms) "\u0000terms" else ""),
+            api.base, api.model, api.thinkingEffort, WebSearch.configFingerprint(api.searchConfig),
+        )
 
     /** "刚刚" / "12 分钟前" / "3 小时前" / "2 天前" */
     fun ago(t: Long, now: Long = System.currentTimeMillis()): String {

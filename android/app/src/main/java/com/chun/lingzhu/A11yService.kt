@@ -216,9 +216,12 @@ class A11yService : AccessibilityService() {
     fun shot(cb: (Bitmap?, Int) -> Unit) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) { cb(null, -1); return }
         try {
+            val t0 = System.currentTimeMillis()
             takeScreenshot(Display.DEFAULT_DISPLAY, exec, object : TakeScreenshotCallback {
                 override fun onSuccess(res: ScreenshotResult) {
+                    val t1 = System.currentTimeMillis()
                     val bmp = bitmapOf(res)
+                    val t2 = System.currentTimeMillis()
                     cb(bmp, if (bmp == null) 1 else 0)
                 }
                 override fun onFailure(errorCode: Int) { cb(null, errorCode) }
@@ -318,5 +321,48 @@ class A11ySource(private val onMain: (Runnable) -> Unit) : ScreenSource {
         }
         return true
     }
+    
+    /** 上次截图的失败码（0 = 成功或不知道）。速记靠它区分「安全窗口」和普通失败 */
+    private var lastCodeField: Int = 0
+    override val lastCode: Int get() = lastCodeField
+
+    /**
+     * v2.4 速记：整屏截图 → 软件位图（已按 scaledSize 缩放）。
+     *
+     * 和 [capture] 的差别只有一个：不经过 JPEG。速记要生成原图和缩略图两份文件，
+     * 先压成 JPEG 再解回来纯属白做功，还多一次画质损失。
+     *
+     * 失败时把失败码留给 [lastCode]：速记要靠它区分「安全窗口」（码 6 / 黑帧）和普通失败。
+     *
+     * 位图所有权：[shot] 给的这张归这里回收 —— [scaledSoftwareBitmap] 在 HARDWARE 时 copy 出一张
+     * 新的软件位图（10MB 级），旧的不回收就是每轮速记漏一张；只有它原样返回同一个对象时
+     * （本来就是小尺寸软件位图）才把所有权交给 cb。
+     */
+    override fun captureBitmap(cb: (Bitmap?) -> Unit) {
+        val svc = A11yService.instance
+        if (svc == null) {
+            lastCodeField = -1
+            lastError = A11yService.disconnectedMessage()
+            cb(null)
+            return
+        }
+        val once = java.util.concurrent.atomic.AtomicBoolean(false)
+        svc.shot { bmp, code ->
+            // 重复回调：这张同样是给我们的，没人会再回收它
+            if (!once.compareAndSet(false, true)) { bmp?.recycle(); return@shot }
+            lastCodeField = code
+            lastError = if (bmp == null) A11yService.describe(code) else null
+            var soft: Bitmap? = null
+            try {
+                soft = bmp?.let { scaledSoftwareBitmap(it) }
+            } finally {
+                // 换成新对象（copy / 缩放）时原图归我们收；原样返回则所有权转给 cb
+                if (bmp != null && soft !== bmp) runCatching { bmp.recycle() }
+            }
+            cb(soft)
+        }
+    }
+
+    /** 无障碍服务生命周期由系统管，这里不动它 */
     override fun release() {}   // 服务生命周期由系统管，这里不动它
 }

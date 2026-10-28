@@ -1,8 +1,8 @@
 内置词库（assets/wordbank/）来源与授权说明
 =============================================
 
-本开源副本只包含以下 5 个分级词表（junior / gaokao / cet4 / cet6 / ielts.txt）。
-它们由英文词频表截取分段生成，数据来源与授权如下：
+本目录下的 5 个分级词表（junior / gaokao / cet4 / cet6 / ielts.txt）
+由英文词频表截取分段生成，数据来源与授权如下：
 
 来源
 ----
@@ -30,8 +30,13 @@ https://en.wiktionary.org/wiki/Wiktionary:Frequency_lists/PG/2006/04/1-10000
   ielts.txt    雅思拓展        频率第 8001~10000 位
 每行一个单词（UTF-8，无 BOM，LF 换行），无释义 —— 卡片上点「查」即可翻译。
 
-不在本副本中的内容
-------------------
-原发行版包含三份考研词表（kaoyan_bikao.txt / kaoyan_jichu.txt / kaoyan_chaogang.txt），
-其著作权归原作者 / 原出版方所有，授权链不完整，因此**未包含在本开源副本中**，
-也不适用上述 CC BY-SA 3.0 授权。请勿从其他渠道复制进本仓库。
+------------------------------------------------------------------------
+
+About the 考研 word lists
+========================
+
+The upstream build also shipped three 考研 word lists taken from a
+commercially published vocabulary book. Those lists are third-party
+copyrighted content and are **not** part of this open-source copy.
+Only the five Wiktionary / Project Gutenberg frequency lists above are
+distributed here, under CC BY-SA 3.0.

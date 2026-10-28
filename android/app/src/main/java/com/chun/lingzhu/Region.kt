@@ -74,12 +74,41 @@ class RegionOverlay(
     private var downX = 0f; private var downY = 0f
     private var moving: Region.Box? = null
     private val loc = IntArray(2)
+    /** 瑞士风格的形状：直角 + [Shape.strokeDp] 细线（[Shape.SWISS]）。显式自定义了别的形状就按用户的来 */
+    private val swiss get() = Ui.shape.cornerDp <= 0f
+    /** 瑞士风格的**配色**：只有 swiss / swiss_dark 自报 [Theme.noShadowStyle]（见 [Theme]）。不猜 id */
+    private val inkPlate get() = Ui.theme.noShadowStyle
+    /**
+     * 浮板底色。框选层压在**别人的截图**上，不是压在自己的纸底上，所以瑞士风格不能直接用 paper：
+     * 用「墨色板 + 反色字」——浅色瑞士 = 黑板白字，深色瑞士 = 白板墨字，任何底图上都读得清。
+     * 非瑞士配色保持原来的固定近黑（逐位不变）。
+     */
+    private val plate: Int get() = if (inkPlate) Theme.argb(0xE6, Brut.INK) else Color.argb(200, 20, 20, 20)
+    /** 底部操作条比提示条更实一点（压在功能键上，字不能被底图透上来）；非瑞士保持原来的 220 */
+    private val plateBar: Int get() = if (inkPlate) Theme.argb(0xE6, Brut.INK) else Color.argb(220, 20, 20, 20)
+    private val plateInk: Int get() = if (inkPlate) Brut.on(Brut.INK) else Color.WHITE
+    /** 瑞士下浮板的一圈 1dp 细线（同墨色 20%，只做边界，不做装饰）；非瑞士风格没有这一层 */
+    private val plateEdge: Int get() = Theme.argb(0x33, plateInk)
+    /**
+     * 框线：非瑞士是白 2.5dp + 黑晕（逐位不变）；瑞士是**信号红** 1dp 细线 + 一圈窄黑晕
+     * （框选压在任意截图上，细线单靠红在浅底上会糊，黑晕只做可读性兜底，不是装饰）。
+     */
+    private val edgeW = if (swiss) Ui.dp(ctx, Ui.shape.strokeDp).toFloat() else Ui.dp(ctx, 2.5f).toFloat()
     private val dim = Paint().apply { color = Color.argb(140, 0, 0, 0) }
-    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = Ui.dp(ctx, 2.5f).toFloat() }
-    private val edgeShadow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = Ui.dp(ctx, 4.5f).toFloat() }
-    private val hint = Ui.text(ctx, "拖出一个框，框住要问的那一块（在框里拖可以挪）", 14f, Color.WHITE).apply {
+    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = if (inkPlate) Brut.MINT else Color.WHITE
+        style = Paint.Style.STROKE; strokeWidth = edgeW
+    }
+    private val edgeShadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK; style = Paint.Style.STROKE
+        strokeWidth = if (swiss) edgeW + Ui.dp(ctx, 2f) else Ui.dp(ctx, 4.5f).toFloat()
+    }
+    private val hint = Ui.text(ctx, "拖出一个框，框住要问的那一块（在框里拖可以挪）", 14f, plateInk).apply {
         setPadding(Ui.dp(ctx, 14f), Ui.dp(ctx, 8f), Ui.dp(ctx, 14f), Ui.dp(ctx, 8f))
-        background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.argb(200, 20, 20, 20)); cornerRadius = Ui.dp(ctx, 16f).toFloat() }
+        background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(plate); cornerRadius = if (swiss) 0f else Ui.dp(ctx, 16f).toFloat()
+            if (swiss) setStroke(Math.max(1, Ui.dp(ctx, Ui.shape.strokeDp)), plateEdge)
+        }
     }
     private val okBtn: View
 
@@ -91,9 +120,12 @@ class RegionOverlay(
         val bar = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
             setPadding(Ui.dp(ctx, 10f), Ui.dp(ctx, 8f), Ui.dp(ctx, 10f), Ui.dp(ctx, 8f))
-            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.argb(220, 20, 20, 20)); cornerRadius = Ui.dp(ctx, 22f).toFloat() }
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(plateBar); cornerRadius = if (swiss) 0f else Ui.dp(ctx, 22f).toFloat()
+                if (swiss) setStroke(Math.max(1, Ui.dp(ctx, Ui.shape.strokeDp)), plateEdge)
+            }
         }
-        fun b(label: String, act: () -> Unit) = Ui.text(ctx, label, 15f, Color.WHITE).apply {
+        fun b(label: String, act: () -> Unit) = Ui.text(ctx, label, 15f, plateInk).apply {
             setPadding(Ui.dp(ctx, 16f), Ui.dp(ctx, 10f), Ui.dp(ctx, 16f), Ui.dp(ctx, 10f)); setOnClickListener { act() }
         }.also { bar.addView(it) }
         b("取消") { onDone(null, false) }

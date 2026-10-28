@@ -69,7 +69,21 @@ class CacheTest {
         assertEquals(30L * day, Cache.TTL_TRANSLATE_MS)
         assertEquals(6L * 3600 * 1000, Cache.TTL_SEARCH_MS)
         assertEquals(Cache.TTL_SOLVE_MS, Cache.TTL_MS)          // 纯函数默认档仍是识别档
-        assertEquals(Cache.TTL_SEARCH_MS, WebSearch.TTL_MS)     // 搜索那档从 Cache 取，两边不会漂
+    }
+
+    /** v2.2：搜索配置进识别缓存键 —— 换开关 / 引擎 / 深度 / 凭据都不能命中旧答案 */
+    @Test fun solveKeySeparatesSearchConfig() {
+        val base = ApiConfig("https://a/v1", "k", "m")
+        val off = Cache.solveKey("fp", Solver.Options("exam", "standard", false), base)
+        val on = Cache.solveKey("fp", Solver.Options("exam", "standard", false),
+            base.copy(searchConfig = WebSearch.Config(enabled = true)))
+        assertNotEquals(off, on)
+        assertNotEquals(on, Cache.solveKey("fp", Solver.Options("exam", "standard", false),
+            base.copy(searchConfig = WebSearch.Config(enabled = true, provider = WebSearch.TAVILY))))
+        assertNotEquals(on, Cache.solveKey("fp", Solver.Options("exam", "standard", false),
+            base.copy(searchConfig = WebSearch.Config(enabled = true, deepseekKey = "sk-x"))))
+        assertEquals(on, Cache.solveKey("fp", Solver.Options("exam", "standard", false),
+            base.copy(searchConfig = WebSearch.Config(enabled = true))))
     }
 
     /** 30 天档：翻译条目放满 30 天都还在（7 天档会早就过期）；识别档的判定不受影响 */

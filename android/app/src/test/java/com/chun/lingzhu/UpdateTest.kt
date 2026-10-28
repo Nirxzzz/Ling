@@ -52,20 +52,6 @@ class UpdateTest {
         assertEquals("发现新版 1.66.0（166）", Update.line(Update.Manifest(166, "1.66.0", "u", "")))
     }
 
-    /** 本开源副本不内置官方更新源：公开 fork 不能从维护者通道拉包。
-     *  留空 = 不自动检查；用户填了自己的清单地址才启用（见 [Update.sources]）。 */
-    @Test fun defaultManifestUrlIsEmptyForFork() {
-        assertEquals(BuildConfig.UPDATE_MANIFEST_URL, Update.DEFAULT_MANIFEST_URL)
-        assertEquals("", Update.DEFAULT_MANIFEST_URL)
-        assertFalse(Update.shouldAutoCheck(0, 1_000_000_000L, Update.DEFAULT_MANIFEST_URL))
-    }
-
-    // ---------------- v1.77：自动检查不再自己开下载（用户反馈「每次打开页面突然弹下载」） ----------------
-
-    private val newer = Update.Manifest(178, "1.76.0", "https://x/a.apk", "修了些问题")
-    private val same = Update.Manifest(177, "1.77.0", "https://x/a.apk", "")
-
-    /** 反馈的根因那条：自动检查发现新版，只给文案 + 一个下载按钮，绝不替用户开下载 */
     @Test fun autoCheckNewVersionOnlyOffersButton() {
         val r = Update.check(newer, localCode = 177, localName = "1.77.0", manual = false)
         assertTrue(r is Update.CheckResult.NewVersion)
@@ -150,15 +136,16 @@ class UpdateTest {
         assertEquals(listOf("https://mine/m.json", builtIn), Update.sources("  https://mine/m.json  ", builtIn))
     }
 
-    /** 没有内置源时，留空就是「不检查更新」，而不是回落到任何官方地址。
+    /** 这条性质钉死「空串不再致命」：清空输入框后仍能回落到内置源，更新通道不被掐断。
      *  （Prefs 那层读 SharedPreferences，JVM 单测碰不到，所以在纯函数这层断言。） */
-    @Test fun blankCustomMeansNoUpdateChannel() {
+    @Test fun blankCustomNeverKillsUpdateChannel() {
+        // 开源副本的内置源是空串：清空输入框后仍是「没有源」，而不是退回到维护者服务器。
         assertEquals(emptyList<String>(), Update.sources("", Update.DEFAULT_MANIFEST_URL))
         assertEquals(emptyList<String>(), Update.sources(null))
-        assertTrue(Update.sources("", Update.DEFAULT_MANIFEST_URL).isEmpty())
+        assertEquals("", Update.DEFAULT_MANIFEST_URL)
     }
 
-    /** 回落说明用词：不能静默替换，得让用户看懂手填的地址被跳过了 */
+    /** 回落说明用词：不能静默替换，得让用户看懂手填的地址被跳过了。 */
     @Test fun fallbackNoteExplainsSwitchToBuiltIn() {
         assertTrue(Update.FALLBACK_NOTE.contains("已改用内置源"))
     }

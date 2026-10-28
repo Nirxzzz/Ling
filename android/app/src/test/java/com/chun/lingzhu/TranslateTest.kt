@@ -62,6 +62,22 @@ class TranslateTest {
         assertNull(Translate.pickCached(listOf("deepl", "baidu"), probe = probe()))
     }
 
+    /**
+     * v2.6.3 auto 取消 AI 优先：配好 DeepL 时它必须是第一个被问的引擎，
+     * 所以缓存查找直接按 plan 走 —— AI 档存过的旧富结果不能抢在 DeepL 前面命中（否则用户看不到 DeepL 译文）。
+     */
+    @Test fun autoCachePrefersMachineTranslationOverAiRichResult() {
+        val auto = Translate.plan("auto", true, true, true)
+        assertEquals(listOf("deepl", "baidu", "ai"), auto)
+        val p = Translate.pickCached(auto, probe = probe("deepl", "ai"))!!
+        assertEquals("deepl", p.engine)
+        // DeepL 没缓存时仍然按顺序取下一个，AI 的富结果此时才轮到
+        assertEquals("ai", Translate.pickCached(auto, probe = probe("ai"))!!.engine)
+        // 显式钉 AI 时不许借 DeepL 的缓存
+        assertEquals("ai", Translate.pickCached(Translate.plan("ai", true, true, true), probe = probe("deepl", "ai"))!!.engine)
+    }
+
+
     /** 显式「重翻」：跳过缓存，一定发请求 —— 旧译文不能把用户的覆盖操作短路掉 */
     @Test fun forceRetranslateSkipsCache() {
         assertNull(Translate.pickCached(listOf("deepl", "baidu"), force = true, probe = probe("deepl", "baidu")))

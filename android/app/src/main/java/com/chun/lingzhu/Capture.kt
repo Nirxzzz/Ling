@@ -31,6 +31,14 @@ class ProjectionSource(private val cap: Capture, private val runOnWorker: (Runna
             cb(cap.grabJpegBase64())
         })
     }
+    /** v2.4 速记：取最新一帧 → 缩放后的软件位图 */
+    override fun captureBitmap(cb: (Bitmap?) -> Unit) {
+        runOnWorker(Runnable {
+            val seq = cap.frameSeq
+            cap.awaitFrameAfter(seq, 350)
+            cb(cap.grabBitmap()?.let { scaledSoftwareBitmap(it) })
+        })
+    }
     override fun release() = cap.release()
 }
 
@@ -116,9 +124,14 @@ class Capture(ctx: Context, resultCode: Int, data: Intent, private val onStopped
         }
     }
 
-    /** 当前最新一帧 → JPEG(80) → base64。没有帧返回 null */
-    fun grabJpegBase64(): String? {
-        val bmp: Bitmap
+    /** 当前最新一帧 → JPEG(85, v2.1 起) → base64。没有帧返回 null */
+    /**
+     * 把最新一帧转成位图（不缩放）。
+     *
+     * v2.4 从 [grabJpegBase64] 里抽出来：速记要的是位图不是 base64，
+     * 两条路共用这段解码逻辑，免得以后改一处忘另一处。
+     */
+    fun grabBitmap(): Bitmap? {
         synchronized(lock) {
             val img = latest ?: return null
             val plane = img.planes[0]
@@ -129,9 +142,15 @@ class Capture(ctx: Context, resultCode: Int, data: Intent, private val onStopped
             val padded = Bitmap.createBitmap(rowStride / pixelStride, h, Bitmap.Config.ARGB_8888)
             plane.buffer.rewind()
             padded.copyPixelsFromBuffer(plane.buffer)
-            bmp = if (padded.width != w) Bitmap.createBitmap(padded, 0, 0, w, h).also { padded.recycle() } else padded
+            return if (padded.width != w) Bitmap.createBitmap(padded, 0, 0, w, h).also { padded.recycle() } else padded
         }
-        return bitmapToJpegBase64(bmp).also { bmp.recycle() }
+    }
+
+    fun grabJpegBase64(): String? {
+        val b = grabBitmap() ?: return null
+        val out = bitmapToJpegBase64(b)
+        b.recycle()
+        return out
     }
 
     fun release() {

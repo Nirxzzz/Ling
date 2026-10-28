@@ -68,14 +68,23 @@ object UpdateDirect {
                         val buf = ByteArray(64 * 1024)
                         while (true) {
                             val r = input.read(buf)
+                            // 连接被中途掐断时部分实现会返回 0 而不是 -1：0 字节不前进就按失败处理，
+                            // 否则这里会空转成死循环，半截包也永远留在 Downloads 里。
                             if (r < 0) break
+                            if (r == 0) throw java.io.IOException("下载中断：读取无进展")
                             out.write(buf, 0, r)
                             got += r
+                            if (total >= 0 && got > total) throw java.io.IOException("下载异常：读取字节超过声明的 ${total}")
                             val t = System.currentTimeMillis()
                             if (t - lastTick > 300) { onProgress(got, total); lastTick = t }
                         }
                         out.flush()
                     } ?: throw java.io.IOException("输出流打不开")
+                }
+                // 声明了 Content-Length 就必须一个字节不少：少了就是连接提前结束，宁可失败重试，
+                // 也不能把半截 APK 交给安装器（安装器只会报「解析失败」）。
+                if (total >= 0 && got != total) {
+                    throw java.io.IOException("下载不完整：只收到 $got / $total 字节")
                 }
                 onProgress(got, total)
                 resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
@@ -102,7 +111,7 @@ object UpdateDirect {
         }
     } catch (_: Exception) { null }
 
-    /** 下载完成的文件名（MediaStore 里好认）：Ling-1.85.7-open.apk 这种 */
+    /** 下载完成的文件名（MediaStore 里好认）：Ling-1.85.7-内测版.apk 这种 */
     fun fileNameFor(versionName: String, internal: Boolean): String {
         val safe = versionName.replace("/", "_")
         return "Ling-$safe" + if (internal) "-internal.apk" else "-public.apk"

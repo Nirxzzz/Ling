@@ -24,6 +24,14 @@ import java.io.File
  *
  * 删除人格时会一并清掉它那两份文件（chat-<pid>.json / cards/<suffix>.json），不留孤儿 —— 见 [wipe]。
  */
+/**
+ * temperature 的哨兵值：-1 = 跟随全局设置，不单独指定。
+ *
+ * 放**顶层**而不是 object Personas 里：data class Persona 的默认参数在 Personas 外面，
+ * 够不到 object 内的成员（编译期就报 Unresolved reference）。
+ */
+const val TEMP_FOLLOW_GLOBAL = -1
+
 data class Persona(
     val id: String,                  // "p0" = 小Ling（内置，不可删）；新建 "p1" "p2"…
     val name: String,                // ≤ [NAME_CHARS] 字
@@ -32,9 +40,59 @@ data class Persona(
     val prompt: String,              // 系统提示词「人格段」，≤ [PROMPT_CHARS] 字；空 = 用 Prompts.PERSONA
     val memoryFile: String,          // 记忆卡文件后缀 → filesDir/cards/<memoryFile>.json
     val templateId: String = "custom",  // 溯源：study / life / code / custom，新建后不可改
+    /**
+     * v2.3.3「允许自定义 Agent」：这个 Agent 能用哪些本机工具，JSON 数组字符串。
+     *
+     * **空串 = 全开**（老用户的 personas.json 里没有这个键，读出来就是空串）。
+     * 语义与编解码都收在 [AgentScope] 里 —— 那里有单测锁住「空 = 全开」这条升级安全线，
+     * 这里只负责存，不在数据类里做判断。
+     */
+    val tools: String = "",
+
+    /**
+     * v2.4「每个 Agent 一套完整人设」：这个 Agent 用哪个模型，空 = 跟随「AI 接口」里当前那套。
+     *
+     * 空串而不是写死默认模型名：用户换了接口（比如从 DeepSeek 换到另一家），
+     * 没单独指定模型的 Agent 应该跟着走，而不是被钉死在一个已经不存在的模型名上。
+     */
+    val model: String = "",
+
+    /**
+     * 开场白：点进这个 Agent 时它先说的第一句。空 = 不主动说话。
+     *
+     * 为什么不塞进 prompt：prompt 是「它怎么想」，开场白是「它先说啥」。
+     * 混在一起会让模型误以为开场白是必须复读的模板。
+     */
+    val greeting: String = "",
+
+    /**
+     * 温度，-1 = 跟随全局设置；0..20 表示 0.0..2.0（存整数，避免浮点在 JSON 里的表示差异）。
+     *
+     * 用整数存不是偷懒：personas.json 是人可读的文件，0.7 这种浮点写进去再读回来
+     * 各家 JSON 实现的精度处理不完全一致，出现过 0.7000000000000001。
+     */
+    val temperature: Int = TEMP_FOLLOW_GLOBAL,
 ) {
     /** 提示词段为空 = 沿用全局那份 PERSONA（老用户零变化的保证） */
     val usesDefaultPrompt: Boolean get() = prompt.isBlank()
+
+    /** 给 AgentTools.toolsJson / execute 用的白名单。空集合 = 全开，见 [AgentScope] */
+    val toolScope: Set<String> get() = AgentScope.parse(tools)
+
+    /** 是否给这个 Agent 单独指定了模型。false = 跟随「AI 接口」里当前那套 */
+    val usesDefaultModel: Boolean get() = model.isBlank()
+
+    /** 是否单独指定了温度。false = 跟随全局设置 */
+    val usesDefaultTemperature: Boolean get() = temperature == TEMP_FOLLOW_GLOBAL
+
+    /**
+     * 温度换成 0.0..2.0 的浮点；没单独指定时返回 null，让调用方回落到全局值。
+     *
+     * 返回 null 而不是返回一个默认数值：调用方必须显式处理「没设过」这种情况，
+     * 如果这里给个 0.7，全局设置改了之后这个 Agent 会悄悄不跟随，而且看不出来。
+     */
+    val temperatureValue: Float?
+        get() = if (usesDefaultTemperature) null else (temperature.coerceIn(0, 20)) / 10f
 
     /**
      * v1.85：头像改成本地矢量图（[PersonaIcon]），**不再渲染 emoji** —— 用户明确不要 emoji。
@@ -51,6 +109,7 @@ object Personas {
 
     /** 内置人格 id。**不可删、不可改 id**，它的提示词段就是 Prompts.PERSONA 的位置 */
     const val P0 = "p0"
+
     /** 内置人格的默认名（v1.70 起「小珠」改名「小Ling」） */
     const val DEFAULT_NAME = "小Ling"
     const val DEFAULT_EMOJI = "🙂"
@@ -62,6 +121,10 @@ object Personas {
     const val ROLE_CHARS = 24
     /** 单个人格的提示词段上限（比 Customize 的 2000 紧：多人格时 token 是叠加的） */
     const val PROMPT_CHARS = 800
+    /** v2.4：模型名长度上限（"deepseek-flash" 这类，留够代理网关的长名字） */
+    const val MODEL_CHARS = 64
+    /** v2.4：开场白上限。太长会挤掉第一条真消息 */
+    const val GREETING_CHARS = 200
     /** 全部人格的提示词总量上限。8 个人格平均 1000 字，正好 */
     const val PROMPT_TOTAL = 8000
 
@@ -173,6 +236,16 @@ object Personas {
             prompt = p.prompt.trim().take(PROMPT_CHARS),
             memoryFile = safeFile(id),   // pid 决定文件（设计稿：记忆隔离按 id），外部传值不参与
             templateId = if (p.templateId in TEMPLATES.map { it.id }) p.templateId else T_CUSTOM,
+            // 工具白名单过一道编解码：截掉不存在的工具名、去重、把顺序定下来。
+            // 空白原样保留（= 全开），不能被归一化成 "["none"]" —— 那等于把「没设置」变成「全关」。
+            tools = if (p.tools.isBlank()) "" else AgentScope.encode(AgentScope.parse(p.tools)),
+            // 模型名不校验「是否存在」：用户可能在配置文件里手写一个尚未填进预设的模型，
+            // 直接抹掉会让「我明明写了」和「读回来没了」对不上。留空串 = 跟随全局。
+            model = p.model.trim().take(MODEL_CHARS),
+            greeting = p.greeting.trim().take(GREETING_CHARS),
+            // 越界值夹回合法范围，-1（跟随全局）单独放行
+            temperature = if (p.temperature == TEMP_FOLLOW_GLOBAL) TEMP_FOLLOW_GLOBAL
+                          else p.temperature.coerceIn(0, 20),
         )
     }
 
@@ -206,6 +279,13 @@ object Personas {
                     prompt = o.optString("prompt"),
                     memoryFile = o.optString("memoryFile"),
                     templateId = o.optString("templateId"),
+                    // 老数据没有这个键 -> optString 给空串 -> AgentScope.parse 视为「全开」
+                    tools = o.optString("tools"),
+                    // 老数据没有这三个键 -> 空串 / -1 = 跟随全局，行为与升级前一致
+                    model = o.optString("model"),
+                    greeting = o.optString("greeting"),
+                    temperature = if (o.has("temperature")) o.optInt("temperature", TEMP_FOLLOW_GLOBAL)
+                                  else TEMP_FOLLOW_GLOBAL,
                 )
             }
         } catch (_: Exception) {
@@ -213,7 +293,12 @@ object Personas {
         }
         val seen = LinkedHashSet<String>()
         val rest = raw.filter { it.id != P0 }.filter { seen.add(it.id) }.map { norm(it) }.take(MAX - 1)
-        return listOf(p0()) + rest
+        // v2.4 修正：文件里**有** p0 时必须用它，不能无条件造一个新的。
+        // 原来这里写死 listOf(p0())，等于把用户对内置 Agent 的一切自定义（名字 / 职责 /
+        // 开场白 / 模型 / 温度 / 工具）在每次重启后全部丢掉 —— 保存看起来成功了，重启就没了。
+        // 文件里没有 p0（首次安装 / 老版本没写过）时才回落到内置默认值。
+        val head = raw.firstOrNull { it.id == P0 }?.let { norm(it) } ?: p0()
+        return listOf(head) + rest
     }
 
     fun toJson(list: List<Persona>): String = toJsonList(sanitize(list))   // sanitize 自带「p0 打头」
@@ -221,7 +306,10 @@ object Personas {
     private fun toJsonList(list: List<Persona>): String = JSONArray().apply {
         for (p in list) put(JSONObject()
             .put("id", p.id).put("name", p.name).put("emoji", p.emoji).put("role", p.role)
-            .put("prompt", p.prompt).put("memoryFile", p.memoryFile).put("templateId", p.templateId))
+            .put("prompt", p.prompt).put("memoryFile", p.memoryFile).put("templateId", p.templateId)
+            // 空串也照写：读回来还是空串 = 全开，round-trip 稳定
+            .put("tools", p.tools)
+            .put("model", p.model).put("greeting", p.greeting).put("temperature", p.temperature))
     }.toString()
 
     /** 解析 + 截断 + 补 p0，三段式里的第一段和第三段都在这 */
@@ -295,7 +383,14 @@ object Personas {
     /** 改一个人格。**只改可编辑的字段**（id / memoryFile / templateId 不动 —— 前两个是文件路径，动了文件就孤儿了） */
     fun update(list: List<Persona>, p: Persona): List<Persona> {
         val old = get(list, p.id)
-        val merged = old.copy(name = p.name, emoji = p.emoji, role = p.role, prompt = p.prompt)
+        // 这里刻意逐字段白名单复制：id / memoryFile / templateId 不允许被外部改。
+        // **新增可编辑字段必须加进这一行**，否则会被静默丢掉 —— v2.3.3 的 tools 就踩过一次，
+        // 表现是「对话框保存了、JSON 里没变」，排查成本很高。
+        val merged = old.copy(
+            name = p.name, emoji = p.emoji, role = p.role, prompt = p.prompt,
+            tools = p.tools,
+            model = p.model, greeting = p.greeting, temperature = p.temperature,
+        )
         val out = list.map { if (it.id == old.id) norm(merged) else it }
         val total = out.sumOf { it.prompt.length }
         return if (total > PROMPT_TOTAL) list else out
@@ -326,8 +421,17 @@ object Personas {
     fun promptOf(p: Persona): String = p.prompt.trim().ifEmpty { Prompts.PERSONA }
 
     /** 空会话时气泡流里那一行。每个模板给一句自己的，别所有人格都说「在。」 */
-    fun greeting(p: Persona): String =
-        if (p.id == P0) "在。说什么？" else template(p.templateId).greeting
+    /**
+     * 空会话时它主动说的第一句。
+     *
+     * v2.4：**用户自己填过就用自己的**（[Persona.greeting] 非空优先），否则回落到老规则
+     * （p0 固定那句 / 模板自带的问候）。回落顺序这样定是为了让没配过的人一个字都不变。
+     */
+    fun greeting(p: Persona): String {
+        val own = p.greeting.trim()
+        if (own.isNotEmpty()) return own
+        return if (p.id == P0) "在。说什么？" else template(p.templateId).greeting
+    }
 
     /**
      * 列表里一行：emoji + 名字 + ▾（人格列表 / 切人格弹窗用）。

@@ -38,7 +38,7 @@ class HistoryActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Ui.theme = Prefs(this).theme()   // 建视图前先装好当前配色（Brut 的颜色是 getter）
+        Ui.applyTheme(Prefs(this))   // 建视图前先装好当前配色（Brut 的颜色是 getter）
         title = Preset.appName + " · 历史记录"
         store = History.Store(this)
         col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; val p = dp(18f); setPadding(p, dp(12f), p, dp(32f)) }
@@ -89,7 +89,7 @@ class HistoryActivity : Activity() {
             text = "清空全部"; tag = Brut.DANGER; isEnabled = all.isNotEmpty()
             setOnClickListener {
                 val n = store.list().size; val stars = store.list().count { it.star }
-                val d = AlertDialog.Builder(this@HistoryActivity).setNegativeButton("取消", null)
+                val d = ThemeDialogs.builder(this@HistoryActivity).setNegativeButton("取消", null)
                 // v1.64：有收藏时默认只清没收藏的 —— 错题本别被一键清掉
                 if (stars > 0) d.setMessage("共 $n 条，其中 $stars 条收藏。清空后找不回来。")
                     .setPositiveButton("清空没收藏的") { _, _ -> store.keepStarred(); showList() }
@@ -166,7 +166,7 @@ class HistoryActivity : Activity() {
         col.addView(Button(this).apply {
             text = "删除这条"; tag = Brut.DANGER
             setOnClickListener {
-                AlertDialog.Builder(this@HistoryActivity).setMessage("删除这条记录？")
+                ThemeDialogs.builder(this@HistoryActivity).setMessage("删除这条记录？")
                     .setPositiveButton("删除") { _, _ -> store.delete(e.id); showList() }
                     .setNegativeButton("取消", null).show()
             }

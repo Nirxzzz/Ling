@@ -165,6 +165,9 @@ class WordCard(
     /** 提示当前的**目标** alpha。`animate()` 是异步的，不能拿 view.alpha 当「已设值」去比，否则每帧都重启动画 */
     private var hintAlpha = 0f
 
+    /** 玻璃提示行当前材质的填色：只有变色才换材质（拖动中逐事件回调，不能每次都新建 drawable） */
+    private var lastHintFill = 0
+
     /**
      * 上一帧命中的阶段。**只增不减**：这样才能保证「过一个临界只震一下」——
      * 在临界点上来回抖动时 stage 会 0/1/0/1 跳，若按差值判就会反复震。
@@ -200,6 +203,24 @@ class WordCard(
      */
     private val panelInk: Int get() = if (Ui.theme.isDark && Ui.theme.palette == null) Ui.TX1 else Brut.INK
     private val panelHint: Int get() = if (Ui.theme.isDark && Ui.theme.palette == null) Ui.TX2 else Brut.HINT
+
+    /**
+     * 直角语言（[Shape.cornerDp] <= 0）：判据与 [Ui.glass] / [Ui.smallPill] / WxSkin 的直角分支同一个，
+     * 不只认瑞士配色 —— 用户显式设过形状（主题包导入）时也照他的来。
+     */
+    private val swiss get() = Ui.shape.cornerDp <= 0f
+
+    /** 这套形状声明了**无投影**（[Shape.shadowDp] <= 0，与 [Brut] 的判据同源） */
+    private val flat get() = Ui.shape.shadowDp <= 0f
+
+    /** 当前配色是不是液态玻璃材质（v2.7.3）：只决定「谁来画底」，卡片手势 / 按钮行为都不变 */
+    private val glass: Boolean get() = Ui.theme.isGlassMaterial
+
+    /** 圆角档位：直角语言一律归零，其余形状保持调用点传入的原值 */
+    private fun corner(base: Float): Float = if (swiss) 0f else base
+
+    /** 描边粗细：直角语言取 [Shape.strokeDp]（瑞士 1dp 细线），其余形状保持原来的 1dp 硬描边 */
+    private fun strokeW(): Float = if (swiss) Ui.shape.strokeDp else 1f
 
     /**
      * 卡片根布局（v1.78）：纵向拖动超过 slop 就把触摸从子视图手里**接管**过来 ——
@@ -347,14 +368,17 @@ class WordCard(
         val hasBack = card.back.isNotBlank()
         val root = CardRoot(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            background = Ui.panelBg(ctx, radiusDp = 16f)
+            // 玻璃（v2.7.3）：整张卡走共享材质（轻透明层 + 高光边 + 柔和阴影），卡片档圆角；
+            // 其余配色仍是 [Ui.panelBg]（它自己认形状：直角语言下是 0dp + 墨色细线，永不叠渐变）。
+            background = if (glass) Ui.material(ctx, Brut.CARD, Ui.SurfaceRole.CARD, 16f)
+                         else Ui.panelBg(ctx, radiusDp = 16f)
             setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
             setOnLongClickListener { hide(); true }
             setOnTouchListener { _, ev -> onCardTouch(ev) }
         }
         // 背面（v1.80 默认展开；v1.81 富卡改走结构化排版）：
         //  - 普通卡：一个 TextView、WordSense.cardBack（一字不改，行为与老版本完全一致）
-        //  - 富卡（考研红宝书那类书页背面）：标签 chip + 正文，塞进限高的 ScrollView
+        //  - 富卡（书页式词库背面）：标签 chip + 正文，塞进限高的 ScrollView
         val rich = KaoyanBack.isRich(card.back)
         val backTv = if (rich) null
         else Ui.text(ctx, WordSense.cardBack(card.back, card.example), 13f, Ui.TX2).apply { setLineSpacing(0f, 1.3f) }
@@ -380,14 +404,19 @@ class WordCard(
             maxLines = 1
             visibility = View.INVISIBLE
             setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
-            background = android.graphics.drawable.GradientDrawable().apply {
-                cornerRadius = dp(8f).toFloat(); setStroke(Math.max(1, dp(1f)), Brut.INK); setColor(Brut.CARD)
-            }
+            background = if (glass) Ui.material(ctx, Brut.CARD, Ui.SurfaceRole.BUTTON, 8f)
+                         else android.graphics.drawable.GradientDrawable().apply {
+                             // 瑞士：直角 + 1dp 细线（无圆角、无投影、无渐变）；其余风格保持 8dp 圆角原样
+                             cornerRadius = dp(corner(8f)).toFloat()
+                             setStroke(Math.max(1, dp(strokeW())), Brut.INK)
+                             setColor(Brut.CARD)
+                         }
             // 空文本与中文的字体回退高度不同，固定像素高度才能避免首次提示微幅 resize。
             height = kotlin.math.ceil((paint.fontMetrics.bottom - paint.fontMetrics.top).toDouble()).toInt() + paddingTop + paddingBottom
         }
         judgeHint = judge
         hintAlpha = 0f
+        lastHintFill = 0
         lastStage = 0
         val word = Ui.text(ctx, card.front, 22f).apply {
             setTypeface(typeface, Typeface.BOLD); setTextIsSelectable(false)
@@ -420,10 +449,19 @@ class WordCard(
         row.addView(small(SwipeJudge.Grade.KNOWN.label) { judgeOnce(deck, card, SwipeJudge.Grade.KNOWN); hide() })
         root.addView(row)
         val dm = ctx.resources.displayMetrics
+        // 转屏修复：横屏不再占满整块屏，压到 360dp 紧凑宽；竖屏保持原来的整屏宽。
+        // 旧实现恒取 dm.widthPixels，横屏时窗口就是 2400px 一类的横屏宽度 —— 转回竖屏后窗口不重新排版，
+        // 屏幕上就剩一张按旧宽度铺开的巨大浮层。横屏本身也不需要那么宽（读一列词而已）。
+        val landscape = dm.widthPixels > dm.heightPixels
+        val windowW = if (landscape) Math.min(dm.widthPixels, dp(360f)) else dm.widthPixels
+        // 360dp 内要完整放下最多 5 颗小按钮（读 / 查 / 不认识 / 模糊 / 认识）：按实测收紧间距与内边距，
+        // 字号（12sp）不动；最紧仍超出才等分宽度让文字换行，不裁字、不省略。
+        if (landscape) fitButtons(row, windowW - dp(32f))
         baseY = Ui.statusBarHeight(ctx) + dp(8f)
         val params = WindowManager.LayoutParams(
             // v1.83：横向占满整屏（原来 75% 宽，长条目换行太多显挤）；内容区 = 屏宽 - 左右各 16dp padding
-            dm.widthPixels, WindowManager.LayoutParams.WRAP_CONTENT,
+            // 转屏修复：横屏取 min(屏宽, 360dp)，竖屏仍是整屏宽
+            windowW, WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             // v1.81 加 FLAG_LAYOUT_NO_LIMITS：不加的话窗口被**钳制在屏幕内**（实测右边缘死死贴在 1080），
             // 横向最多挪 135px 就贴边，甩出去看着像"滑到边上消失"而不是"飞出去"。悬浮球一直是这么用的。
@@ -515,21 +553,64 @@ class WordCard(
     }
 
     /** 卡上统一小按钮：默认配色白底黑描边（逐位不变）；新配色用主题卡底色 + 主题描边，字按填色选可读色。
+     *  瑞士风格：直角 + [Shape.strokeDp] 细线（没有圆角、没有投影），仍是白底墨字。
      *  12sp、约 32dp 高；按下缩到 0.96 + 背景加深（60ms），抬起重置 */
     private fun small(label: String, onClick: () -> Unit): TextView {
         val fill = Brut.CARD
-        val stroke = if (Ui.theme.palette == null) 0xFF222222.toInt() else Brut.INK
-        val bg = android.graphics.drawable.GradientDrawable().apply {
-            setColor(fill); cornerRadius = dp(8f).toFloat(); setStroke(Math.max(1, dp(1f)), stroke)
+        val stroke = Brut.INK   // v2.7.3：去掉 palette == null 时的写死 0xFF222222，描边与全库同一支墨
+        val bg: android.graphics.drawable.Drawable = if (Ui.theme.isGlassMaterial)
+            Ui.material(ctx, fill, Ui.SurfaceRole.BUTTON, 8f)
+        else android.graphics.drawable.GradientDrawable().apply {
+            setColor(fill); cornerRadius = dp(corner(8f)).toFloat()
+            setStroke(Math.max(1, dp(strokeW())), stroke)
         }
         return Ui.button(ctx, label, onClick).apply {
             textSize = 12f; minHeight = dp(32f); background = bg
             setTextColor(Brut.on(fill))
-            AnimGlue.attachPress(this, haptic = true, fillOf = { bg.color?.defaultColor ?: fill })
+            // 玻璃的底不是 GradientDrawable，按下加深给不了就按原色还原（缩放 / 下沉反馈仍在）
+            AnimGlue.attachPress(this, haptic = true, fillOf = { fill })
         }
     }
 
-    // ---------------- 富卡背面排版（v1.81：考研红宝书那类书页背面）----------------
+    /**
+     * 横屏紧凑宽下的按钮行适配（转屏修复）：横屏卡片只有 360dp，5 颗按钮按原间距 + 原内边距实测会超出，
+     * 超出部分被窗口裁掉（「认识」看不见）。这里按实测宽度从宽到紧试几组「内边距 × 间距」，取第一组放得下的；
+     * **只动间距和内边距，12sp 字号不动**。极端大字号下最紧仍放不下时改为等分宽度，让文字在按钮内换行 ——
+     * 每颗按钮仍然完整可见（不省略、不缩字）。
+     */
+    private fun fitButtons(row: LinearLayout, avail: Int) {
+        val gaps = intArrayOf(dp(8f), dp(6f), dp(4f), dp(2f))
+        val pads = intArrayOf(dp(9f), dp(7f), dp(5f), dp(3f))
+        for (pad in pads) for (gap in gaps) {
+            var total = 0
+            for (i in 0 until row.childCount) {
+                val b = row.getChildAt(i) as TextView
+                b.setPadding(pad, b.paddingTop, pad, b.paddingBottom)
+                b.measure(
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                )
+                total += b.measuredWidth
+                if (i < row.childCount - 1) total += gap
+            }
+            if (total <= avail) {
+                for (i in 0 until row.childCount) {
+                    val lp = row.getChildAt(i).layoutParams as LinearLayout.LayoutParams
+                    lp.marginEnd = if (i < row.childCount - 1) gap else 0
+                    row.getChildAt(i).layoutParams = lp
+                }
+                return
+            }
+        }
+        // 兜底：等分整行（TextView 默认会换行），宽度不再溢出卡片
+        for (i in 0 until row.childCount) {
+            row.getChildAt(i).layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(1f)
+            }
+        }
+    }
+
+    // ---------------- 富卡背面排版（v1.81：书页式词库背面）----------------
 
     /**
      * 书页式背面 → 可滚动视图。结构：竖排的「（可选）标签 chip + 正文行」，
@@ -643,16 +724,31 @@ class WordCard(
         }
     }
 
-    /** 标签 chip：2dp 黑描边 + 淡色底 + 硬投影，风格照 [Brut.box] 那套新粗野主义；字按底色选可读色 */
+    /**
+     * 标签 chip：2dp 黑描边 + 淡色底 + 硬投影，风格照 [Brut.box] 那套新粗野主义；字按底色选可读色。
+     *
+     * 瑞士风格下 [Brut.box] 自己会切成「直角 + 1dp 细线、无投影」（投影为 0 时它不再叠影层），
+     * 所以这里只跟着把**给投影留的右下内边距**收平 —— 没有投影还留着那截就成了偏心的字。
+     */
     private fun chip(tag: String): TextView = Ui.text(ctx, tag, 11f, Brut.on(tagFill(tag))).apply {
         setTypeface(typeface, Typeface.BOLD)
-        background = Brut.box(ctx, tagFill(tag), 2f)
-        // 右下多留一点，给 [Brut.box] 画在视图自己范围里的那圈硬投影腾地方
-        setPadding(dp(8f), dp(3f), dp(10f), dp(5f))
+        // 投影跟着形状走：声明了无投影（瑞士）就让 [Brut.box] 取形状默认值，显式传数值会把它顶掉。
+        // 玻璃：共享材质的小 chip（淡色底交给色板，高光边跟着来），右下那截投影留白也一并收平。
+        background = if (glass) Ui.material(ctx, tagFill(tag), Ui.SurfaceRole.CHIP, 8f)
+                     else Brut.box(ctx, tagFill(tag), if (flat) null else 2f)
+        if (glass || flat) setPadding(dp(8f), dp(3f), dp(8f), dp(3f))
+        else setPadding(dp(8f), dp(3f), dp(10f), dp(5f))
     }
 
-    /** 不同标签给不同淡色底：词义=薄荷、辨析/反义=玫瑰金、助记=米黄、词组/派生/同义=纸白 */
+    /**
+     * 不同标签给不同淡色底：词义=薄荷、辨析/反义=玫瑰金、助记=米黄、词组/派生/同义=纸白。
+     *
+     * 瑞士风格**不给 chip 上色**：这套语言里颜色不承担分类（分类是一眼能读到的字），
+     * 而且 MINT / ROSE 在瑞士色板里是「正红 + 暗红」两块 —— 一排 chip 会变成第二、第三处信号红。
+     * 于是全部走纸底 + 1dp 墨线（见 [chip]），跟标题竖条 / 主按钮的红互不打架。
+     */
     private fun tagFill(tag: String): Int = when {
+        Ui.theme.noShadowStyle -> Brut.PAPER
         tag.contains("词义") || tag.contains("释义") -> Brut.MINT
         tag.contains("辨") || tag.contains("反义") -> Brut.ROSE
         tag.contains("助记") || tag.contains("记忆") -> Brut.SAND
@@ -859,7 +955,14 @@ class WordCard(
         }
         v.text = text
         val fill = hintFill(grade, stage)
-        (v.background as? android.graphics.drawable.GradientDrawable)?.setColor(fill)
+        // 玻璃的底不是 GradientDrawable，setColor 会静默失效 —— 直接按新填色换一张材质，
+        // 阶段 / grade 的强调色才跟得上；非玻璃仍是原地的 setColor（零分配）。
+        if (glass) {
+            if (fill != lastHintFill) {
+                v.background = Ui.material(ctx, fill, Ui.SurfaceRole.BUTTON, 8f)
+                lastHintFill = fill
+            }
+        } else (v.background as? android.graphics.drawable.GradientDrawable)?.setColor(fill)
         v.setTextColor(Brut.on(fill))   // 默认配色 = 原来的墨色；新配色按填色选可读色
         val target = if (stage >= 2) 1f else 0.62f   // 阶段 1 淡、阶段 2 满
         val first = v.visibility != View.VISIBLE
@@ -879,17 +982,31 @@ class WordCard(
         v.visibility = View.INVISIBLE
         v.alpha = 0f
         hintAlpha = 0f
+        lastHintFill = 0
     }
 
     /**
      * 提示行底色：按判词方向取色（认识 = 薄荷、不认识 = 玫瑰、模糊 = 米黄、跳过 = 中性灰）。
-     * 字一律 INK —— 这几档都是淡色底，深字才读得清。阶段 2 用更深的玫瑰，让「松手生效」最扎眼。
+     * 字一律按填色选可读色。阶段 2 用更深的玫瑰，让「松手生效」最扎眼。
+     *
+     * 瑞士风格只有**一个**信号红：认识 = 信号红（这套语言里「确认」配得上红），不认识 = 墨块反白，
+     * 模糊 / 跳过落在两档灰上。否则玫瑰与暗玫瑰在瑞士色板里就是「红 + 暗红」，
+     * 两个方向看着差不多 —— 四个方向得靠文字分辨，颜色只做强调。阶段 2 不再加深，
+     * 它已经有满 alpha 和「· 松手生效」后缀。
      */
-    private fun hintFill(grade: SwipeJudge.Grade, stage: Int): Int = when (grade) {
-        SwipeJudge.Grade.KNOWN -> Brut.MINT
-        SwipeJudge.Grade.UNKNOWN -> if (stage >= 2) Brut.ROSE_DEEP else Brut.ROSE
-        SwipeJudge.Grade.FUZZY -> Brut.SAND
-        SwipeJudge.Grade.CLOSE -> Brut.MUTED   // 中性：上滑只是跳过，别看着像一次评分
+    private fun hintFill(grade: SwipeJudge.Grade, stage: Int): Int = when {
+        Ui.theme.noShadowStyle -> when (grade) {
+            SwipeJudge.Grade.KNOWN -> Brut.MINT
+            SwipeJudge.Grade.UNKNOWN -> Brut.INK
+            SwipeJudge.Grade.FUZZY -> Brut.SAND
+            SwipeJudge.Grade.CLOSE -> Brut.MUTED
+        }
+        else -> when (grade) {
+            SwipeJudge.Grade.KNOWN -> Brut.MINT
+            SwipeJudge.Grade.UNKNOWN -> if (stage >= 2) Brut.ROSE_DEEP else Brut.ROSE
+            SwipeJudge.Grade.FUZZY -> Brut.SAND
+            SwipeJudge.Grade.CLOSE -> Brut.MUTED   // 中性：上滑只是跳过，别看着像一次评分
+        }
     }
 
     /**

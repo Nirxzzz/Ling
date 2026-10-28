@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12(31)+ 的 dataExtractionRules：云备份与设备间迁移都用同一份排除项。
+  与 link_backup_rules.xml 同义，只是新 API 换了根标签；两份都要留 —— 老系统只认前者。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="link/" />
+        <exclude domain="sharedpref" path="ling_link.xml" />
+        <exclude domain="sharedpref" path="link_apps.xml" />
+        <exclude domain="file" path="link-audit.jsonl" />
+        <exclude domain="file" path="link-audit.jsonl.tmp" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="link/" />
+        <exclude domain="sharedpref" path="ling_link.xml" />
+        <exclude domain="sharedpref" path="link_apps.xml" />
+        <exclude domain="file" path="link-audit.jsonl" />
+        <exclude domain="file" path="link-audit.jsonl.tmp" />
+    </device-transfer>
+</data-extraction-rules>

@@ -5,7 +5,7 @@ package com.chun.lingzhu
  * 界面在 MainActivity.buildSetup()：一步一页，左右滑动切换；这一步没做完不能往后滑，可以往回滑。
  *
  * 步骤以 v1.63「上手清单」和「后台保活」里实际需要的为准：
- *  - 必需（做完才能往后）：悬浮窗权限、接口；
+ *  - 必需（做完才能往后）：悬浮窗权限、接口（内测版内置接口时整步跳过）；
  *  - 推荐（开了，或者明确点「先不开」才能往后）：无障碍截屏（系统不支持时自动算完成）、通知、电池优化；
  *  - 欢迎页 / 最后的「开始使用」页没有前置条件。
  * 以后要加页（比如并入灵伴的设置），往 Step 里加一项、在 steps() 里排好位置、在 done() 里写完成条件即可。
@@ -24,8 +24,10 @@ object Onboarding {
     /** 引导时的系统 / 配置状态（MainActivity 每次回到页面时重新采一遍） */
     data class State(
         val overlay: Boolean,
-        /** 接口地址和模型都填了 */
+        /** 接口地址和模型都填了（公测版）；内测版用内置接口时为 true */
         val apiReady: Boolean,
+        /** 内测版且打包时内置了接口 → 接口这一步整步不出现 */
+        val presetApi: Boolean,
         val a11ySupported: Boolean,
         val a11yOn: Boolean,
         val notifications: Boolean,
@@ -34,14 +36,14 @@ object Onboarding {
         val skipped: Set<String> = emptySet(),
     )
 
-    /** 要走的步骤（开源副本没有内置接口，接口步骤始终保留） */
-    fun steps(s: State): List<Step> = Step.values().toList()
+    /** 这台机器、这个渠道要走的步骤（内置接口的内测版没有「填接口」） */
+    fun steps(s: State): List<Step> = Step.values().filter { it != Step.API || !s.presetApi }
 
     /** 这一步做完了没有 */
     fun done(step: Step, s: State): Boolean = when (step) {
         Step.WELCOME, Step.FINISH -> true
         Step.OVERLAY -> s.overlay
-        Step.API -> s.apiReady
+        Step.API -> s.presetApi || s.apiReady
         Step.CAPTURE -> !s.a11ySupported || s.a11yOn || step.id in s.skipped
         Step.NOTIFY -> s.notifications || step.id in s.skipped
         Step.BATTERY -> s.battery || step.id in s.skipped
@@ -67,7 +69,9 @@ object Onboarding {
     fun blockedHint(step: Step): String = when (step) {
         Step.OVERLAY -> "先打开「显示在其他应用上层」—— 没有它小球显示不出来"
         Step.API -> "先填好接口地址和模型（Key 按你的接口要求填）"
-        Step.CAPTURE -> "先打开无障碍截屏，或者点「先不开，用录屏授权」"
+        // 这条提示和按钮文案必须一致。上一轮只改按钮没改这里，
+        // 真机上就出现了「按钮叫『就用录屏』、提示叫『点先不开』」的对不上。
+        Step.CAPTURE -> "先打开无障碍截屏，或者点「就用录屏」"
         Step.NOTIFY -> "先打开通知，或者点「先不开」"
         Step.BATTERY -> "先允许后台运行，或者点「先不开」"
         else -> ""

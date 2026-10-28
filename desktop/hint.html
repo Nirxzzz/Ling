@@ -5,17 +5,89 @@
 <link rel="stylesheet" href="ui.css">
 <script src="themes.js" data-auto></script>
 <style>
-  /* v1.28：首次引导气泡 —— 走 --surface-toast，圆角/描边/阴影与其他界面同一套 */
-  .hint {
-    display: flex; align-items: center; gap: 10px;
-    padding: 10px 14px; border-radius: var(--r-lg);
-    background: var(--surface-toast); -webkit-backdrop-filter: blur(10px);
-    border: 1px solid var(--hairline); color: var(--tx-1);
-    box-shadow: var(--shadow); white-space: nowrap;
-    font-size: 15px;
+  /* v1.61.1：首次新手卡 —— 不再是 12 秒穿透气泡，而是贴着小球、真的能点的悬浮引导。
+   * 高度由内容决定，量完报给主进程；主进程按小球所在屏的 workArea 夹取并决定左右。 */
+  html, body { height: auto; background: transparent; overflow: hidden; }
+  body { user-select: none; -webkit-user-select: none; }
+  .wrap { display: flex; align-items: center; gap: 8px; padding: 6px; }
+  /* 卡片在球左边时整行反向：卡片在左、箭头在右，箭头朝右指向球 */
+  .wrap.on-left { flex-direction: row-reverse; }
+  .arrow {
+    flex: 0 0 auto; width: 20px; text-align: center;
+    font-size: 20px; line-height: 1; color: rgb(var(--accent));
+    text-shadow: 0 0 10px rgba(var(--accent), .55);
+    animation: blink 1.4s ease-in-out infinite;
   }
-  .arrow { font-size: 22px; color: rgb(var(--accent)); animation: blink 1s infinite; }
+  .guide {
+    flex: 1 1 auto; min-width: 0; padding: 12px 14px;
+    border-radius: var(--r-lg);
+    background: var(--grad-glass), var(--surface-card);
+    -webkit-backdrop-filter: blur(var(--blur));
+    border: 1px solid var(--hairline); box-shadow: var(--shadow);
+  }
+  .ttl { display: flex; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 600; color: var(--tx-1); }
+  .dot {
+    width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+    background: var(--grad-orb); box-shadow: 0 0 8px rgba(var(--accent), .70);
+  }
+  .sub { margin-top: 2px; font-size: 11.5px; line-height: 1.5; color: var(--tx-3); }
+  .rows { display: grid; gap: 1px; margin-top: 8px; }
+  .row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.7; }
+  .k { flex: 0 0 58px; font-weight: 600; color: var(--tx-1); }
+  .v { flex: 1 1 auto; min-width: 0; color: var(--tx-2); }
+  .tip { margin-top: 6px; font-size: 11px; line-height: 1.5; color: var(--tx-3); }
+  .acts { display: flex; gap: 6px; margin-top: 10px; }
+  .acts .btn { flex: 1 1 0; height: 28px; padding: 0 8px; white-space: nowrap; }
 </style>
 </head>
-<body><div class="hint"><span class="arrow">◀</span>单击看历史 · 双击识别 · 三击自动扫描</div></body>
+<body>
+  <div class="wrap" id="wrap">
+    <div class="arrow" id="arrow" aria-hidden="true">◀</div>
+    <div class="guide" id="guide">
+      <div class="ttl"><span class="dot"></span>先认识这颗小球</div>
+      <div class="sub">它一直在屏幕上，随时可用</div>
+      <div class="rows">
+        <div class="row"><span class="k">单击</span><span class="v">看历史记录</span></div>
+        <div class="row"><span class="k">双击</span><span class="v">立即识别屏幕</span></div>
+        <div class="row"><span class="k">三击</span><span class="v">自动扫描 开 / 关</span></div>
+        <div class="row"><span class="k">右键</span><span class="v">菜单：设置 · 复制即译 · 退出</span></div>
+      </div>
+      <div class="tip">右键 = 触控板双指点按（部分设备长按）；按住小球可拖动位置。</div>
+      <div class="acts">
+        <button class="btn" data-act="settings">配置接口</button>
+        <button class="btn" data-act="try">试一次识别</button>
+        <button class="btn primary" data-act="dismiss">知道了</button>
+      </div>
+    </div>
+  </div>
+<script>
+  const wrap = document.getElementById('wrap')
+  const arrow = document.getElementById('arrow')
+  /* 默认放球右边（箭头朝左）；主进程按实际空间可能翻到左边，翻过去时箭头朝右。 */
+  function setSide(side) {
+    const onLeft = side === 'left'
+    wrap.classList.toggle('on-left', onLeft)
+    arrow.textContent = onLeft ? '\u25B6' : '\u25C0'
+  }
+  setSide('right')
+  window.orbApi.onHintSide(setSide)
+
+  function fit() {
+    const h = Math.ceil(wrap.getBoundingClientRect().height + 6)
+    if (h > 0) window.orbApi.hintResize(h)
+  }
+  fit()
+  requestAnimationFrame(fit)
+  window.addEventListener('load', fit)
+
+  for (const btn of document.querySelectorAll('[data-act]')) {
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      const act = btn.getAttribute('data-act')
+      for (const b of document.querySelectorAll('[data-act]')) b.disabled = true
+      window.orbApi.hintAction(act)
+    })
+  }
+</script>
+</body>
 </html>

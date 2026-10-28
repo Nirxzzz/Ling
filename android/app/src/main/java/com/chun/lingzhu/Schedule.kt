@@ -256,20 +256,30 @@ object Schedule {
 
     // ---------------- 读盘 / 写盘（android） ----------------
 
+    /**
+     * 与 [Todo.Store] 同一约定：`@Synchronized` 只锁本实例，而调用方到处 `Schedule.Store(ctx)` 现 new 一个，
+     * 所以「读 → 改 → 写」一律走 [FileMemo.update]（锁在进程内唯一的 FileMemo 上），
+     * 避免记期页的增删改被另一路拿旧快照的整表写入覆盖。
+     * 规则文件只有 add / remove / update / clear 这几个增量入口（[sync] 写的是 todo.json，不是这里），
+     * 所以不提供整表覆盖 API —— 没调用方的整表写没存在意义，还容易被误用成「按旧快照回写」。
+     */
     class Store(ctx: Context) {
         private val file = File(ctx.applicationContext.filesDir, FILE)
         fun list(): List<Rule> = FileMemo.get(file) { decode(it) }
-        private fun save(l: List<Rule>) = FileMemo.put(file, l) { toJson(it) }
-        @Synchronized fun setAll(l: List<Rule>) = save(l)
+        private fun edit(transform: (List<Rule>) -> List<Rule>) = FileMemo.update(file, { decode(it) }, { toJson(it) }, transform)
         /** 加一条并返回它的 id（-1 = 建不了） */
-        @Synchronized fun add(r: Rule): Long {
-            val (l, id) = Schedule.add(list(), r.copy(id = 0L))
-            save(l)
+        fun add(r: Rule): Long {
+            var id = -1L
+            edit { l ->
+                val (next, newId) = Schedule.add(l, r.copy(id = 0L))
+                id = newId
+                next
+            }
             return id
         }
-        @Synchronized fun remove(id: Long) = save(list().filterNot { it.id == id })
-        @Synchronized fun update(id: Long, f: (Rule) -> Rule) = save(list().map { if (it.id == id) f(it) else it })
-        @Synchronized fun clear() = save(emptyList())
+        fun remove(id: Long) = edit { l -> l.filterNot { it.id == id } }
+        fun update(id: Long, f: (Rule) -> Rule) = edit { l -> l.map { if (it.id == id) f(it) else it } }
+        fun clear() = edit { emptyList() }
         fun get(id: Long): Rule? = list().firstOrNull { it.id == id }
     }
 
@@ -285,23 +295,29 @@ object Schedule {
     fun sync(ctx: Context) {
         val todo = Todo.Store(ctx)
         val now = System.currentTimeMillis()
-        val rules = Store(ctx).list()
-        val want = plan(rules, now)
-        val byId = rules.associateBy { it.id }
-        val wantKeys = HashSet<Pair<Long, Long>>(want.size * 2)
-        for (f in want) wantKeys.add(f.ruleId to f.dueAt)
-        val cur = todo.list()
-        val keep = cur.filterNot { it.ruleId > 0 && !it.done && !alive(it, byId, wantKeys, now) }
-        val have = HashSet<Pair<Long, Long>>()
-        for (t in keep) if (t.ruleId > 0) have.add(t.ruleId to t.dueAt)
-        val next = ArrayList<Todo.Item>(keep.size + want.size)
-        next.addAll(keep)
-        var nid = (keep.maxOfOrNull { it.id } ?: 0L) + 1
-        for (f in want) {
-            if ((f.ruleId to f.dueAt) in have) continue
-            next.add(Todo.Item(nid++, f.text, f.dueAt, now, ruleId = f.ruleId, vibe = f.strength))
+        // 规则快照 + 待办整表重排必须在同一把锁里（FileMemo 的 monitor，所有 Store 实例共享）：
+        // 否则「先 list 算保留 / 补齐、再整表覆盖」中间插进用户的新增 / 完成 / 删除，就会被这里写回旧快照。
+        // 锁只覆盖读改写；下面的 reschedule 会重新读盘，放到锁外，不拖长临界区。
+        synchronized(FileMemo) {
+            val rules = Store(ctx).list()
+            val want = plan(rules, now)
+            val byId = rules.associateBy { it.id }
+            val wantKeys = HashSet<Pair<Long, Long>>(want.size * 2)
+            for (f in want) wantKeys.add(f.ruleId to f.dueAt)
+            val cur = todo.list()
+            val keep = cur.filterNot { it.ruleId > 0 && !it.done && !alive(it, byId, wantKeys, now) }
+            val have = HashSet<Pair<Long, Long>>()
+            for (t in keep) if (t.ruleId > 0) have.add(t.ruleId to t.dueAt)
+            val next = ArrayList<Todo.Item>(keep.size + want.size)
+            next.addAll(keep)
+            var nid = (keep.maxOfOrNull { it.id } ?: 0L) + 1
+            for (f in want) {
+                if ((f.ruleId to f.dueAt) in have) continue
+                next.add(Todo.Item(nid++, f.text, f.dueAt, now, ruleId = f.ruleId, vibe = f.strength))
+            }
+            // 同一把锁内重入：FileMemo.update 是 @Synchronized，这里已是持有者，直接生效。
+            todo.replaceAll(next)
         }
-        todo.setAll(next)
         TodoReceiver.reschedule(ctx)
     }
 

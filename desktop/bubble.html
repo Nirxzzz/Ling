@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<script src="themes.js" data-auto></script>
+<style>
+  /* v1.76 球旁气泡：专注守护的提醒 / 完成 / 提示 + 陪伴短句共用这一个窗口（主进程单例复用）。
+   * 窗口 320 宽、透明无边框、focusable:false、showInactive 显示 —— 绝不抢当前应用的键盘焦点；
+   * 高度按内容量好自报给主进程（bubble:resize），它贴着小球夹取摆位；TTL 到点由主进程淡出收起。 */
+  html, body { height: auto; background: transparent; overflow: hidden; }
+  body { user-select: none; -webkit-user-select: none; }
+  .bubble {
+    display: flex; align-items: flex-start; gap: 8px; margin: 4px; padding: 9px 12px;
+    border-radius: var(--r-lg);
+    background: var(--grad-glass), var(--surface-card);
+    -webkit-backdrop-filter: blur(var(--blur));
+    border: 1px solid var(--hairline); box-shadow: var(--shadow);
+  }
+  .dot {
+    flex: 0 0 auto; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%;
+    background: var(--grad-orb); box-shadow: 0 0 8px rgba(var(--accent), .70);
+  }
+  .tx {
+    flex: 1 1 auto; min-width: 0;
+    font-size: 12.5px; line-height: 1.55; color: var(--tx-1);
+    word-break: break-word;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+  }
+  /* 专注相关一律暖色（提醒最醒目，完成偏薄荷），陪伴用主题色 —— 不靠颜色也读得懂文字 */
+  .bubble.focus-remind .dot { background: linear-gradient(135deg, #FFC078 0%, #F2915B 100%); box-shadow: 0 0 9px rgba(255, 166, 92, .80); }
+  .bubble.focus-remind { border-color: rgba(255, 176, 96, .55); }
+  .bubble.focus-done .dot { background: linear-gradient(135deg, #5FDFB4 0%, #8CE8C7 100%); box-shadow: 0 0 9px rgba(139, 233, 199, .80); }
+  .bubble.focus-info .dot, .bubble.companion .dot { background: linear-gradient(135deg, #EFC0BE 0%, #F29FB0 100%); box-shadow: 0 0 8px rgba(246, 192, 198, .80); }
+  .bubble.focus-info .tx { color: var(--tx-2); }
+  @media (prefers-reduced-motion: reduce) { .bubble, .dot { transition: none; } }
+</style>
+</head>
+<body>
+  <div class="bubble" id="bubble" role="status"><span class="dot" aria-hidden="true"></span><span class="tx" id="tx"></span></div>
+<script>
+  const box = document.getElementById('bubble')
+  const tx = document.getElementById('tx')
+  let lastH = 0
+  // 高度自报：宽固定 320，高随文字行数变；只在真的变了才发（hint:resize 同款思路）
+  function fit() {
+    const h = Math.ceil(box.getBoundingClientRect().height + 8)
+    if (h > 0 && h !== lastH) { lastH = h; window.orbApi.bubbleResize(h) }
+  }
+  // 只认这四种 kind，别的当普通提示渲染（class 不会拼进 DOM 文本）
+  const KINDS = ['companion', 'focus-remind', 'focus-done', 'focus-info']
+  window.orbApi.onBubble((b) => {
+    const d = b || {}
+    const kind = KINDS.includes(d.kind) ? d.kind : 'focus-info'
+    KINDS.forEach((k) => box.classList.toggle(k, k === kind))
+    tx.textContent = String(d.text == null ? '' : d.text)   // 一律 textContent，气泡里可能带应用名，绝不当 HTML
+    fit()
+    requestAnimationFrame(fit)
+  })
+  // 点按任意处关闭（窗口本来就不抢焦点，点一下只是「读到了，收起来」）
+  document.addEventListener('mousedown', (e) => { if (e.button !== 0) return; e.preventDefault(); window.orbApi.bubbleClose() })
+  fit()
+  requestAnimationFrame(fit)
+  window.addEventListener('load', fit)
+</script>
+</body>
+</html>

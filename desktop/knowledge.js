@@ -47,6 +47,21 @@
   /** 默认牌组名。 */
   const DEFAULT_DECK = '默认'
 
+  /** id 水位文件后缀（与 knowledge.json 同目录）。旧版本没有这个文件时从现有最大 id 推导。 */
+  const IDS_SUFFIX = '.ids.json'
+
+  /** 与 lan-store.js 约定的事务日志名（同一 userData 目录）。 */
+  const SYNC_JOURNAL = 'lan-sync.journal.json'
+
+  /**
+   * 模块级编辑守卫：同步层用 K.setWriteGuard(fn) 注册（不依赖具体 Store 实例，
+   * 因为 main 可能把 Store 包一层再交给 lan-store）。任何卡库落盘前先跑它。
+   */
+  let globalWriteGuard = null
+  function setWriteGuard(fn) {
+    globalWriteGuard = typeof fn === 'function' ? fn : null
+  }
+
   /** 来源。编码与安卓 KnowledgeCard.Source 一致，认不出的一律当 manual。 */
   const Source = Object.freeze({ ANSWER: 'answer', CHAT: 'chat', CLIP: 'clip', MANUAL: 'manual', IMPORT: 'import' })
   const SOURCE_CODES = Object.freeze(['answer', 'chat', 'clip', 'manual', 'import'])
@@ -75,7 +90,7 @@
    */
   function card(init) {
     const o = init || {}
-    return {
+    const c = {
       id: num(o.id, 0),
       deck: String(o.deck == null || o.deck === '' ? DEFAULT_DECK : o.deck),
       front: String(o.front == null ? '' : o.front),
@@ -84,9 +99,31 @@
       createdAt: num(o.createdAt, 0),
       fsrs: Fsrs.card(o.fsrs)
     }
+    // origin 是双端同步加的来源设备标识。旧卡没有这个字段时不硬塞，
+    // 免得把历史上「无 origin」的 knowledge.json 原样改形。
+    if (o.origin !== undefined) c.origin = String(o.origin == null ? '' : o.origin)
+    return c
+  }
+
+  /**
+   * 解析 fsrs：磁盘 / 同步用的是 snake_case，Store 内存里是 camelCase。
+   * 两种都认，避免 replaceFromSync 直接收到内部对象时把 lastReview 等字段丢掉。
+   */
+  function fsrsOf(raw) {
+    if (raw == null) return Fsrs.card()
+    if (typeof raw === 'object' && !Array.isArray(raw) &&
+      ('last_review' in raw || 'learning_step' in raw || 'scheduled_days' in raw || 'elapsed_days' in raw)) {
+      return Fsrs.cardFromJson(raw) || Fsrs.card()
+    }
+    const c = Fsrs.card(raw)
+    c.state = Fsrs.stateOf(c.state)
+    return c
   }
 
   function num(v, d) { const x = typeof v === 'string' ? Number(v) : v; return typeof x === 'number' && isFinite(x) ? x : d }
+
+  /** 本地卡 id：非负安全整数（同步绑定 / 水位都用这个口径）。 */
+  function isSafeId(v) { return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 }
 
   /** 这张卡是不是到期了。 */
   function isDue(c, now) { return Fsrs.isDue(c.fsrs, now) }
@@ -211,7 +248,7 @@
 
   /** 一张卡 → JSON 对象。字段名 / 顺序跟安卓 KnowledgeCard.Store.toJson 一样。 */
   function toJson(c) {
-    return {
+    const j = {
       id: c.id,
       deck: c.deck,
       front: c.front,
@@ -220,6 +257,9 @@
       createdAt: c.createdAt,
       fsrs: Fsrs.toJson(c.fsrs)
     }
+    // 只有这张卡确实带 origin 才写出去（同步卡会带，历史遗留卡保持原形）。
+    if (c.origin !== undefined) j.origin = c.origin
+    return j
   }
 
   /** 整个库 → JSON 数组（可直接 JSON.stringify）。 */
@@ -228,16 +268,17 @@
   /** 解析一个元素；缺字段退回默认值，坏元素返回 null。 */
   function parseOne(o) {
     if (!o || typeof o !== 'object' || Array.isArray(o)) return null
-    const c = card({
+    const init = {
       id: o.id,
       deck: o.deck,
       front: o.front,
       back: o.back,
       source: sourceOf(o.source),
       createdAt: o.createdAt,
-      fsrs: Fsrs.cardFromJson(o.fsrs) || Fsrs.card()
-    })
-    return c
+      fsrs: fsrsOf(o.fsrs)
+    }
+    if (typeof o.origin === 'string') init.origin = o.origin
+    return card(init)
   }
 
   /** 解析整个库；不是数组 / 语法坏 → 空库（与安卓 parse 的兜底一致）。 */
@@ -260,44 +301,311 @@
   /**
    * 卡库。内存副本 + 落盘（对齐安卓 FileMemo 模式）。
    * 落盘走 tmp + rename：卡片的复习进度丢不起。
+   *
+   * 读盘分两档：
+   *   - list() / all() / count() 是给界面的：坏文件返回空数组（兼容旧行为），
+   *     但**不缓存**这个空数组，下一次还会重新读，避免把一次读失败固化成「库是空的」。
+   *   - listStrict() 是给同步的：除了「文件确实不存在」（ENOENT，视作合法清空）之外，
+   *     任何读失败 / 语法坏 / 非数组 / 坏卡片 / id 冲突都直接抛，调用方必须阻断同步。
+   *
+   * id 分配不再只看「当前最大 id + 1」：删掉最大 id 的卡以后，旧 binding 会误把
+   * 新卡当成老卡的编辑。这里额外维护 knowledge.json.ids.json 里的单调水位，
+   * 新 id 永远 >= 水位，replaceFromSync 也只会把水位抬高，不会降低。
    */
   class Store {
     /** @param file knowledge.json 的完整路径 */
-    constructor(file) { this.file = file; this._list = null }
+    constructor(file) {
+      this.file = file
+      this._idsFile = file + IDS_SUFFIX
+      this._list = null
+      this._nextId = null
+      this._readError = null
+      this._strictOk = false
+      this._writeGuard = null
+      this._writing = false
+    }
 
-    /** 读库（首次读盘，之后走内存副本）。 */
+    /* ---------------- 读 ---------------- */
+
+    /** 读一次盘，返回 { ok, list, missing, error }；不碰内存副本。 */
+    _read() {
+      let raw = ''
+      try { raw = fs.readFileSync(this.file, 'utf8') } catch (err) {
+        // 只有「文件确实不存在」才算合法空库（用户清空 / 首次启动）；其余一律是失败。
+        if (err && err.code === 'ENOENT') return { ok: true, missing: true, list: [], error: null }
+        return { ok: false, missing: false, list: [], error: err }
+      }
+      if (!String(raw).trim()) {
+        return { ok: false, missing: false, list: [], error: new Error('knowledge: ' + this.file + ' 是空文件') }
+      }
+      let arr
+      try { arr = JSON.parse(raw) } catch (err) {
+        return { ok: false, missing: false, list: [], error: err }
+      }
+      if (!Array.isArray(arr)) {
+        return { ok: false, missing: false, list: [], error: new Error('knowledge: ' + this.file + ' 不是数组') }
+      }
+      const out = []
+      for (let i = 0; i < arr.length; i += 1) {
+        const c = parseOne(arr[i])
+        if (!c) {
+          return { ok: false, missing: false, list: [], error: new Error('knowledge: 第 ' + i + ' 项不是卡片对象') }
+        }
+        out.push(c)
+      }
+      return { ok: true, missing: false, list: out, error: null }
+    }
+
+    /** 普通界面读法：失败返回空数组，但不把失败结果写进内存副本。 */
     list() {
       if (this._list) return this._list
-      let raw = ''
-      try { raw = fs.readFileSync(this.file, 'utf8') } catch { raw = '' }
-      this._list = parse(raw)
+      const r = this._read()
+      if (!r.ok) { this._readError = r.error; return [] }
+      this._readError = null
+      this._list = r.list
+      this._raiseWatermark(r.list)
       return this._list
+    }
+
+    /**
+     * 同步专用严格读法：读失败 / 内容坏 / id 冲突都抛，绝不把失败当成空库。
+     * 文件 ENOENT 是唯一的「合法空」。
+     */
+    listStrict() {
+      if (this._list) return this._assertIds(this._list)
+      const r = this._read()
+      if (!r.ok) { this._readError = r.error; throw r.error }
+      const out = this._assertIds(r.list)
+      this._readError = null
+      this._list = out
+      this._raiseWatermark(out)
+      return this._list
+    }
+
+    _assertIds(list) {
+      const seen = new Set()
+      for (const c of list) {
+        if (!isSafeId(c.id)) throw new Error('knowledge: 卡片 id 不是非负安全整数: ' + String(c.id))
+        if (seen.has(c.id)) throw new Error('knowledge: 卡片 id 重复: ' + c.id)
+        seen.add(c.id)
+      }
+      return list
+    }
+
+    /** 同步读法的别名（集成方按语义挑名字用）。 */
+    listForSync() { return this.listStrict() }
+
+    /** 最近一次界面读失败的原因；成功 / 未读为 null。 */
+    readError() { return this._readError }
+
+    /** 只报告读状态，不缓存、不抛。 */
+    readStatus() {
+      if (this._list) return { ok: true, missing: false, count: this._list.length, error: null }
+      const r = this._read()
+      this._readError = r.ok ? null : r.error
+      return { ok: r.ok, missing: !!r.missing, count: r.list.length, error: r.error || null }
+    }
+
+    /** 改动前必须先拿到一份严格读出来的库，避免读失败时把库覆盖成只剩新卡。 */
+    _readForWrite() {
+      if (this._list) return this._assertIds(this._list)
+      return this.listStrict()
+    }
+
+    /* ---------------- 持久单调 id 水位 ---------------- */
+
+    _readWatermark() {
+      try {
+        const raw = fs.readFileSync(this._idsFile, 'utf8')
+        if (!String(raw).trim()) return 1
+        const o = JSON.parse(raw)
+        if (o && typeof o === 'object' && Number.isSafeInteger(o.nextId) && o.nextId > 0) return o.nextId
+      } catch { /* 旧文件没有水位文件；损坏也退回现有最大 id + 1 */ }
+      return 1
+    }
+
+    _writeWatermark(next) {
+      const n = Math.max(1, next)
+      const tmp = this._idsFile + '.tmp'
+      let fd = null
+      try {
+        fd = fs.openSync(tmp, 'w', 0o600)
+        fs.writeFileSync(fd, JSON.stringify({ nextId: n }), 'utf8')
+        try { fs.fsyncSync(fd) } catch {}
+        fs.closeSync(fd)
+        fd = null
+        fs.renameSync(tmp, this._idsFile)
+        this._nextId = n
+        return n
+      } catch (err) {
+        if (fd !== null) { try { fs.closeSync(fd) } catch {} }
+        try { fs.unlinkSync(tmp) } catch {}
+        throw err
+      }
+    }
+
+    /** 只在需要时把水位抬到 n；已经 >= n 就不重复写盘。 */
+    _reserve(next) {
+      const n = Math.max(1, next)
+      const known = Math.max(this._nextId != null ? this._nextId : 1, this._readWatermark())
+      if (known >= n) { this._nextId = known; return known }
+      return this._writeWatermark(n)
+    }
+
+    /**
+     * 把水位抬到「现有最大 id + 1」，并在第一次读旧文件时立刻落盘。
+     * 这一步很关键：老版本没有水位文件，如果等到删掉最大 id 之后才算，
+     * 历史最大 id 已经丢了，新卡必然复用旧 id。先落盘就能覆盖「升级后先删再加」。
+     */
+    _raiseWatermark(list) {
+      let max = 0
+      for (const c of (list || [])) if (c && Number.isSafeInteger(c.id) && c.id > max) max = c.id
+      const persisted = this._readWatermark()
+      const want = Math.max(persisted, this._nextId != null ? this._nextId : 1, max + 1)
+      this._nextId = want
+      if (want > persisted) {
+        // 读路径上的持久化是尽力而为：写不了也不影响本次使用，真正的编辑还会再要求写。
+        try { this._writeWatermark(want) } catch { /* 只读目录等场景保留内存水位 */ }
+      }
+    }
+
+    /**
+     * 下一个可用的卡 id（只读，不写盘）。同步侧分配本地 id 时必须用它，
+     * 否则删掉最大 id 后新卡会复用旧 id，旧 binding 就会被误判成编辑。
+     */
+    nextId() {
+      let next = Math.max(
+        this._nextId != null ? this._nextId : 1,
+        this._readWatermark()
+      )
+      const list = this._list || []
+      let max = 0
+      for (const c of list) if (c && Number.isSafeInteger(c.id) && c.id > max) max = c.id
+      if (max + 1 > next) next = max + 1
+      return next
+    }
+
+    /* ---------------- 写 ---------------- */
+
+    /** 同步层注入：任何业务编辑落盘前先跑这个（用来恢复 pending journal）。 */
+    setWriteGuard(fn) { this._writeGuard = typeof fn === 'function' ? fn : null }
+
+    _guard() {
+      if (this._writing) return
+      const fn = typeof this._writeGuard === 'function' ? this._writeGuard : globalWriteGuard
+      if (typeof fn !== 'function') return
+      this._writing = true
+      try { fn() } finally { this._writing = false }
+    }
+
+    /** 同目录是否有 sync 的 pending journal（lan-store 在崩溃后用来自动重放）。 */
+    _pendingJournal() {
+      try {
+        if (!fs || !path) return false
+        return fs.existsSync(path.join(path.dirname(this.file), SYNC_JOURNAL))
+      } catch { return false }
+    }
+
+    /** 业务编辑第一步：先把 pending journal 恢复完，再读库。失败 / 无法恢复就不改。 */
+    _beforeEdit() {
+      const guarded = typeof this._writeGuard === 'function' || typeof globalWriteGuard === 'function'
+      // 没有同步守卫却留下 pending journal（上次同步中途崩溃）：明确拒绝编辑，
+      // 绝不先写再等 journal 重放把它回滚。
+      if (!guarded && this._pendingJournal()) return false
+      try { this._guard(); return true } catch { return false }
     }
 
     /** 写库。原子替换，写失败不污染内存副本。 */
     _save(list) {
+      try { this._guard() } catch { return false }
       const tmp = this.file + '.tmp'
       try {
         fs.writeFileSync(tmp, JSON.stringify(toJsonList(list)), { mode: 0o600 })
         fs.renameSync(tmp, this.file)
         this._list = list
+        this._raiseWatermark(list)
         return true
       } catch { try { fs.unlinkSync(tmp) } catch {} ; return false }
     }
 
-    /** 存一张卡：去重 + 上限 + 存入即 Good 首刷。返回 `{ ok, id, reason }` */
-    add(front, back, source, now, deck) {
-      const r = tryAdd(this.list(), {
+    /**
+     * 同步专用：整库原子替换，失败直接抛（不能 ack），成功才刷新内存副本。
+     * 保留 origin 等附加字段；不做 tryAdd 的「同牌组同正面」去重 ——
+     * 不同 uid 但同 front 的卡必须各留一行。
+     * opts.internal = true：journal 重放，跳过业务编辑守卫（避免递归恢复）。
+     */
+    replaceFromSync(list, opts) {
+      const internal = !!(opts && opts.internal)
+      if (!internal) this._guard()
+      if (!Array.isArray(list)) throw new TypeError('knowledge: replaceFromSync 需要数组')
+      if (list.length > MAX) throw new RangeError('knowledge: 知识卡 ' + list.length + ' 张，超过上限 ' + MAX)
+      const out = []
+      const seen = new Set()
+      let maxId = 0
+      for (let i = 0; i < list.length; i += 1) {
+        const c = parseOne(list[i])
+        if (!c) throw new TypeError('knowledge: replaceFromSync 第 ' + i + ' 项不是卡片对象')
+        if (!isSafeId(c.id)) throw new TypeError('knowledge: replaceFromSync 第 ' + i + ' 项 id 非法')
+        if (seen.has(c.id)) throw new TypeError('knowledge: replaceFromSync 卡片 id 重复: ' + c.id)
+        seen.add(c.id)
+        if (c.id > maxId) maxId = c.id
+        out.push(c)
+      }
+      // 先抬高水位再写卡：即使写卡失败，也只会浪费 id，绝不会让 id 被复用。
+      this._reserve(Math.max(this.nextId(), maxId + 1))
+      const tmp = this.file + '.tmp'
+      let fd = null
+      try {
+        fd = fs.openSync(tmp, 'w', 0o600)
+        fs.writeFileSync(fd, JSON.stringify(toJsonList(out)), 'utf8')
+        try { fs.fsyncSync(fd) } catch {}
+        fs.closeSync(fd)
+        fd = null
+        fs.renameSync(tmp, this.file)
+        try { fs.chmodSync(this.file, 0o600) } catch {}
+        this._list = out
+        this._raiseWatermark(out)
+        return true
+      } catch (err) {
+        if (fd !== null) { try { fs.closeSync(fd) } catch {} }
+        try { fs.unlinkSync(tmp) } catch {}
+        throw err
+      }
+    }
+
+    /**
+     * 存一张卡：去重 + 上限 + 存入即 Good 首刷。返回 `{ ok, id, reason }`
+     *
+     * opts（可选，第 6 参，老调用不受影响）：
+     *   · origin：来源设备 / 外部调用方标识（MCP 写卡写 "mcp:<client>"）。
+     *     knowledge.json 与同步 payload 本来就带 origin，这里只是把它接到写入路径上；
+     *     不传就不写这个字段，历史上「无 origin」的卡保持原形。
+     */
+    add(front, back, source, now, deck, opts) {
+      if (!this._beforeEdit()) return { ok: false, id: 0, reason: 'guard' }
+      let cur
+      try { cur = this._readForWrite() } catch { return { ok: false, id: 0, reason: 'read' } }
+      const origin = opts && typeof opts.origin === 'string' && opts.origin ? opts.origin : undefined
+      const r = tryAdd(cur, {
         id: 0,
         deck: deck || DEFAULT_DECK,
         front: String(front == null ? '' : front).trim(),
         back: String(back == null ? '' : back).trim(),
         source: source || Source.ANSWER,
         createdAt: now,
-        fsrs: Fsrs.review(Fsrs.card(), Fsrs.Rating.Good, now)   // 存入即 Good 首刷（与安卓一致）
+        fsrs: Fsrs.review(Fsrs.card(), Fsrs.Rating.Good, now),   // 存入即 Good 首刷（与安卓一致）
+        origin: origin
       }, MAX, now)
       if (!r.ok) return { ok: false, id: 0, reason: r.reason }
-      return { ok: this._save(r.list), id: r.id, reason: '' }
+      let id
+      try {
+        id = this.nextId()
+        this._reserve(id + 1)      // 先落水位再写卡，崩在中间也不会复用 id
+      } catch { return { ok: false, id: 0, reason: 'save' } }
+      r.list[0].id = id
+      if (origin) r.list[0].origin = origin
+      const ok = this._save(r.list)
+      return { ok: ok, id: ok ? id : 0, reason: '' }
     }
 
     /**
@@ -306,17 +614,32 @@
      */
     addAll(cards) {
       if (!Array.isArray(cards) || !cards.length) return 0
-      let cur = this.list(), ok = 0
+      if (!this._beforeEdit()) return 0
+      let cur
+      try { cur = this._readForWrite() } catch { return 0 }
+      let next
+      try { next = this.nextId() } catch { return 0 }
+      let ok = 0
       for (const c of cards) {
         const r = tryAdd(cur, c, MAX, c && c.createdAt)
-        if (r.ok) { cur = r.list; ok++ }
+        if (!r.ok) continue
+        r.list[0].id = next
+        next += 1
+        cur = r.list
+        ok += 1
       }
-      if (ok) this._save(cur)
-      return ok
+      if (!ok) return 0
+      try { this._reserve(next) } catch { return 0 }
+      return this._save(cur) ? ok : 0
     }
 
     /** 删一张。 */
-    remove(id) { return this._save(this.list().filter((c) => c.id !== id)) }
+    remove(id) {
+      if (!this._beforeEdit()) return false
+      let cur
+      try { cur = this._readForWrite() } catch { return false }
+      return this._save(cur.filter((c) => c.id !== id))
+    }
 
     /**
      * 评分（走 FSRS 重排 due）。rating 接受 1..4 或 'Again'/'Hard'/'Good'/'Easy'，
@@ -325,7 +648,9 @@
     answer(id, rating, now) {
       const r = Fsrs.ratingOf(rating)
       if (!r) return false
-      const list = this.list()
+      if (!this._beforeEdit()) return false
+      let list
+      try { list = this._readForWrite() } catch { return false }
       if (!list.some((c) => c.id === id)) return false
       return this._save(list.map((c) => (c.id === id ? Object.assign({}, c, { fsrs: Fsrs.review(c.fsrs, r, now) }) : c)))
     }
@@ -342,8 +667,11 @@
     /** 整个库（直接给复习页渲染用）。 */
     all() { return this.list() }
 
-    /** 清空。 */
-    clear() { return this._save([]) }
+    /** 清空（id 水位不回落）。 */
+    clear() {
+      if (!this._beforeEdit()) return false
+      return this._save([])
+    }
   }
 
   /** 造一个 Store：dir 一般传 app.getPath('userData')。 */
@@ -474,7 +802,7 @@
     // 序列化
     toJson, toJsonList, parse, parseOne,
     // 存储
-    Store, storeIn,
+    Store, storeIn, setWriteGuard, IDS_SUFFIX,
     // 导入
     clipToCard, mdToCards, txtToCards, fileToCards, toCards,
     // 文案

@@ -10,7 +10,7 @@ import kotlin.math.pow
 
 /**
  * Agent 长期记忆（v1.86）· **纯独立端**：存本机、检索纯本地算法、提炼走用户自己填的接口。
- * 不依赖任何外部记忆服务 —— 用户填上自己的 AI 接口就能用，和聊天本身同一个依赖面。
+ * 不依赖任何外部记忆服务 —— 公测版用户填上自己的 AI 接口就能用，和聊天本身同一个依赖面。
  *
  * 三段分工（照 MemoryCard / ChatStore 的老规矩，能测的全是纯函数）：
  *  - 纯规则在这里：分词、相似度、打分、去重合并、上下文块、提炼结果解析 —— JVM 单测直接测；
@@ -260,8 +260,48 @@ object AgentMemory {
 
         fun put(mems: List<Mem>) = FileMemo.put(f, mems) { AgentMemory.toJson(it) }
 
-        /** 候选并入库一步走（后台线程用）：先和库里去重合并，再整体写回 */
-        fun mergeAndPut(candidates: List<Mem>) = put(AgentMemory.merge(get(), candidates, System.currentTimeMillis()))
+        /**
+         * 候选并入库一步走（后台线程用）：先和库里去重合并，再整体写回。
+         * 走 [mergeAtomically]：以前是 `merge(get(), …)` 再 `put`，两次调用之间别的写入会被这份旧快照覆盖。
+         */
+        fun mergeAndPut(candidates: List<Mem>) = mergeAtomically(candidates, System.currentTimeMillis()) { _, _ -> }
+
+        /**
+         * 原子「读 → 合并 → 写回」：整段都在 [FileMemo] 的 monitor 里（[FileMemo.update] 可重入），
+         * 所以聊天页提炼、另一条 MCP 指令这些并发写入不会被旧快照吃掉。
+         *
+         * [after] 在同一把锁里拿到合并前 / 合并后的库：**归属登记必须跟着这次写入一起做**，
+         * 否则「归属登记成功、记忆却被旧快照覆盖」会让 rollback 去删一条不存在的记录。
+         * 读改写为什么必须走 [FileMemo.update]，见 [Todo.Store] 的同一段约定。
+         */
+        fun mergeAtomically(
+            candidates: List<Mem>,
+            now: Long,
+            after: (before: List<Mem>, merged: List<Mem>) -> Unit,
+        ): List<Mem> {
+            var out: List<Mem> = emptyList()
+            FileMemo.update(f, { AgentMemory.parse(it) }, { AgentMemory.toJson(it) }) { cur ->
+                val next = AgentMemory.merge(cur, candidates, now)
+                out = next
+                after(cur, next)
+                next
+            }
+            return out
+        }
+
+        /**
+         * 原子「按条件删除」：同一把锁里读当前库、过滤、写回。返回删掉几条。
+         * rollback 用它，避免「读一份 → 删掉重写」把中间别人写进来的记忆抹掉。
+         */
+        fun removeOwned(owns: (Mem) -> Boolean): Int {
+            var removed = 0
+            FileMemo.update(f, { AgentMemory.parse(it) }, { AgentMemory.toJson(it) }) { cur ->
+                val next = cur.filterNot(owns)
+                removed = cur.size - next.size
+                next
+            }
+            return removed
+        }
 
         fun clear() = FileMemo.clear(f, emptyList<Mem>())
 

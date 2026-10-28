@@ -1,0 +1,1802 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<script src="themes.js" data-auto></script>
+<style>
+  /* v1.75：实时转写窗口。底板 / 标题栏 / 按钮 / 状态行全部走 ui.css 的 token，
+     这里只留转写页独有的排版（转写正文区、音量指示、同意行）。
+     音频与文字都不落盘：这个窗口关掉，页面上的一切就没了。 */
+  html, body { height: 100%; }
+  #vwin { display: flex; flex-direction: column; height: calc(100vh - 2 * var(--sp-2)); overflow: hidden; }
+  .vbar {
+    -webkit-app-region: drag; display: flex; align-items: center; gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3); font-size: 12px; color: var(--tx-2);
+    background: rgba(var(--fg), .06); border-bottom: 1px solid var(--hairline-soft); flex: 0 0 auto;
+  }
+  .vbar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--grad-orb); flex: 0 0 auto; }
+  .vbar .title { flex: 1; font-weight: 600; color: var(--tx-1); }
+  .vbar .ibtn { -webkit-app-region: no-drag; }
+  .rec {
+    display: none; align-items: center; gap: 5px; font-size: 10.5px; color: rgb(var(--danger));
+    padding: 1px 7px; border-radius: var(--r-pill); background: rgba(var(--danger), .18);
+    border: 1px solid rgba(var(--danger), .45); flex: 0 0 auto;
+  }
+  .rec.on { display: inline-flex; }
+  .rec .rd { width: 6px; height: 6px; border-radius: 50%; background: rgb(var(--danger)); animation: recblink 1.1s ease-in-out infinite; }
+  @keyframes recblink { 0%, 100% { opacity: 1 } 50% { opacity: .25 } }
+  @media (prefers-reduced-motion: reduce) { .rec .rd, #text .seg.partial::after { animation: none } }
+
+  .vbody { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; padding: var(--sp-3); gap: var(--sp-2); }
+  .row { display: flex; align-items: center; gap: var(--sp-2); flex: 0 0 auto; }
+  .row .grow { flex: 1 1 auto; min-width: 0; }
+  .who { font-size: 11px; color: var(--tx-3); line-height: 1.5; }
+  .who b { color: rgb(var(--heading)); font-weight: 600; }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: var(--r-pill); border: 1px solid var(--hairline); color: var(--tx-3); flex: 0 0 auto; }
+  .badge.ok { color: rgb(var(--accent)); border-color: rgba(var(--accent), .5); background: rgba(var(--accent), .14); }
+  .badge.bad { color: rgb(var(--danger)); border-color: rgba(var(--danger), .5); background: rgba(var(--danger), .14); }
+
+  .consent {
+    display: flex; align-items: flex-start; gap: var(--sp-2); font-size: 11px; line-height: 1.55;
+    color: var(--tx-2); background: rgba(var(--fg), .05); border: 1px solid var(--hairline-soft);
+    border-radius: var(--r-md); padding: var(--sp-2); flex: 0 0 auto;
+  }
+  .consent input { margin: 2px 0 0; accent-color: rgb(var(--accent)); flex: 0 0 auto; }
+  .consent label { cursor: pointer; }
+
+  /* 声音来源：麦克风 / 系统声音 / 会议双方。单选，采集中禁用（换来源就等于换了同意范围）。 */
+  .srcOpt {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+    color: var(--tx-2); padding: 2px 8px; border-radius: var(--r-pill);
+    background: rgba(var(--fg), .06); border: 1px solid var(--hairline-soft);
+    cursor: pointer; user-select: none; flex: 0 0 auto;
+  }
+  .srcOpt input { margin: 0; accent-color: rgb(var(--accent)); }
+  .srcOpt.on { color: var(--tx-1); border-color: rgba(var(--accent), .55); background: rgba(var(--accent), .16); }
+  .srcOpt.dis { opacity: .5; cursor: default; }
+  .srcs { display: flex; flex-wrap: wrap; gap: 6px; flex: 0 0 auto; }
+  .meters { display: flex; flex-direction: column; gap: 3px; flex: 0 0 auto; }
+  .meters .meter[hidden] { display: none; }
+
+  .meter { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--tx-3); flex: 0 0 auto; }
+  .meter .bar { flex: 1 1 auto; height: 4px; border-radius: 2px; background: rgba(var(--fg), .12); overflow: hidden; }
+  .meter .bar i { display: block; height: 100%; width: 0%; background: var(--grad-orb); transition: width .1s linear; }
+  @media (prefers-reduced-motion: reduce) { .meter .bar i { transition: none; } }
+
+  #state { display: block; color: var(--tx-2); font-size: 11.5px; line-height: 1.55; flex: 0 0 auto; min-height: 18px; }
+  #state.bad { color: rgb(var(--danger)); }
+  #state.warn { color: rgb(var(--warn)); }
+  #state.ok { color: rgb(var(--accent)); }
+  #state .link { -webkit-app-region: no-drag; color: rgb(var(--heading)); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; margin-left: 4px; }
+
+  /* 转写正文：按句替换（同一句新的 partial 覆盖旧的），最后一句未定稿时带光标。 */
+  #text {
+    flex: 1 1 auto; min-height: 80px; overflow-y: auto; scrollbar-gutter: stable;
+    font-size: 14px; line-height: 1.75; color: var(--tx-1);
+    background: rgba(var(--fg), .04); border: 1px solid var(--hairline-soft);
+    border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); white-space: pre-wrap; word-break: break-word;
+  }
+  #text .hint { color: var(--tx-4); font-size: 12px; }
+  #text .seg.partial { color: var(--tx-2); }
+  #text .seg.partial::after { content: '▌'; color: rgb(var(--accent)); animation: recblink 1.1s ease-in-out infinite; }
+
+  .vfoot { display: flex; align-items: center; gap: var(--sp-2); flex: 0 0 auto; }
+  .vfoot .btn { flex: 0 0 auto; }
+  .vfoot .btn:disabled { opacity: .45; cursor: default; }
+
+  /* ---- 对话模式（v1.78）----
+     只加这一块自己的排版：模式切换、凭据表单、语音偏好、对话正文。
+     转写那套样式与结构原样不动。 */
+  .modes { display: flex; gap: 6px; flex: 0 0 auto; }
+  .modes .mbtn {
+    flex: 1 1 0; padding: 4px 0; font-size: 11.5px; border-radius: var(--r-pill);
+    border: 1px solid var(--hairline-soft); background: rgba(var(--fg), .06);
+    color: var(--tx-2); cursor: pointer;
+  }
+  .modes .mbtn.on { color: var(--tx-1); border-color: rgba(var(--accent), .55); background: rgba(var(--accent), .16); }
+  /* 两个面板各自铺满：hidden 必须显式压掉 display:flex，否则切模式后两块会一起显示 */
+  .modebox { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; gap: var(--sp-2); }
+  .modebox[hidden] { display: none; }
+  #dlgBox { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; gap: var(--sp-2); }
+  #dlgBox { overflow-y: auto; }
+  .dlgform .fline .btn { flex: 0 0 auto; white-space: nowrap; }
+  #dlgState { display: block; color: var(--tx-2); font-size: 11.5px; line-height: 1.55; flex: 0 0 auto; min-height: 18px; }
+  #dlgState.bad { color: rgb(var(--danger)); }
+  #dlgState.warn { color: rgb(var(--warn)); }
+  #dlgState.ok { color: rgb(var(--accent)); }
+  .dlgform input[type=password], .dlgform input[type=text] {
+    width: 100%; font-size: 11px; padding: 3px 6px; border-radius: 6px;
+    border: 1px solid var(--hairline-soft); background: rgba(var(--fg), .06); color: var(--tx-1);
+  }
+  .dlgform .fline { display: flex; gap: 4px; align-items: center; }
+  .dlgform .fline input { flex: 1 1 auto; min-width: 0; }
+  .prefs { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--tx-3); flex: 0 0 auto; }
+  .prefs .pline { display: flex; align-items: center; gap: 6px; }
+  .prefs .pline label { flex: 0 0 52px; }
+  .prefs .pline select { font-size: 11px; background: rgba(var(--fg), .08); color: var(--tx-1); border: 1px solid var(--hairline-soft); border-radius: 6px; }
+  .prefs .pline input[type=range] { flex: 1 1 auto; min-width: 0; accent-color: rgb(var(--accent)); }
+  .prefs .val { flex: 0 0 46px; text-align: right; font-variant-numeric: tabular-nums; }
+  #chat {
+    flex: 1 1 auto; min-height: 80px; overflow-y: auto; scrollbar-gutter: stable;
+    font-size: 13px; line-height: 1.65; color: var(--tx-1); display: flex; flex-direction: column; gap: 6px;
+    background: rgba(var(--fg), .04); border: 1px solid var(--hairline-soft);
+    border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3);
+  }
+  #chat .turn { white-space: pre-wrap; word-break: break-word; }
+  #chat .turn.me { color: var(--tx-2); }
+  #chat .turn.me::before { content: '你：'; color: var(--tx-4); }
+  #chat .turn.ai::before { content: 'Ling：'; color: rgb(var(--accent)); }
+  #chat .hint { color: var(--tx-4); font-size: 12px; }
+  #chat .hint::before { content: none; }
+</style>
+</head>
+<body>
+<div id="vwin" class="card">
+  <div class="vbar">
+    <span class="dot"></span>
+    <span class="title" id="vTitle">实时转写</span>
+    <span class="rec" id="rec"><span class="rd"></span>录音中</span>
+    <button class="ibtn" id="cfg" title="转写设置（服务商 / API Key）">⚙</button>
+    <button class="ibtn danger" id="close" title="关闭（会立刻停止采集与播放）">✕</button>
+  </div>
+
+  <div class="vbody">
+    <!-- v1.78：两条线并存 —— 转写（原样保留）与对话（腾讯 ASR → 既有对话模型 → 腾讯 TTS）。
+         切模式只切面板，不替用户开始任何采集；采集只在各自「开始」的点击里发生。 -->
+    <div class="modes" role="tablist" aria-label="模式">
+      <button class="mbtn on" id="modeAsr" role="tab" aria-selected="true">实时转写</button>
+      <button class="mbtn" id="modeDlg" role="tab" aria-selected="false">语音对话</button>
+    </div>
+
+    <div id="asrBox" class="modebox">
+      <div class="row">
+        <span class="who grow">服务商：<b id="providerNow">未选择</b></span>
+        <span class="badge" id="keyBadge">未配置 Key</span>
+      </div>
+      <div class="who" id="providerHint"></div>
+
+      <div class="srcs" id="srcRow" role="radiogroup" aria-label="声音来源">
+        <label class="srcOpt on" id="srcMic"><input type="radio" name="src" value="mic" checked>麦克风</label>
+        <label class="srcOpt" id="srcSystem"><input type="radio" name="src" value="system">系统声音</label>
+        <label class="srcOpt" id="srcMixed"><input type="radio" name="src" value="mixed">会议双方</label>
+      </div>
+
+      <div class="consent">
+        <input type="checkbox" id="consent">
+        <label for="consent" id="consentText"></label>
+      </div>
+
+      <div class="meters">
+        <div class="meter" id="meterMic"><span>麦克风</span><span class="bar"><i id="lvlMic"></i></span><span id="lvlMicTxt">—</span></div>
+        <div class="meter" id="meterSys"><span>系统</span><span class="bar"><i id="lvlSys"></i></span><span id="lvlSysTxt">—</span></div>
+      </div>
+
+      <div id="state"></div>
+
+      <div id="text"></div>
+
+      <div class="vfoot">
+        <button class="btn primary" id="start">开始转写</button>
+        <button class="btn" id="stop" style="display:none">停止</button>
+        <span class="note" id="footNote"></span>
+      </div>
+    </div>
+
+    <div id="dlgBox" class="modebox" hidden>
+      <div class="row">
+        <span class="who grow">腾讯云语音：<b id="tcNow">未配置</b></span>
+        <span class="badge" id="tcBadge">未配置凭据</span>
+      </div>
+      <div class="who" id="chatNow">对话模型：读取中…</div>
+
+      <div class="dlgform">
+        <div class="fline"><input id="tcAppId" type="text" inputmode="numeric" spellcheck="false" autocomplete="off" placeholder="AppId（纯数字，腾讯云控制台「账号信息」）"></div>
+        <div class="fline"><input id="tcSecretId" type="password" spellcheck="false" autocomplete="off" placeholder="SecretId"></div>
+        <div class="fline">
+          <input id="tcSecretKey" type="password" spellcheck="false" autocomplete="off" placeholder="SecretKey">
+          <button class="btn mini primary" id="tcSave">保存</button>
+          <button class="btn mini" id="tcDel">删除</button>
+        </div>
+        <div class="who" id="tcHint">凭据用系统钥匙串（Electron safeStorage）加密后存在本机；系统加密不可用时会拒绝保存，绝不落明文。语音只走当前这次会话，不保存、不写盘。</div>
+      </div>
+
+      <div class="prefs">
+        <div class="pline">
+          <label for="prefVoice">音色</label>
+          <select id="prefVoice"></select>
+        </div>
+        <div class="pline">
+          <label for="prefSpeed">语速</label>
+          <input id="prefSpeed" type="range" min="-2" max="6" step="0.1" value="0">
+          <span class="val" id="prefSpeedVal">0</span>
+        </div>
+        <div class="pline">
+          <label for="prefVolume">音量</label>
+          <input id="prefVolume" type="range" min="-10" max="10" step="1" value="0">
+          <span class="val" id="prefVolumeVal">0</span>
+        </div>
+      </div>
+
+      <div class="consent">
+        <input type="checkbox" id="dlgConsent">
+        <label for="dlgConsent" id="dlgConsentText"></label>
+      </div>
+
+      <div id="dlgState"></div>
+
+      <div id="chat"></div>
+
+      <div class="vfoot">
+        <button class="btn primary" id="dlgStart">开始对话</button>
+        <button class="btn" id="dlgStop" style="display:none">停止</button>
+        <span class="note" id="dlgFoot"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<script>
+(function () {
+  'use strict'
+  const $ = (id) => document.getElementById(id)
+  const api = window.voiceApi
+
+  const TARGET_RATE = 16000
+  const FRAME_SAMPLES = 3200          // 200ms @16k
+  const MAX_SEGMENTS = 200            // 只留最近 200 句（超长听写也不让内存无界长）
+  const MAX_SEGMENT_CHARS = 1000      // 单句上限：服务端异常长的一句也不吃内存
+  const TEXT_IDLE = '点击「开始转写」后，这里会实时出现文字：正在说的那句会不断被改写，说完整句就定稿。'
+  const TEXT_LISTENING = '正在听…说出的话会先以浅色出现，说完一句就定稿。'
+  const SOURCE_IDS = ['mic', 'system', 'mixed']   // 与主进程 voice-main.js 的 SOURCE_IDS 严格一致（无默认值）
+
+  let status = null                    // voice:status 的回包（含 hasKey / micStatus / providers）
+  let phase = 'idle'                   // idle | starting | live | draining
+  let capturing = false                // 音频是否真的接上（「录音中」只看这个，不看 phase）
+  let recDlg = false                   // 对话那条线是否真的在采（两条线共用窗口顶部这一个指示灯）
+
+  let noticeTimer = null
+  let source = 'mic'                   // mic | system | mixed：这一轮的声音来源（也是同意范围的一部分）
+  let failNote = null                   // 硬失败文案：之后的 cancelled 事件不许把它盖成「已停止」
+
+  /* ---------------- 转写正文（有界窗口 + 水位） ---------------- */
+  const segments = new Map()           // startMs -> { startMs, endMs, text, isFinal }
+  let segOrder = []                    // 按 startMs 升序的 key
+  let prunedBeforeMs = -1              // 已被挤出窗口的句子上界：这些句子不许再「复活」回来
+
+  function renderText() {
+    const box = $('text')
+    box.textContent = ''
+    if (!segments.size) {
+      const hint = document.createElement('span')
+      hint.className = 'hint'
+      hint.textContent = phase === 'idle' ? TEXT_IDLE : TEXT_LISTENING
+      box.appendChild(hint)
+      return
+    }
+    const frag = document.createDocumentFragment()
+    for (const k of segOrder) {
+      const s = segments.get(k)
+      if (!s || !s.text) continue
+      const span = document.createElement('span')
+      span.className = 'seg' + (s.isFinal ? '' : ' partial')
+      span.textContent = s.text              // 一律 textContent：识别结果里出现 HTML 也只是文字
+      frag.appendChild(span)
+    }
+    box.appendChild(frag)
+    box.scrollTop = box.scrollHeight
+  }
+
+  /** 超出窗口就从句首丢，并抬高水位：之后同 startMs 的旧句（full 模式会重发全部句子）不再插回开头。 */
+  function pruneSegments() {
+    while (segOrder.length > MAX_SEGMENTS) {
+      const k = segOrder.shift()
+      segments.delete(k)
+      const n = Number(k)
+      if (Number.isFinite(n) && n > prunedBeforeMs) prunedBeforeMs = n
+    }
+  }
+
+  /**
+   * 一条转写事件落到页面上。身份由主进程的会话层算好（direct start 稳定 key /
+   * derived 只跟唯一未定稿句的真实区间重叠），这里只做「同 key 替换」+ 兜底去重：
+   *   - 同 startMs → 覆盖，不追加（partial 修订、final 定稿都是同一句）。
+   *   - 已定稿的句子不回退成 partial。
+   *   - 万一还有 key 不同但区间完全重叠、文本也相同的句子（旧服务端行为），合并到已有那条，
+   *     不让同一句话在界面上出现两份。绝不按固定毫秒近邻乱并 —— 那会吞掉相邻短句。
+   */
+  function applyTranscript(t) {
+    if (!t || typeof t.text !== 'string') return
+    const startMs = Number(t.startMs) || 0
+    const endMs = Math.max(startMs, Number(t.endMs) || startMs)
+    const key = String(startMs)
+    const prev = segments.get(key)
+    // 水位以下的句子已经不在窗口里了：不让它插回开头（否则长听写会越用越乱）
+    if (!prev && startMs <= prunedBeforeMs) return
+    // 已定稿的句子不再被后到的 partial 盖掉（服务端偶发补发；同一 startMs 只认定稿版本）
+    if (prev && prev.isFinal && !t.isFinal) return
+    // 兜底去重：不同 key 但同文本同区间的重复句，并到已有那条（保留更「定稿」的版本）
+    if (!prev) {
+      for (const k of segOrder) {
+        const s = segments.get(k)
+        if (!s || s.text !== t.text) continue
+        if (s.startMs !== startMs || s.endMs !== endMs) continue
+        if (s.isFinal || !t.isFinal) return          // 已有同样的句子：不再插一条
+      }
+    }
+    if (!prev) segOrder.push(key)
+    const text = t.text.length > MAX_SEGMENT_CHARS ? t.text.slice(0, MAX_SEGMENT_CHARS) : t.text
+    segments.set(key, { startMs: startMs, endMs: endMs, text: text, isFinal: !!t.isFinal })
+    segOrder.sort((a, b) => Number(a) - Number(b))
+    pruneSegments()
+    renderText()
+  }
+
+  function resetTranscript() {
+    segments.clear()
+    segOrder = []
+    prunedBeforeMs = -1
+    renderText()
+  }
+
+  /* ---------------- 采集链 ---------------- */
+  // 一轮采集的全部资源都挂在 cap 上：点「开始」的同步段就建出骨架并立刻发起流申请
+  //（保住用户手势），音频图等服务端就绪后再接。取消 / 关窗 / 失败在任何时刻
+  // 都能把这一轮的所有流、AudioContext、轨道守卫一起拆干净。
+  // teardownCap 只拆传进来的那一轮：旧轮的迟到回调看到 cap !== c 就不会碰新流。
+  let cap = null
+  let pcmOut = new Int16Array(FRAME_SAMPLES)
+  let pcmFill = 0
+  let rsCarry = new Float32Array(0)     // 重采样：上一块留下的输入尾巴（整轮只有一条输出时间轴，所以只有一份）
+  let rsPos = 0                         // 重采样：在 carry 里的读位置（浮点，< 1），跨块累积不漂移
+
+  // 麦克风沿用回声消除 / 降噪 / 自动增益：外放时能明显少把自己的声音再转写一遍
+  const MIC_CONSTRAINTS = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+  // 系统回环里就是会议另一头的声音：再开回声消除 / 降噪会把它当回声削掉，所以三件全关
+  const SYS_CONSTRAINTS = { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+  // 画面轨只为让 ScreenCaptureKit 的系统音频活着：最小、最低帧率，渲染层从不读帧、不上传、不保存
+  const SYS_VIDEO = { width: 16, height: 16, frameRate: 1 }
+  // 轨道被系统静音多久才算「持续异常」。用户自己按系统静音键是合法操作，不能 1 秒就判死；
+  // 但也不能一直当没看见 —— 超时就明确停止（会先把提示显示出来），绝不偷偷只录另一路。
+  const MUTE_GRACE_MS = 8000
+
+  function errText(e) { return (e && (e.message || e.name)) || String(e || '未知错误') }
+
+  function audioTrackOf(st) {
+    const ts = st && typeof st.getAudioTracks === 'function' ? st.getAudioTracks() : []
+    return ts.length ? ts[0] : null
+  }
+
+  function stopStream(st) { try { st.getTracks().forEach((t) => t.stop()) } catch {} }
+
+  function emitFrame(int16) {
+    if (!int16.length) return
+    // slice 是必须的：ipcRenderer.send 走结构化克隆，把复用的 pcmOut 直接送出去会变成竞态共享
+    api.sendAudio(int16.buffer.slice(int16.byteOffset, int16.byteOffset + int16.byteLength))
+  }
+
+  function writeSample(v) {
+    const s = v > 1 ? 1 : (v < -1 ? -1 : v)
+    pcmOut[pcmFill++] = Math.round(s * 32767)
+    if (pcmFill === FRAME_SAMPLES) {
+      emitFrame(pcmOut)
+      pcmFill = 0
+    }
+  }
+
+  /**
+   * 把一块 Float32 按设备采样率线性重采样到 16k，直接写进 PCM 帧缓冲。
+   * 读位置 rsPos 跨块累积（不是每块从 0 开始），否则 44.1k→16k 这种非整数比会每块丢一点相位，
+   * 越说越「快」并累积爆音。rsCarry 只留最后一个不足一个输出间距的输入尾巴。
+   * 麦克风与系统声音在 worklet 里已经合成**一路** mono 才送过来，所以这里永远只有一条
+   * 重采样链 —— 绝不对两路各跑一遍 feedBlock（那会让两条时间轴互相错位，还会抢同一份 rsCarry）。
+   */
+  function feedBlock(float32, inRate) {
+    if (inRate === TARGET_RATE) {
+      for (let i = 0; i < float32.length; i++) writeSample(float32[i])
+      return
+    }
+    const ratio = inRate / TARGET_RATE
+    let buf = float32
+    if (rsCarry.length) {
+      buf = new Float32Array(rsCarry.length + float32.length)
+      buf.set(rsCarry, 0)
+      buf.set(float32, rsCarry.length)
+    }
+    let pos = rsPos
+    const limit = buf.length - 1
+    while (pos < limit) {
+      const i0 = pos | 0
+      const frac = pos - i0
+      const a = buf[i0]
+      writeSample(a + (buf[i0 + 1] - a) * frac)
+      pos += ratio
+    }
+    const consumed = Math.min(pos | 0, limit)
+    rsCarry = consumed > 0 ? buf.slice(consumed) : buf
+    rsPos = pos - consumed
+  }
+
+  /** 停采时把整帧发完，返回不足一帧的尾巴（交给 stop 一起送，避免最后一帧丢在停止之后）。 */
+  function flushFramesAndTakeTail() {
+    let off = 0
+    while (pcmFill - off >= FRAME_SAMPLES) {
+      emitFrame(pcmOut.subarray(off, off + FRAME_SAMPLES))
+      off += FRAME_SAMPLES
+    }
+    const rest = pcmOut.slice(off, pcmFill)
+    pcmFill = 0
+    rsCarry = new Float32Array(0)
+    rsPos = 0
+    return rest
+  }
+
+  /**
+   * 停采前让 worklet 把手上不足一块的采样交出来，然后才拆链。
+   * 不等的话最多丢约 100ms 尾巴（20ms 设备分块 + 100ms worklet 块）。
+   * 输出已经是一路 mono（两路在 worklet 里合过），所以这里照旧只有一个 feedBlock。
+   */
+  function drainWorklet(myGen, target) {
+    return new Promise((resolve) => {
+      const c = target
+      const n = c && c.node
+      if (!n) { resolve(); return }
+      const finish = () => {
+        try { n.port.onmessage = null } catch {}
+        resolve()
+      }
+      n.port.onmessage = (e) => {
+        if (myGen !== gen) { finish(); return }      // 这一轮已经作废：不再往新的会话里灌旧音频
+        const d = e && e.data
+        if (d && d.type === 'block' && d.samples) {
+          const f = d.samples instanceof Float32Array ? d.samples : new Float32Array(d.samples)
+          feedBlock(f, c.ctx ? c.ctx.sampleRate : TARGET_RATE)
+          return
+        }
+        if (d && d.type === 'stopped') finish()
+      }
+      try { n.port.postMessage({ type: 'stop' }) } catch { finish() }
+      setTimeout(finish, 150)     // 兜底：worklet 不回话也绝不让「停止」卡住
+    })
+  }
+
+  /**
+   * 只拆传进来的那一轮（可能已经不是当前轮）：音频图、轨道守卫、所有流（麦克风 + 系统回环，
+   * 含那条只为系统音频活着的画面轨）一起释放，绝不碰别的轮。
+   */
+  function teardownCap(target) {
+    const c = target || cap
+    if (!c) return
+    if (cap === c) cap = null
+    if (c.meterTimer) { clearInterval(c.meterTimer); c.meterTimer = null }
+    for (const t of c.muteTimers) clearTimeout(t)
+    c.muteTimers.length = 0
+    for (const off of c.guards) { try { off() } catch {} }
+    c.guards.length = 0
+    try { if (c.node) { c.node.port.onmessage = null; c.node.disconnect() } } catch {}
+    for (const n of [c.micSource, c.sysSource, c.micAnalyser, c.sysAnalyser]) { try { if (n) n.disconnect() } catch {} }
+    c.node = null; c.micSource = null; c.sysSource = null; c.micAnalyser = null; c.sysAnalyser = null
+    if (c.ctx) { const x = c.ctx; c.ctx = null; try { x.close() } catch {} }
+    for (const st of c.streams.splice(0)) stopStream(st)
+    c.micStream = null; c.sysStream = null; c.micTrack = null; c.sysTrack = null
+    if (!cap) {
+      capturing = false
+      pcmFill = 0
+      rsCarry = new Float32Array(0)
+      rsPos = 0
+      resetMeter()
+      syncButtons()
+    }
+  }
+
+  /**
+   * 一轮采集的骨架：点「开始」的同步段就建。
+   * AudioContext 必须在这里（用户手势之内）建出来：等到 ASR 就绪（几秒后）再建，
+   * Chromium 会把新 context 置成 suspended 且拒绝 resume，worklet 永远跑不起来 —— 表现成
+   * 「连上了但一直是静音」。音频图（addModule / connect）仍然等就绪之后再接。
+   */
+  function beginChain(myGen, src) {
+    const c = {
+      gen: myGen, source: src,
+      streams: [], muteTimers: [], guards: [],
+      ctx: null, ctxFail: '', node: null,
+      micStream: null, sysStream: null, micTrack: null, sysTrack: null,
+      micSource: null, sysSource: null, micAnalyser: null, sysAnalyser: null,
+      meterTimer: null, attached: false, streamsReady: false, guardsArmed: false
+    }
+    try {
+      c.ctx = new (window.AudioContext || window.webkitAudioContext)()
+      // 在建它的同一个手势里就恢复：等到几秒后（ASR 就绪）再 resume，Chromium 会拒绝
+      if (c.ctx.state === 'suspended') {
+        const p = c.ctx.resume()
+        if (p && p.catch) p.catch(() => {})
+      }
+    } catch (e) {
+      c.ctxFail = '打不开音频处理（AudioContext）：' + errText(e) + '。'
+    }
+    cap = c
+    return c
+  }
+
+  /** 流到手就登记到这一轮；这一轮已经作废（取消 / 关窗 / 失败）就当场关掉，绝不挂到别处。 */
+  function adopt(c, st) {
+    if (!c || cap !== c || c.gen !== gen) { stopStream(st); return null }
+    c.streams.push(st)
+    return st
+  }
+
+  // 两个申请都必须在点击的同步段里发起（过了第一个 await 就没有用户手势了），
+  // 返回的 promise 一律包成 {ok, stream}，绝不让拒绝变成没人处理的 rejection。
+  function openMic(c) {
+    let p = null
+    try { p = navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS, video: false }) } catch (e) { return Promise.resolve({ ok: false, error: errText(e), name: (e && e.name) || '' }) }
+    return p.then((st) => {
+      const kept = adopt(c, st)
+      return kept ? { ok: true, stream: kept } : { ok: false, stale: true }
+    }, (e) => ({ ok: false, error: errText(e), name: (e && e.name) || '' }))
+  }
+
+  /**
+   * 系统回环。audio 只用布尔 true 请求：把 echoCancellation 这类约束塞进 getDisplayMedia
+   * 的参数里，部分 Chromium 版本会直接抛 TypeError，整次采集就白丢了。约束改成拿到轨之后
+   * 用 applyConstraints 尽力而为地关掉（不支持就保持默认，绝不因为这一步失败而放弃采集）。
+   * 画面轨必须留着（SCK 的系统音频靠它活着），但我们从不读帧、不上传、不保存。
+   */
+  function openSystem(c) {
+    let p = null
+    try { p = navigator.mediaDevices.getDisplayMedia({ audio: true, video: SYS_VIDEO }) } catch (e) { return Promise.resolve({ ok: false, error: errText(e), name: (e && e.name) || '' }) }
+    return p.then((st) => {
+      const kept = adopt(c, st)
+      if (!kept) return { ok: false, stale: true }
+      const at = audioTrackOf(kept)
+      if (at && typeof at.applyConstraints === 'function') {
+        try { const q = at.applyConstraints(SYS_CONSTRAINTS); if (q && q.catch) q.catch(() => {}) } catch {}
+      }
+      return { ok: true, stream: kept }
+    }, (e) => ({ ok: false, error: errText(e), name: (e && e.name) || '' }))
+  }
+
+  /**
+   * 轨道守卫：任一路真的断了（ended）或长时间被静音（mute），都明确停下来，
+   * 绝不静默降级成只剩另一路 —— 用户以为录了双方、其实只录了自己，比直接失败更糟。
+   * 也绝不用「能量低」去推断故障：正常没人说话时能量一样低，那不算失败。
+   *
+   * 流一到就装上（不等 ASR 就绪）：服务端握手那几秒里用户从系统菜单停掉屏幕录制 /
+   * 拔掉麦克风，也必须当场发现并取消整次，而不是等接上之后才发现「一直是静音」。
+   */
+  function armGuards(c) {
+    if (c.guardsArmed) return
+    c.guardsArmed = true
+    const add = (label, track, micSettings) => {
+      if (!track || typeof track.addEventListener !== 'function') return
+      const mine = () => cap === c && c.gen === gen
+      const onEnded = () => {
+        if (!mine()) return
+        hardFail(c, label + '这一路的声音已经中断（系统结束了这条音轨）：本次转写已停止，没有改成只录另一路。', { micSettings: micSettings })
+      }
+      let muteTimer = null
+      const onMute = () => {
+        if (!mine() || muteTimer) return
+        setState('warn', label + '被系统静音了：' + Math.round(MUTE_GRACE_MS / 1000) + ' 秒内不恢复就会停止，不会自动改成只录另一路。')
+        muteTimer = setTimeout(() => {
+          muteTimer = null
+          if (!mine() || !track.muted) return
+          hardFail(c, label + '被系统静音超过 ' + Math.round(MUTE_GRACE_MS / 1000) + ' 秒：本次转写已停止（这不是服务商不支持，也没有改成只录另一路）。', { micSettings: micSettings })
+        }, MUTE_GRACE_MS)
+        c.muteTimers.push(muteTimer)
+      }
+      const onUnmute = () => {
+        if (muteTimer) { clearTimeout(muteTimer); muteTimer = null }
+        if (!mine() || phase !== 'live') return
+        setState('', liveText(c))
+      }
+      track.addEventListener('ended', onEnded)
+      track.addEventListener('mute', onMute)
+      track.addEventListener('unmute', onUnmute)
+      c.guards.push(() => {
+        track.removeEventListener('ended', onEnded)
+        track.removeEventListener('mute', onMute)
+        track.removeEventListener('unmute', onUnmute)
+        if (muteTimer) clearTimeout(muteTimer)
+      })
+      // 装上时就已经 ended 的轨（授权窗口刚关掉、设备刚被拔）：立即按中断处理
+      if (track.readyState === 'ended') { onEnded(); return }
+      if (track.muted) onMute()
+    }
+    // input 0 在 mic / mixed 下是麦克风，在 system 下是系统回环（见 attachChain 的接法）
+    // 只给真的有的那几路装守卫（system 没有麦克风那条流，micTrack 就是 null）
+    if (c.micTrack) add('麦克风', c.micTrack, true)
+    if (c.sysTrack) add('系统声音', c.sysTrack, false)
+  }
+
+  /**
+   * 接上音频图：只在服务端确认就绪之后调用（就绪前流可以开着，但不送一帧、不上传）。
+   * 同一个 AudioContext + 同一个 worklet：麦克风接 input 0、系统声音接 input 1，
+   * 由 worklet 合成一路 mono 再回传 —— 页面这边只有一条 16k 时间轴、一条重采样链。
+   * 失败时不在这里拆：把半成品留在 c 上交给调用方 hardFail → teardownCap 一次拆干净。
+   */
+  async function attachChain(c) {
+    const myGen = c.gen
+    if (c.ctxFail || !c.ctx) return { ok: false, error: c.ctxFail || '音频处理没有初始化' }
+    const ctx = c.ctx
+    // 建的时候是用户手势之内，正常就是 running；万一被系统挂起，这里再叫一次 resume
+    if (ctx.state === 'suspended') { try { await ctx.resume() } catch {} }
+    if (cap !== c || myGen !== gen) return { ok: false, stale: true }
+    if (ctx.state !== 'running') {
+      return { ok: false, error: '音频处理起不来（AudioContext 停在 ' + ctx.state + '）。' }
+    }
+    try { await ctx.audioWorklet.addModule('voice-worklet.js') } catch (e) {
+      return { ok: false, error: '加载采集模块（voice-worklet.js）失败：' + errText(e) }
+    }
+    if (cap !== c || myGen !== gen) return { ok: false, stale: true }
+
+    const twoInputs = !!(c.micStream && c.sysStream)
+    let node = null
+    try {
+      node = new AudioWorkletNode(ctx, 'voice-capture', {
+        numberOfInputs: 2,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        channelCount: 1,                                  // 输入侧显式下混成 mono：立体声回环也只有一条
+        channelCountMode: 'explicit',
+        channelInterpretation: 'speakers',
+        processorOptions: { gain: twoInputs ? 0.5 : 1 }    // 两路各留一半 headroom，相加也不溢出
+      })
+    } catch (e) {
+      return { ok: false, error: '建采集节点失败：' + errText(e) }
+    }
+    c.node = node
+    try {
+      if (c.micStream) {
+        c.micSource = ctx.createMediaStreamSource(c.micStream)
+        c.micAnalyser = ctx.createAnalyser()
+        c.micAnalyser.fftSize = 512
+        c.micSource.connect(node, 0, 0)
+        c.micSource.connect(c.micAnalyser)
+      }
+      if (c.sysStream) {
+        // 系统回环单独占一个输入口：只有系统声音时用 0，两路同时时用 1
+        c.sysSource = ctx.createMediaStreamSource(c.sysStream)
+        c.sysAnalyser = ctx.createAnalyser()
+        c.sysAnalyser.fftSize = 512
+        c.sysSource.connect(node, 0, c.micStream ? 1 : 0)
+        c.sysSource.connect(c.sysAnalyser)
+      }
+      // 必须接到 destination，音频线程才会驱动这个节点；它自己不写输出，扬声器不会有回放
+      node.connect(ctx.destination)
+    } catch (e) {
+      return { ok: false, error: '接不上音频通道：' + errText(e) }
+    }
+
+    const inRate = ctx.sampleRate
+    node.port.onmessage = (e) => {
+      if (myGen !== gen || cap !== c) return
+      const d = e && e.data
+      if (!d || d.type !== 'block' || !d.samples) return
+      const f = d.samples instanceof Float32Array ? d.samples : new Float32Array(d.samples)
+      feedBlock(f, inRate)
+    }
+
+    // 守卫在流落地时就已装上（armGuards 幂等）：这里只补一次，保证两路都在。
+    armGuards(c)
+    // 守卫可能在接上的瞬间就发现问题（轨已 ended）并已 hardFail → 拆掉本轮：
+    // 这时不要再把它当成接好了，调用方会看到 stale 并什么都不做
+    if (cap !== c || myGen !== gen) return { ok: false, stale: true }
+
+    const micBuf = c.micAnalyser ? new Float32Array(c.micAnalyser.fftSize) : null
+    const sysBuf = c.sysAnalyser ? new Float32Array(c.sysAnalyser.fftSize) : null
+    c.meterTimer = setInterval(() => {
+      if (myGen !== gen || cap !== c) return
+      stepMeter(c.micAnalyser, micBuf, c.micTrack, 'lvlMic', 'lvlMicTxt')
+      stepMeter(c.sysAnalyser, sysBuf, c.sysTrack, 'lvlSys', 'lvlSysTxt')
+    }, 120)
+
+    c.attached = true
+    capturing = true
+    syncButtons()
+    return { ok: true }
+  }
+
+  /** 每一路单独的电平：缺轨时行本身就不显示，静音与「没接上」不会混为一谈。 */
+  function stepMeter(analyser, buf, track, barId, txtId) {
+    if (!analyser || !buf) return
+    analyser.getFloatTimeDomainData(buf)
+    let peak = 0
+    for (let i = 0; i < buf.length; i++) { const a = Math.abs(buf[i]); if (a > peak) peak = a }
+    const dead = !track || track.readyState !== 'live'
+    const pct = dead ? 0 : Math.min(100, Math.round(peak * 140))
+    $(barId).style.width = pct + '%'
+    $(txtId).textContent = dead ? '已断开' : (pct < 2 ? '静音' : pct + '%')
+  }
+
+  function resetMeter() {
+    for (const [bar, txt] of [['lvlMic', 'lvlMicTxt'], ['lvlSys', 'lvlSysTxt']]) {
+      $(bar).style.width = '0%'
+      $(txt).textContent = '—'
+    }
+  }
+
+  function liveText(c) {
+    const src = (c && c.source) || source
+    if (src === 'system') return '系统声音已接入：会议里对方说的话会开始转写（本机扬声器照常外放）。'
+    if (src === 'mixed') return '麦克风与系统声音都已接入：双方说的话会一起转写。'
+    return '麦克风已打开，说话就会开始转写。'
+  }
+
+  /**
+   * 硬失败：这一轮不能继续，也绝不降级成另一路。
+   * 先拆本轮全部的流与音频图，再作废旧轮 async 续体，最后取消服务端会话；
+   * 失败文案记进 failNote，随后的 cancelled 事件不许把它盖成「已停止」。
+   */
+  function hardFail(c, text, opts) {
+    // 这一轮已经被换掉 / 拆掉：绝不去拆新的那一轮，也不改它的界面状态
+    if (c && cap !== c) return
+    const o = opts || {}
+    teardownCap(c)
+    gen++
+    phase = 'idle'
+    capturing = false
+    resetMeter()
+    renderText()
+    syncButtons()
+    failNote = { text: text, micSettings: !!o.micSettings }
+    showFail(failNote)
+    // 会话可能还开着（已接图 / 已连上）：明确取消，绝不留在后台继续采集上传
+    try { const p = api.cancel(); if (p && p.catch) p.catch(() => {}) } catch {}
+  }
+
+  function showFail(n) {
+    if (n.micSettings) setStateWithLink('bad', n.text, '打开系统设置', () => api.openMicSettings())
+    else setState('bad', n.text)
+  }
+
+  /* ---------------- 状态显示 ---------------- */
+  function setState(kind, text) {
+    const el = $('state')
+    el.className = kind || ''
+    el.textContent = text || ''
+  }
+  function setStateWithLink(kind, text, linkText, onClick) {
+    const el = $('state')
+    el.className = kind || ''
+    el.textContent = text || ''
+    const link = document.createElement('span')
+    link.className = 'link'
+    link.textContent = linkText
+    link.addEventListener('click', onClick)
+    el.appendChild(link)
+  }
+  function providerLabel(id) {
+    const p = status && status.providers ? status.providers.find((x) => x.id === id) : null
+    return p ? p.label : (id || '')
+  }
+  // 来源文案：只说这一路采的是什么，不承诺「能认出是谁在说」。
+  const SRC_HEAD = {
+    mic: '我同意把麦克风采集的语音',
+    system: '我同意把系统播放的声音（会议里对方的声音）',
+    mixed: '我同意把麦克风与系统播放的声音（会议双方）'
+  }
+  const NEEDS_SYS = { mic: false, system: true, mixed: true }
+
+  function renderConsent() {
+    const el = $('consentText')
+    const name = providerLabel(status && status.provider) || '上面这家服务商'
+    el.textContent = ''
+    el.appendChild(document.createTextNode((SRC_HEAD[source] || SRC_HEAD.mic) + ' '))
+    const b = document.createElement('b')
+    b.textContent = '实时'
+    el.appendChild(b)
+    let tail = '上传给「' + name + '」做转写：只传识别要用的声音，认不出是谁在说话，也不替你判断说了什么。'
+    tail += '音频只走当前这次会话，不保存、不写盘；转写文字也只留在本窗口，关掉就没了。'
+    tail += '会议里请让参会者知道你正在转写（本机系统录音标记会照常显示）。'
+    if (NEEDS_SYS[source]) {
+      tail += '系统声音需要「屏幕录制 + 系统音频」授权：只取声音，画面不读取、不上传、不保存。'
+    }
+    el.appendChild(document.createTextNode(' ' + tail))
+  }
+
+  function syncButtons() {
+    const has = !!(status && status.hasKey)
+    const busy = phase !== 'idle'
+    $('start').disabled = busy || !has || !$('consent').checked
+    $('start').style.display = busy ? 'none' : ''
+    $('stop').style.display = busy ? '' : 'none'
+    $('stop').textContent = phase === 'draining' ? '等待最终结果…' : (phase === 'starting' ? '取消' : '停止')
+    $('stop').disabled = phase === 'draining'
+    // 「录音中」只在音频真的接上之后亮：连接 / 握手阶段还没开始采，不能说在录音。
+    // 转写与对话共用这个指示灯，各自只报自己的真实状态。
+    $('rec').classList.toggle('on', capturing || recDlg)
+    $('consent').disabled = busy
+    // 采集中不许改来源：换了来源就等于换了同意范围，必须先停
+    for (const [id, val] of [['srcMic', 'mic'], ['srcSystem', 'system'], ['srcMixed', 'mixed']]) {
+      const opt = $(id)
+      const input = opt.querySelector('input')
+      input.disabled = busy
+      input.checked = source === val
+      opt.classList.toggle('on', source === val)
+      opt.classList.toggle('dis', busy)
+    }
+    // 电平按当前来源显示：没有的那一路上不画空条。静音（有轨但没声音）与「没接上」分开显示。
+    $('meterMic').hidden = source === 'system'
+    $('meterSys').hidden = !NEEDS_SYS[source]
+    $('footNote').textContent = has ? '' : '还没填 Key —— 点右上角 ⚙'
+  }
+  function notice(kind, text) {
+    // 硬失败的说明比任何「提示」都重要：失败原因还没被用户看到（phase 已回 idle）时，
+    // 迟到的 notice 不许把它盖掉。
+    if (failNote && phase === 'idle' && $('state').className === 'bad') return
+    if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null }
+    setState(kind === 'error' ? 'bad' : kind, text)
+    if (kind !== 'error') {
+      noticeTimer = setTimeout(() => { if (phase === 'idle') setState('', '') }, 6000)
+    }
+  }
+  function renderConfig() {
+    const id = status && status.provider
+    $('providerNow').textContent = id ? providerLabel(id) : '未选择'
+    const badge = $('keyBadge')
+    const has = !!(status && status.hasKey)
+    badge.textContent = has ? 'Key 已保存' : '未配置 Key'
+    badge.className = 'badge ' + (has ? 'ok' : 'bad')
+    const cur = status && status.providers ? status.providers.find((x) => x.id === id) : null
+    $('providerHint').textContent = cur
+      ? cur.keyHint
+      : '先在设置里选一个服务商（豆包 / 阿里云），再填它自己的 API Key —— 两家的 Key 分开存，切换服务商不会互相覆盖。'
+    // 同意文案里写着服务商名字：换了家就得跟着改（不能还写着旧的那一家）
+    renderConsent()
+    syncButtons()
+  }
+
+  /**
+   * 收尾统一动作：作废所有在飞的 async 续体 + 拆掉这一轮的流与音频图
+   *（迟到的 getUserMedia / getDisplayMedia / addModule 都会被 gen 与 cap 挡住并当场关掉）。
+   * 失败文案（failNote）不清：紧接着的 cancelled 事件要显示它，而不是「已停止」。
+   */
+  function endRun() {
+    gen++
+    teardownCap()
+    phase = 'idle'
+    resetMeter()
+    renderText()
+    syncButtons()
+  }
+
+  function onMainState(ev) {
+    if (!ev || typeof ev.state !== 'string') return
+    const st = ev.state
+    const stats = ev.stats || null
+    if (st === 'connecting') { setState('', '正在连接转写服务…'); return }
+    if (st === 'ready') {
+      // 服务端确认了就绪（豆包第一条 ack / 阿里 task-started）：这时候才把已拿到的流
+      // 接进音频图。之前流可以开着，但一帧都不送、也不上传。
+      readySeenGen = gen
+      setState('', '服务端已确认，正在接通音频…')
+      startWhenReady(gen)
+      return
+    }
+    if (st === 'streaming') {
+      setState('ok', '正在转写：音频已在实时上传，说完整句会自动定稿。')
+      return
+    }
+    if (st === 'draining') { setState('', '已停止采集，正在等服务器把最后一句说完整…（最多 8 秒）'); return }
+    if (st === 'finished') {
+      failNote = null
+      endRun()
+      const tail = stats
+        ? '（共 ' + stats.frames + ' 帧 / ' + Math.round((stats.bytes || 0) / 1024) + ' KB' + (stats.dropped ? '，丢弃 ' + stats.dropped + ' 帧' : '') + '）'
+        : ''
+      setState('ok', '转写结束' + tail + '。文字只在这个窗口里，关掉就没了。')
+      return
+    }
+    if (st === 'cancelled') {
+      const n = failNote
+      failNote = null
+      endRun()
+      // 这一轮是被我们自己停掉的（硬失败 / 用户取消 / 关窗）：失败原因比「已停止」重要
+      if (n) showFail(n)
+      else setState('', '已停止（没有等最终结果）。')
+      return
+    }
+    if (st === 'error') { failNote = null; endRun(); setState('bad', '转写失败：' + (ev.message || '未知错误')) }
+  }
+
+  /* ---------------- 动作 ---------------- */
+  async function refreshStatus() {
+    let s = null
+    try { s = await api.status() } catch (e) { s = { ok: false, error: (e && e.message) || '读取失败' } }
+    if (!s || !s.ok) {
+      setState('bad', '读不到转写配置：' + ((s && s.error) || '未知错误'))
+      return null
+    }
+    const prevProvider = status && status.provider
+    status = s
+    renderConfig()
+    if (!s.encryptionAvailable) {
+      setState('warn', '本机系统加密不可用（钥匙串锁着？）—— 保存 Key 会被拒绝，已存的 Key 现在也读不出来。解锁钥匙串后到设置里重新保存。')
+    } else if (prevProvider !== s.provider && s.provider) {
+      // 同意是给某一家服务商的：换了家就必须重新勾选，绝不把旧的同意沿用给新的目的地
+      if ($('consent').checked) { $('consent').checked = false; syncButtons() }
+      setState('warn', '服务商已换成「' + providerLabel(s.provider) + '」：当前转写已停止，请重新勾选上面的同意项再开始。')
+    }
+    return s
+  }
+
+  /**
+   * 开始。关键顺序（不能改）：同意校验 → **在点击的同步段里** 建本轮骨架并立刻发起
+   * getUserMedia / getDisplayMedia（一过 await 就没有用户手势，系统音频会被主进程拒掉）
+   * → 两路流都落地 → 才 api.start(consent, provider, source)。
+   * 到这一步流虽然开着，但还没接进音频图：ASR 就绪前不送一帧、不上传。
+   */
+  async function start() {
+    if (phase !== 'idle') return
+    if (!$('consent').checked) { setState('warn', '要先勾选上面的同意项，才会开始采集与上传。'); return }
+    const s = status
+    if (!s) { setState('warn', '还在读取转写配置，稍等一下再开始。'); return }
+    if (!s.hasKey) { setState('warn', '还没有可用的 API Key：点右上角 ⚙ 去设置里填。'); return }
+
+    const myGen = ++gen
+    phase = 'starting'
+    capturing = false
+    failNote = null
+    resetTranscript()
+    resetMeter()
+    const c = beginChain(myGen, source)
+    syncButtons()
+    // 下面两个申请都在这个同步段里发出：必须早于任何 await。
+    // getDisplayMedia 要「瞬时用户激活」，先用掉它，再要麦克风（麦克风不消耗激活）。
+    const sysP = NEEDS_SYS[source] ? openSystem(c) : null
+    const micP = source === 'system' ? null : openMic(c)
+    setState('', source === 'system'
+      ? '正在请求系统声音（屏幕录制）授权…'
+      : (source === 'mixed' ? '正在请求麦克风与系统声音（屏幕录制）授权…' : '正在请求麦克风权限…'))
+
+    const micR = micP ? await micP : { ok: true }
+    if (myGen !== gen) { teardownCap(c); return }
+    const sysR = sysP ? await sysP : { ok: true }
+    if (myGen !== gen) { teardownCap(c); return }
+
+    // 授权这一步可能要等用户点十几秒，期间设置页可能把服务商换了：开工前再核一次，
+    // 绝不把已经勾好的同意悄悄沿用给新的一家（refreshStatus 会撤掉勾选并提示）。
+    const s2 = await refreshStatus()
+    if (myGen !== gen) { teardownCap(c); return }
+    if (!s2 || !s2.ok || !s2.hasKey || !$('consent').checked) {
+      teardownCap(c)
+      phase = 'idle'
+      capturing = false
+      resetMeter()
+      renderText()
+      syncButtons()
+      if (s2 && s2.ok) setState('warn', '服务商或 Key 在这期间变了：请重新勾选同意再开始。')
+      return
+    }
+
+    // 任何一路被拒 / 拿不到音轨：整次作废，绝不退回只用另一路
+    const bad = streamProblem(source, micR, sysR)
+    if (bad) { hardFail(c, bad.text, { micSettings: bad.micSettings }); return }
+    // 这一轮真正要用的那几路（system 没有麦克风），并把轨道守卫立刻装上：
+    // 后面的服务商握手可能要几秒，这期间任一路断了都必须当场取消
+    if (source !== 'system') c.micStream = micR.stream
+    if (NEEDS_SYS[source]) c.sysStream = sysR.stream
+    c.micTrack = c.micStream ? audioTrackOf(c.micStream) : null
+    c.sysTrack = c.sysStream ? audioTrackOf(c.sysStream) : null
+    armGuards(c)
+    if (myGen !== gen || cap !== c) return            // 守卫当场发现断了：它已经拆完并报错
+    c.streamsReady = true
+
+    let r = null
+    // 把「这次同意的是哪一家、哪一路声音」一起报上去：主进程会核对，避免界面显示 B、实际传给 A
+    try { r = await api.start(true, s2.provider, source) } catch (e) { r = { ok: false, error: (e && e.message) || '开始失败' } }
+    if (myGen !== gen) {
+      // 期间点了取消 / 关窗：流由这一轮自己关；如果主进程那边会话已经建起来了
+      // （我们的 stop 早于它返回），必须明确取消，绝不在后台留一个没人喂音频的会话。
+      teardownCap(c)
+      if (r && r.ok) { try { const p = api.cancel(); if (p && p.catch) p.catch(() => {}) } catch {} }
+      return
+    }
+    if (!r || !r.ok) {
+      const msg = (r && r.error) || '未知错误'
+      // 启动被我们自己的取消打断（主进程已经认定这轮不存在）：只关自己的流，别去 cancel 别人的会话
+      if (r && r.cancelled) { teardownCap(c); phase = 'idle'; capturing = false; resetMeter(); renderText(); syncButtons(); return }
+      hardFail(c, '没能开始：' + msg, { micSettings: !!(r && r.micStatus && r.micStatus !== 'granted' && r.micStatus !== 'unknown') })
+      return
+    }
+
+    // 到此为止只是「连上了」，服务端还没确认（豆包要等第一条 ack、阿里要等 task-started）。
+    // 现在接音频图的话，最早那几帧会落在还没就绪的连接上被丢掉 —— 等 onMainState('ready') 再接。
+    // 注意：ready 可能已经先到并接好了（startWhenReady 早在 streamsReady 之前就被叫过），
+    // 这时 phase 已经是 live，绝不能再写回 starting / 覆盖状态行。
+    if (phase === 'starting' && !cap.attached) {
+      setState('', '连接已建立，正在等服务端确认（最多 8 秒）…')
+      syncButtons()
+    }
+    // ready 有可能在 api.start 回来之前就到了：那时 startWhenReady 会因为没有流而返回，
+    // 这里再叫一次（captureStartedGen 保证只接一次）。
+    if (readySeenGen === myGen) startWhenReady(myGen)
+  }
+
+  /**
+   * 两路流的结果判定。返回 {text, micSettings} 表示必须整次失败；返回 null 表示可用。
+   * 只判这一轮真正需要的那几路；系统音频那一路失败一律按「屏幕与系统音频授权 / 不支持」报，
+   * 绝不悄悄退回麦克风。
+   */
+  function streamProblem(src, micR, sysR) {
+    const needMic = src !== 'system'
+    const needSys = NEEDS_SYS[src] === true
+    const micBad = needMic && (!micR || !micR.ok)
+    const sysBad = needSys && (!sysR || !sysR.ok)
+    if (micBad && sysBad) {
+      return {
+        text: '麦克风与系统声音都没拿到（' + ((micR && micR.error) || '未知错误') + ' / ' + ((sysR && sysR.error) || '未知错误')
+          + '）。系统可能要求「屏幕与系统音频录制」权限，麦克风也要在系统设置里允许 Ling。',
+        micSettings: true
+      }
+    }
+    if (micBad) {
+      return {
+        text: '打不开麦克风：' + ((micR && micR.error) || '未知错误') + '。检查系统「隐私与安全性 → 麦克风」是否允许 Ling，然后重试。',
+        micSettings: true
+      }
+    }
+    if (sysBad) {
+      return {
+        text: '拿不到系统声音（' + ((sysR && sysR.error) || '未知错误') + '）。系统可能要求「屏幕与系统音频录制」权限：'
+          + '在系统设置里允许 Ling 后重试。只取声音、画面不读取也不上传；本次没有退回只录麦克风。',
+        micSettings: false
+      }
+    }
+    if (needMic && !audioTrackOf(micR.stream)) {
+      return { text: '麦克风没有可用的音轨（设备被占用或被系统收回），本次转写没有开始。', micSettings: true }
+    }
+    if (needSys && !audioTrackOf(sysR.stream)) {
+      return {
+        text: '系统声音没有可用的音轨：系统可能没给「系统音频录制」权限，或这台机器不支持回环采集。'
+          + '本次没有退回只录麦克风。',
+        micSettings: false
+      }
+    }
+    return null
+  }
+
+  /** 由 onMainState 的 ready 触发：把已经拿到的流接进音频图。重复调用（迟到 ready）由 gen 挡住。 */
+  let captureStartedGen = -1
+  let readySeenGen = -1
+  async function startWhenReady(myGen) {
+    if (captureStartedGen === myGen) return        // 这一轮已经接过了
+    if (myGen !== gen || phase !== 'starting') return
+    if (readySeenGen !== myGen) return              // 服务端还没确认就绪
+    const c = cap
+    if (!c || c.gen !== myGen) return              // 这一轮的流已经不在了（被取消 / 关窗）
+    // 流还在路上（授权窗口开着 / 系统音频授权慢）：等 start() 落地后再叫一次，不抢跑
+    if (!c.streamsReady) return
+    captureStartedGen = myGen
+
+    const got = streamProblem(c.source, { ok: !!c.micStream, stream: c.micStream }, { ok: !!c.sysStream, stream: c.sysStream })
+    if (got) { hardFail(c, got.text, { micSettings: got.micSettings }); return }
+    setState('', '服务端已就绪，正在接通音频…')
+    let res = null
+    try { res = await attachChain(c) } catch (e) { res = { ok: false, error: errText(e) } }
+    if (myGen !== gen || cap !== c) { teardownCap(c); return }   // 期间已取消 / 关窗：只拆自己这一轮
+    if (!res || !res.ok) {
+      if (res && res.stale) return
+      hardFail(c, '接不上音频采集：' + ((res && res.error) || '未知错误') + '。本次转写已停止，没有改用别的来源。')
+      return
+    }
+    phase = 'live'
+    setState('', liveText(c))
+    syncButtons()
+  }
+
+  /**
+   * 停止：先把采集的尾巴交出去，再让主进程带着它收尾（不丢尾、也不重复）。
+   * 启动中（还没有音频图）直接取消：这一轮已开的流（含授权迟到才到的那条）全部关掉。
+   */
+  async function stop() {
+    if (phase !== 'live' && phase !== 'starting') return
+    const wasStarting = phase === 'starting' || !cap || !cap.attached
+    phase = 'draining'
+    syncButtons()
+    setState('', wasStarting ? '正在取消…' : '已停止采集，正在收尾，等最后一句定稿…')
+
+    const myGen = gen
+    const target = cap
+    let tail = null
+    if (!wasStarting && target) {
+      await drainWorklet(myGen, target)      // myGen 已作废的话它立刻返回，不会灌音频
+      if (myGen !== gen) return
+      tail = flushFramesAndTakeTail()
+    }
+    teardownCap(target)                      // 本轮所有流 / 轨道守卫 / AudioContext 一起关
+    // 从这里开始这一轮彻底作废：任何时候迟到的 getUserMedia / getDisplayMedia / addModule 续体都过不了 gen 检查
+    gen++
+    capturing = false
+    resetMeter()
+    syncButtons()
+
+    let r = null
+    try { r = await api.stop(tail && tail.length ? tail.buffer.slice(tail.byteOffset, tail.byteOffset + tail.byteLength) : null) } catch (e) { r = { ok: false, error: (e && e.message) || '停止失败' } }
+    if (!r || !r.ok) {
+      // 停止本身失败：会话可能还在，明确取消，绝不留在后台继续跑
+      try { await api.cancel() } catch {}
+      endRun()
+      setState('bad', '停止时出错，已强制取消：' + ((r && r.error) || '未知错误'))
+      return
+    }
+    // 主进程那边可能已经没有会话了（刚好被服务端收尾 / 启动中直接取消）：这时不会再有终态事件过来，
+    // 界面必须自己落地，否则会永远停在「等待最终结果…」。主进程的 drain 上限是 8 秒，这里多留 3 秒。
+    if (r.state === 'idle' || r.state === 'finished' || r.state === 'cancelled' || r.state === 'error') {
+      const n = failNote
+      failNote = null
+      endRun()
+      if (n) showFail(n)
+      else setState(r.state === 'finished' ? 'ok' : '', r.state === 'finished' ? '转写已结束。' : '已停止。')
+      return
+    }
+    const watchGen = gen
+    setTimeout(() => {
+      if (watchGen !== gen || phase !== 'draining') return
+      endRun()
+      setState('bad', '服务器 11 秒内没给出最终结果，已停止等待（已收到的文字保留）。可重新开始。')
+    }, 11000)
+  }
+
+
+  /* ---------------- 事件 ---------------- */
+
+  /**
+   * 换声音来源 = 换同意范围：立刻撤销同意（不替用户顺手勾上），只更新文案。
+   * 采集中单选是 disabled 的，这里再挡一次；点选本身绝不开始任何采集，
+   * 系统音频 / 屏幕授权的请求只发生在「开始转写」的点击同步段里。
+   */
+  $('srcRow').addEventListener('change', (e) => {
+    const val = e && e.target && e.target.value
+    if (phase !== 'idle' || SOURCE_IDS.indexOf(val) < 0) { syncButtons(); return }
+    if (val === source) return
+    source = val
+    if ($('consent').checked) $('consent').checked = false
+    failNote = null
+    renderConsent()
+    syncButtons()
+    setState('warn', '已切换声音来源：请重新勾选上面的同意项再开始。')
+  })
+
+  $('consent').addEventListener('change', () => {
+    syncButtons()
+    renderConsent()
+    if (!$('consent').checked) return
+    // 纯系统声音不需要麦克风：连权限弹窗都不发，免得用户以为要开麦
+    if (source === 'system') return
+    api.requestMicPermission().then((r) => {
+      if (r && r.ok === false) setStateWithLink('warn', (r.error || '没有麦克风权限') + '　', '打开系统设置', () => api.openMicSettings())
+    }).catch(() => {})
+  })
+
+  /* ================= v1.78：语音对话（腾讯 ASR → 既有对话模型 → 腾讯 TTS） =================
+   * 这一块与上面的转写完全独立：自己的采集（只麦克风）、自己的播放、自己的代号。
+   * 转写的状态机 / 音频链 / 正文一律不动，切模式只是换面板。
+   */
+  const dlg = {
+    status: null,          // voice:status 回包里的 dialogue 段
+    phase: 'idle',         // idle | starting | live | stopping
+    gen: 0,                // 每次开始 / 停止 / 关窗 +1：所有 async 续体与回调按它作废旧轮
+    cap: null,             // { stream, ctx, node, source, analyser, timer }
+    turn: null,            // 当前正在流式的那条回答（渲染用）
+    turns: [],             // 已完成的轮次（有界）
+    noticeTimer: null
+  }
+  const DLG_TARGET_RATE = 16000
+  const DLG_FRAME_SAMPLES = 3200       // 200ms @16k，与转写同一帧长（主进程按同一套校验）
+  const DLG_MAX_TURNS = 40             // 只留最近这些轮次（长对话不让 DOM 无限长）
+  const DLG_MAX_QUEUED_SEC = 15        // 渲染层播放队列上限（超过就丢片，不无限排队）
+
+  /* ---- 播放：16k PCM 分片按时间轴接续，插话 / 停止立刻全部掐掉 ---- */
+  const play = { ctx: null, gain: null, nextAt: 0, sources: [], queuedSec: 0, dropNotified: false }
+
+  function playCtx() {
+    if (play.ctx) return play.ctx
+    const AC = window.AudioContext || window.webkitAudioContext
+    if (!AC) return null
+    try {
+      play.ctx = new AC({ sampleRate: DLG_TARGET_RATE, latencyHint: 'interactive' })
+      play.gain = play.ctx.createGain()
+      play.gain.connect(play.ctx.destination)
+      applyVolume()
+    } catch { play.ctx = null }
+    return play.ctx
+  }
+
+  /** 音量按腾讯官方 Volume 语义（[-10, 10] dB，0 = 原样）换算成播放增益，不用「倍率」冒充。 */
+  function applyVolume() {
+    if (!play.gain) return
+    const db = Number(dlg.status && dlg.status.prefs && dlg.status.prefs.volume) || 0
+    play.gain.gain.value = Math.min(4, Math.max(0.05, Math.pow(10, db / 20)))
+  }
+
+  function stopPlayback() {
+    for (const s of play.sources) { try { s.stop() } catch {} try { s.disconnect() } catch {} }
+    play.sources.length = 0
+    play.queuedSec = 0
+    play.nextAt = 0
+  }
+
+  /** 收一片 PCM（s16le / 16k / mono）：接到时间轴末尾；队列超上限就丢，不追。 */
+  function enqueuePcm(buf) {
+    const ctx = playCtx()
+    if (!ctx || !play.gain) return
+    if (ctx.state === 'suspended') { const p = ctx.resume(); if (p && p.catch) p.catch(() => {}) }
+    const bytes = new Uint8Array(buf)
+    const n = bytes.byteLength >> 1
+    if (!n) return
+    const sec = n / DLG_TARGET_RATE
+    if (play.queuedSec + sec > DLG_MAX_QUEUED_SEC) {
+      if (!play.dropNotified) { play.dropNotified = true; dlgNotice('warn', '播放跟不上，已丢弃一部分语音（不会排队等）。') }
+      return
+    }
+    const data = new Int16Array(n)
+    for (let i = 0; i < n; i++) {
+      // 小端，手拼（DataView 更慢，这里每片最多几千个采样）
+      const lo = bytes[i * 2]
+      const hi = bytes[i * 2 + 1]
+      let v = (hi << 8) | lo
+      if (v >= 0x8000) v -= 0x10000
+      data[i] = v
+    }
+    const ab = ctx.createBuffer(1, n, DLG_TARGET_RATE)
+    const ch = ab.getChannelData(0)
+    for (let i = 0; i < n; i++) ch[i] = data[i] / 32768
+    const src = ctx.createBufferSource()
+    src.buffer = ab
+    src.connect(play.gain)
+    const now = ctx.currentTime
+    const at = Math.max(now + 0.02, play.nextAt)
+    src.start(at)
+    play.nextAt = at + sec
+    play.queuedSec += sec
+    play.sources.push(src)
+    src.onended = () => {
+      play.queuedSec = Math.max(0, play.queuedSec - sec)
+      const i = play.sources.indexOf(src)
+      if (i >= 0) play.sources.splice(i, 1)
+      try { src.disconnect() } catch {}
+    }
+    // 收下即回执：主进程的在途配额靠它释放（丢片时不回执，配额由插话 / 停止重置）
+    try { api.ttsAck(bytes.byteLength) } catch {}
+  }
+
+  /* ---- 对话正文 ---- */
+  function renderChat() {
+    const box = $('chat')
+    box.textContent = ''
+    if (!dlg.turns.length && !dlg.turn) {
+      const hint = document.createElement('div')
+      hint.className = 'hint'
+      hint.textContent = dlg.phase === 'idle'
+        ? '点「开始对话」后直接说话：说完一句会先识别，再回答，回答会被念出来。你随时可以插话打断。'
+        : '在听…说完一句就会回答；想打断就开口说话。'
+      box.appendChild(hint)
+      return
+    }
+    const frag = document.createDocumentFragment()
+    for (const t of dlg.turns.concat(dlg.turn ? [dlg.turn] : [])) {
+      const el = document.createElement('div')
+      el.className = 'turn ' + (t.role === 'user' ? 'me' : 'ai')
+      el.textContent = t.text              // 一律 textContent：模型输出里的 HTML 也只是文字
+      frag.appendChild(el)
+    }
+    box.appendChild(frag)
+    box.scrollTop = box.scrollHeight
+  }
+
+  function pushTurn(role, text, final) {
+    if (!dlg.turn || dlg.turn.role !== role) {
+      if (dlg.turn) dlg.turns.push(dlg.turn)
+      dlg.turn = { role: role, text: '' }
+    }
+    dlg.turn.text = text
+    if (final) {
+      dlg.turns.push(dlg.turn)
+      dlg.turn = null
+      while (dlg.turns.length > DLG_MAX_TURNS) dlg.turns.shift()
+    }
+    renderChat()
+  }
+
+  function resetChat() {
+    dlg.turn = null
+    dlg.turns = []
+    renderChat()
+  }
+
+  function dlgSetState(kind, text) {
+    const el = $('dlgState')
+    el.className = kind || ''
+    el.textContent = text || ''
+  }
+
+  function dlgNotice(kind, text) {
+    if (dlg.noticeTimer) { clearTimeout(dlg.noticeTimer); dlg.noticeTimer = null }
+    dlgSetState(kind === 'error' ? 'bad' : kind, text)
+    if (kind !== 'error') {
+      dlg.noticeTimer = setTimeout(() => { if (dlg.phase === 'idle') dlgSetState('', '') }, 6000)
+    }
+  }
+
+  /* ---- 采集：只麦克风，明确要回声消除 + 降噪 ---- */
+  // 对话必须能边放边说：回声消除（AEC）决定「自己的声音会不会被当成用户插话」。这里如实上报浏览器的能力，
+  // 不承诺任何机型都有效 —— 真实手机上 AEC 是否够用只能靠实机验证。
+  const DLG_MIC = {
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  }
+
+  function stopCapture() {
+    const c = dlg.cap
+    dlg.cap = null
+    if (!c) return
+    if (c.timer) { clearInterval(c.timer); c.timer = null }
+    try { if (c.node) { c.node.port.onmessage = null; c.node.disconnect() } } catch {}
+    for (const n of [c.source, c.analyser]) { try { if (n) n.disconnect() } catch {} }
+    if (c.ctx) { const x = c.ctx; try { x.close() } catch {} }
+    if (c.stream) { try { c.stream.getTracks().forEach((t) => t.stop()) } catch {} }
+    recDlg = false
+    $('rec').classList.toggle('on', capturing)
+  }
+
+  /** 采集链：AudioContext 必须在点击的同步段里建（等到 ASR 就绪再建会被浏览器挂起）。 */
+  function beginCapture(myGen) {
+    const c = { ctx: null, stream: null, source: null, node: null, analyser: null, timer: null }
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext
+      c.ctx = new AC()
+      if (c.ctx.state === 'suspended') { const p = c.ctx.resume(); if (p && p.catch) p.catch(() => {}) }
+    } catch (e) {
+      c.ctx = null
+      c.ctxFail = '打不开音频处理（AudioContext）：' + errText(e) + '。'
+    }
+    dlg.cap = c
+    return c
+  }
+
+  function openDlgMic(c, myGen) {
+    let p = null
+    try { p = navigator.mediaDevices.getUserMedia({ audio: DLG_MIC, video: false }) } catch (e) {
+      return Promise.resolve({ ok: false, error: errText(e), name: (e && e.name) || '' })
+    }
+    return p.then((st) => {
+      if (!c || dlg.cap !== c || dlg.gen !== myGen) {
+        try { st.getTracks().forEach((t) => t.stop()) } catch {}
+        return { ok: false, stale: true }
+      }
+      c.stream = st
+      return { ok: true, stream: st }
+    }, (e) => ({ ok: false, error: errText(e), name: (e && e.name) || '' }))
+  }
+
+  /** 把麦克风接进 worklet：worklet 输出的 mono Float32 再重采样到 16k，按 200ms 一帧发给主进程。 */
+  async function attachDlgChain(c, myGen) {
+    if (!c || !c.ctx) return { ok: false, error: (c && c.ctxFail) || '音频处理没有初始化' }
+    const ctx = c.ctx
+    if (ctx.state === 'suspended') { try { await ctx.resume() } catch {} }
+    if (dlg.cap !== c || dlg.gen !== myGen) return { ok: false, stale: true }
+    try { await ctx.audioWorklet.addModule('voice-worklet.js') } catch (e) {
+      return { ok: false, error: '加载采集模块（voice-worklet.js）失败：' + errText(e) }
+    }
+    if (dlg.cap !== c || dlg.gen !== myGen) return { ok: false, stale: true }
+    const node = new AudioWorkletNode(ctx, 'voice-capture', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      channelCount: 1,
+      channelCountMode: 'explicit',
+      channelInterpretation: 'speakers',
+      processorOptions: { gain: 1 }        // 只有一路麦克风，不需要 headroom 折半
+    })
+    c.node = node
+    c.source = ctx.createMediaStreamSource(c.stream)
+    c.analyser = ctx.createAnalyser()
+    c.analyser.fftSize = 512
+    c.source.connect(node, 0, 0)
+    c.source.connect(c.analyser)
+    // 接 destination 只为让音频线程驱动节点；worklet 自己不写输出，扬声器不会有回采
+    node.connect(ctx.destination)
+
+    const inRate = ctx.sampleRate
+    const frame = new Int16Array(DLG_FRAME_SAMPLES)
+    let fill = 0
+    let carry = new Float32Array(0)
+    let pos = 0
+    const ratio = inRate / DLG_TARGET_RATE
+    const write = (v) => {
+      const s = v > 1 ? 1 : (v < -1 ? -1 : v)
+      frame[fill++] = Math.round(s * 32767)
+      if (fill === DLG_FRAME_SAMPLES) {
+        api.dialogueAudio(frame.buffer.slice(0))
+        fill = 0
+      }
+    }
+    const feed = (f32) => {
+      if (dlg.cap !== c || dlg.gen !== myGen) return
+      if (inRate === DLG_TARGET_RATE) { for (let i = 0; i < f32.length; i++) write(f32[i]); return }
+      let buf = f32
+      if (carry.length) {
+        buf = new Float32Array(carry.length + f32.length)
+        buf.set(carry, 0); buf.set(f32, carry.length)
+      }
+      let p = pos
+      const limit = buf.length - 1
+      while (p < limit) {
+        const i0 = p | 0
+        const frac = p - i0
+        const a = buf[i0]
+        write(a + (buf[i0 + 1] - a) * frac)
+        p += ratio
+      }
+      const consumed = Math.min(p | 0, limit)
+      carry = consumed > 0 ? buf.slice(consumed) : buf
+      pos = p - consumed
+    }
+    node.port.onmessage = (e) => {
+      const d = e && e.data
+      if (!d || d.type !== 'block' || !d.samples) return
+      feed(d.samples instanceof Float32Array ? d.samples : new Float32Array(d.samples))
+    }
+    const micBuf = new Float32Array(c.analyser.fftSize)
+    c.timer = setInterval(() => {
+      if (dlg.cap !== c || dlg.gen !== myGen) return
+      c.analyser.getFloatTimeDomainData(micBuf)
+      let peak = 0
+      for (let i = 0; i < micBuf.length; i++) { const a = Math.abs(micBuf[i]); if (a > peak) peak = a }
+      $('lvlMic').style.width = Math.min(100, Math.round(peak * 140)) + '%'
+      $('lvlMicTxt').textContent = peak * 140 < 2 ? '静音' : Math.min(100, Math.round(peak * 140)) + '%'
+      // 采集真正在跑才亮「录音中」（顶部只有一个共用指示灯）
+      if (!recDlg) { recDlg = true; $('rec').classList.toggle('on', true) }
+    }, 120)
+    // 轨道断了就明确停（不静默变成「一直在听但收不到」）
+    const track = c.stream.getAudioTracks()[0]
+    if (track && typeof track.addEventListener === 'function') {
+      track.addEventListener('ended', () => {
+        if (dlg.cap !== c || dlg.gen !== myGen) return
+        dlgHardFail(c, '麦克风这一路已经中断（系统结束了这条音轨）：对话已停止。')
+      })
+    }
+    return { ok: true }
+  }
+
+  /** 硬失败：拆本轮全部资源、作废旧轮、明确取消主进程那边的会话。 */
+  function dlgHardFail(c, text) {
+    if (c && dlg.cap && dlg.cap !== c) return
+    stopCapture()
+    stopPlayback()
+    dlg.gen++
+    dlg.phase = 'idle'
+    resetMeter()
+    syncDlgButtons()
+    dlgSetState('bad', text)
+    try { const p = api.dialogueStop(); if (p && p.catch) p.catch(() => {}) } catch {}
+  }
+
+  function syncDlgButtons() {
+    const st = dlg.status || {}
+    const hasCreds = !!st.hasCredentials
+    const chatOk = !!st.chatReady
+    const busy = dlg.phase !== 'idle'
+    $('dlgStart').disabled = busy || !hasCreds || !chatOk || !$('dlgConsent').checked
+    $('dlgStart').style.display = busy ? 'none' : ''
+    $('dlgStop').style.display = busy ? '' : 'none'
+    $('dlgStop').textContent = dlg.phase === 'starting' ? '取消' : '停止'
+    // 「录音中」由采集链与 stopCapture 负责（转写与对话共用这一个灯，这里不抢）
+    $('dlgConsent').disabled = busy
+    $('tcSave').disabled = busy
+    $('tcDel').disabled = busy || !hasCreds
+    for (const id of ['prefVoice', 'prefSpeed', 'prefVolume']) $(id).disabled = busy
+    if (!hasCreds) $('dlgFoot').textContent = '先填腾讯云凭据（AppId / SecretId / SecretKey）'
+    else if (!chatOk) $('dlgFoot').textContent = '对话模型不可用：先到设置里配好接口'
+    else $('dlgFoot').textContent = ''
+  }
+
+  function renderDialogueStatus() {
+    const st = dlg.status || {}
+    const has = !!st.hasCredentials
+    $('tcNow').textContent = has ? (st.credentialsReadable ? '已保存' : '已保存但读不出来') : '未配置'
+    const badge = $('tcBadge')
+    badge.textContent = has ? (st.credentialsReadable ? '凭据已保存' : '凭据读不出来') : '未配置凭据'
+    badge.className = 'badge ' + (has ? (st.credentialsReadable ? 'ok' : 'bad') : 'bad')
+    const chatOk = !!st.chatReady
+    $('chatNow').textContent = chatOk
+      ? '对话模型：使用「设置」里已配置的接口与模型（思考强度跟随该设置）。'
+      : '对话模型：不可用 —— 还没配置接口地址 / 内置接口不可用。不会用任何默认服务顶替。'
+    // 音色下拉：主进程给的白名单 + 当前值（用户的旧音色即使不在列表里也要能看见并保留）
+    const sel = $('prefVoice')
+    const list = Array.isArray(st.voiceTypes) ? st.voiceTypes.slice() : []
+    const cur = st.prefs ? st.prefs.voiceType : null
+    if (cur && !list.some((v) => v.id === cur)) list.unshift({ id: cur, label: String(cur) })
+    sel.textContent = ''
+    for (const v of list) {
+      const opt = document.createElement('option')
+      opt.value = String(v.id)
+      opt.textContent = v.label
+      sel.appendChild(opt)
+    }
+    if (cur) sel.value = String(cur)
+    const p = st.prefs || {}
+    $('prefSpeed').value = String(p.speed == null ? 0 : p.speed)
+    $('prefSpeedVal').textContent = String(p.speed == null ? 0 : p.speed)
+    $('prefVolume').value = String(p.volume == null ? 0 : p.volume)
+    $('prefVolumeVal').textContent = String(p.volume == null ? 0 : p.volume)
+    applyVolume()
+    renderDlgConsent()
+    syncDlgButtons()
+  }
+
+  function renderDlgConsent() {
+    const el = $('dlgConsentText')
+    el.textContent = ''
+    el.appendChild(document.createTextNode('我同意把麦克风采集的语音 '))
+    const b = document.createElement('b')
+    b.textContent = '实时'
+    el.appendChild(b)
+    el.appendChild(document.createTextNode(
+      '上传给「腾讯云实时语音识别」做转写，并把识别出的文字发送给「设置里已配置的对话模型」来生成回答；'
+      + '回答会用腾讯云语音合成念出来。音频只走当前这次会话，不保存、不写盘；对话文字只留在本窗口，关掉就没了。'
+      + '麦克风与播放会同时开着（靠系统回声消除避免把自己的声音当成插话）—— 这需要实测，不同设备效果可能不同。'
+    ))
+  }
+
+  async function dlgRefresh(quiet) {
+    let r = null
+    try { r = await api.dialogueStatus() } catch (e) { r = { ok: false, error: (e && e.message) || '读取失败' } }
+    if (!r || !r.ok) { if (!quiet) dlgSetState('bad', '读不到对话配置：' + ((r && r.error) || '未知错误')); return null }
+    dlg.status = r.dialogue || null
+    renderDialogueStatus()
+    if (dlg.status && !dlg.status.encryptionAvailable && r.encryptionAvailable === false) {
+      dlgSetState('warn', '本机系统加密不可用（钥匙串锁着？）—— 保存腾讯凭据会被拒绝。')
+    }
+    return r
+  }
+
+  /* ---- 动作 ---- */
+  async function dlgSaveCreds() {
+    const appId = $('tcAppId').value.trim()
+    const secretId = $('tcSecretId').value.trim()
+    const secretKey = $('tcSecretKey').value.trim()
+    if (!appId || !secretId || !secretKey) { dlgSetState('warn', 'AppId / SecretId / SecretKey 三项都要填。'); return }
+    $('tcSave').disabled = true
+    let r = null
+    try { r = await api.dialogueSaveCreds({ appId: appId, secretId: secretId, secretKey: secretKey }) } catch (e) { r = { ok: false, error: (e && e.message) || '保存失败' } }
+    $('tcSave').disabled = false
+    if (!r || !r.ok) {
+      dlg.status = (r && r.dialogue) || dlg.status
+      renderDialogueStatus()
+      dlgSetState('bad', '✗ 没能保存：' + ((r && r.error) || '未知错误'))
+      return
+    }
+    $('tcAppId').value = ''
+    $('tcSecretId').value = ''
+    $('tcSecretKey').value = ''
+    dlg.status = r.dialogue || dlg.status
+    renderDialogueStatus()
+    dlgSetState('ok', '✓ 已加密保存腾讯云语音凭据（回显只能是「已保存」，不会显示明文）。')
+  }
+
+  async function dlgDeleteCreds() {
+    $('tcDel').disabled = true
+    let r = null
+    try { r = await api.dialogueDeleteCreds() } catch (e) { r = { ok: false, error: (e && e.message) || '删除失败' } }
+    $('tcDel').disabled = false
+    if (!r || !r.ok) { dlgSetState('bad', '✗ 删除失败：' + ((r && r.error) || '未知错误')); return }
+    dlg.status = r.dialogue || dlg.status
+    renderDialogueStatus()
+    dlgSetState('ok', r.removed ? '✓ 已删除腾讯云语音凭据（正在跑的对话已停止）。' : '本来就没保存过腾讯凭据。')
+  }
+
+  async function dlgSavePref(patch) {
+    let r = null
+    try { r = await api.savePrefs(patch) } catch (e) { r = { ok: false, error: (e && e.message) || '保存失败' } }
+    if (!r || !r.ok) { dlgSetState('warn', '语音偏好没能保存：' + ((r && r.error) || '未知错误')); return }
+    dlg.status = r.dialogue || dlg.status
+    renderDialogueStatus()
+  }
+
+  /**
+   * 开始对话。顺序不能改：同意 → 在点击的同步段里建 AudioContext 并发 getUserMedia（过了 await 就没手势）
+   * → 流到手 → 才 api.dialogueStart()（主进程此时才连腾讯 ASR）。ASR 就绪前不接音频图、不送帧。
+   */
+  async function dlgStart() {
+    if (dlg.phase !== 'idle') return
+    if (!$('dlgConsent').checked) { dlgSetState('warn', '要先勾选上面的同意项，才会开始采集与上传。'); return }
+    const st = dlg.status
+    if (!st) { dlgSetState('warn', '还在读取对话配置，稍等一下。'); return }
+    if (!st.hasCredentials) { dlgSetState('warn', '还没有腾讯云语音凭据：先在上面填好保存。'); return }
+    if (!st.chatReady) { dlgSetState('warn', '对话模型不可用：先到设置里配好接口（不会用默认服务顶替）。'); return }
+
+    const myGen = ++dlg.gen
+    dlg.phase = 'starting'
+    dlg.dropNotified = false
+    play.dropNotified = false
+    resetChat()
+    stopPlayback()
+    dlgSetState('', '正在请求麦克风与打开音频处理…')
+    const c = beginCapture(myGen)
+    syncDlgButtons()
+    const micP = openDlgMic(c, myGen)     // 必须在同步段里发出
+    const micR = await micP
+    if (myGen !== dlg.gen) { stopCapture(); return }
+    if (!micR || !micR.ok) {
+      dlgHardFail(c, micR && micR.stale ? '启动已取消。'
+        : '打不开麦克风：' + ((micR && micR.error) || '未知错误') + '。检查系统「隐私与安全性 → 麦克风」是否允许 Ling。')
+      return
+    }
+    if (c.ctxFail) { dlgHardFail(c, c.ctxFail + '本次对话没有开始。'); return }
+
+    let r = null
+    try { r = await api.dialogueStart(true) } catch (e) { r = { ok: false, error: (e && e.message) || '开始失败' } }
+    if (myGen !== dlg.gen) {
+      stopCapture()
+      if (r && r.ok) { try { const p = api.dialogueStop(); if (p && p.catch) p.catch(() => {}) } catch {} }
+      return
+    }
+    if (!r || !r.ok) {
+      if (r && r.cancelled) { stopCapture(); dlg.phase = 'idle'; syncDlgButtons(); return }
+      dlg.status = (r && r.dialogue) || dlg.status
+      dlgHardFail(c, '没能开始对话：' + ((r && r.error) || '未知错误'))
+      return
+    }
+    dlg.status = r.dialogue || dlg.status
+    dlg.phase = 'live'
+    dlgSetState('', '正在连接腾讯云实时识别…（就绪后才开始上传音频）')
+    syncDlgButtons()
+    // ASR 就绪事件可能已经先到（onDialogue state=listening）：那就直接接链
+    if (dlg.status && dlg.status.session && dlg.status.session.asrReady) dlgAttach(c, myGen)
+  }
+
+  let dlgAttachGen = -1
+  async function dlgAttach(c, myGen) {
+    if (dlgAttachGen === myGen) return
+    if (myGen !== dlg.gen || !c || dlg.cap !== c) return
+    dlgAttachGen = myGen
+    let res = null
+    try { res = await attachDlgChain(c, myGen) } catch (e) { res = { ok: false, error: errText(e) } }
+    if (myGen !== dlg.gen || dlg.cap !== c) { stopCapture(); return }
+    if (!res || !res.ok) {
+      if (res && res.stale) return
+      dlgHardFail(c, '接不上音频采集：' + ((res && res.error) || '未知错误') + '。本次对话已停止。')
+      return
+    }
+    dlg.phase = 'live'
+    dlgSetState('ok', '麦克风已接入：说完一句就会回答；开口就能打断。')
+    syncDlgButtons()
+    renderChat()
+  }
+
+  async function dlgStop() {
+    if (dlg.phase === 'idle') return
+    dlg.phase = 'stopping'
+    syncDlgButtons()
+    dlgSetState('', '正在停止…')
+    dlg.gen++
+    stopCapture()
+    stopPlayback()
+    let r = null
+    try { r = await api.dialogueStop() } catch (e) { r = { ok: false, error: (e && e.message) || '停止失败' } }
+    dlg.phase = 'idle'
+    if (r && r.status) { dlg.status = r.status; renderDialogueStatus() }
+    else syncDlgButtons()
+    dlgSetState(r && r.ok === false ? 'bad' : '', (r && r.ok === false) ? ('停止时出错：' + (r.error || '未知错误')) : '已停止。')
+    renderChat()
+  }
+
+  /* ---- 主进程 → 页面：对话事件 ---- */
+  function onDialogueEvent(ev) {
+    if (!ev || typeof ev !== 'object') return
+    if (ev.type === 'state') {
+      const stName = String(ev.state || '')
+      if (stName === 'connecting') { dlgSetState('', '正在连接腾讯云实时识别…'); return }
+      if (stName === 'listening') {
+        // ASR 就绪（或一轮问答结束回到听）：还没接链就接
+        if (dlg.cap && dlg.phase === 'live' && dlgAttachGen !== dlg.gen) dlgAttach(dlg.cap, dlg.gen)
+        dlgSetState(ev.message ? 'warn' : 'ok', ev.message || '在听：说完一句就会回答，开口可以打断。')
+        return
+      }
+      if (stName === 'thinking') { dlgSetState('', '正在想…'); return }
+      if (stName === 'speaking') { dlgSetState('ok', '正在回答（可以开口打断）…'); return }
+      if (stName === 'idle') {
+        if (dlg.phase !== 'idle') { dlg.phase = 'idle'; stopCapture(); stopPlayback(); syncDlgButtons() }
+        return
+      }
+      if (stName === 'error') {
+        stopPlayback()
+        stopCapture()
+        dlg.gen++
+        dlg.phase = 'idle'
+        syncDlgButtons()
+        dlgSetState('bad', '对话失败：' + (ev.message || '未知错误'))
+      }
+      return
+    }
+    if (ev.type === 'text') {
+      pushTurn(ev.role === 'user' ? 'user' : 'assistant', String(ev.text || ''), ev.final === true)
+      return
+    }
+    if (ev.type === 'barge-in') {
+      // 用户开口：立刻掐掉还在排队的播放（主进程同一时刻已经取消 LLM 与 TTS）
+      stopPlayback()
+      dlgSetState('warn', '听到你说话了，已停下刚才的回答。')
+      return
+    }
+    if (ev.type === 'notice') {
+      dlgSetState(ev.kind === 'error' ? 'bad' : (ev.kind === 'warn' ? 'warn' : 'ok'), String(ev.text || ''))
+    }
+  }
+
+  /* ---- 模式切换 ---- */
+  let uiMode = 'asr'
+  function setMode(m) {
+    if (m !== 'asr' && m !== 'dlg') return
+    uiMode = m
+    $('asrBox').hidden = m !== 'asr'
+    $('dlgBox').hidden = m !== 'dlg'
+    $('modeAsr').classList.toggle('on', m === 'asr')
+    $('modeDlg').classList.toggle('on', m === 'dlg')
+    $('modeAsr').setAttribute('aria-selected', m === 'asr' ? 'true' : 'false')
+    $('modeDlg').setAttribute('aria-selected', m === 'dlg' ? 'true' : 'false')
+    $('vTitle').textContent = m === 'dlg' ? '语音对话' : '实时转写'
+    $('cfg').style.display = m === 'dlg' ? 'none' : ''    // 对话的设置就在面板里，不需要跳设置页
+    if (m === 'dlg') { dlgRefresh(true); renderChat() } else { syncButtons() }
+  }
+
+  $('modeAsr').addEventListener('click', () => setMode('asr'))
+  $('modeDlg').addEventListener('click', () => setMode('dlg'))
+  $('tcSave').addEventListener('click', dlgSaveCreds)
+  $('tcDel').addEventListener('click', dlgDeleteCreds)
+  $('dlgStart').addEventListener('click', dlgStart)
+  $('dlgStop').addEventListener('click', dlgStop)
+  $('dlgConsent').addEventListener('change', () => {
+    syncDlgButtons()
+    if (!$('dlgConsent').checked) return
+    api.requestMicPermission().then((r) => {
+      if (r && r.ok === false) dlgSetState('warn', r.error || '没有麦克风权限：到系统设置里允许 Ling。')
+    }).catch(() => {})
+  })
+  $('prefSpeed').addEventListener('input', () => { $('prefSpeedVal').textContent = $('prefSpeed').value })
+  $('prefVolume').addEventListener('input', () => {
+    $('prefVolumeVal').textContent = $('prefVolume').value
+    if (dlg.status && dlg.status.prefs) dlg.status.prefs.volume = Number($('prefVolume').value)
+    applyVolume()
+  })
+  $('prefSpeed').addEventListener('change', () => dlgSavePref({ speed: Number($('prefSpeed').value) }))
+  $('prefVolume').addEventListener('change', () => dlgSavePref({ volume: Number($('prefVolume').value) }))
+  $('prefVoice').addEventListener('change', () => dlgSavePref({ voiceType: Number($('prefVoice').value) }))
+
+  api.onDialogue(onDialogueEvent)
+  api.onTtsAudio((pcm) => {
+    if (dlg.phase === 'idle' || dlg.phase === 'stopping') { try { api.ttsAck(pcm && pcm.byteLength) } catch {}; return }
+    enqueuePcm(pcm)
+  })
+
+  renderChat()
+  syncDlgButtons()
+  dlgRefresh(true)
+  $('start').addEventListener('click', start)
+  $('stop').addEventListener('click', stop)
+  $('cfg').addEventListener('click', () => { if (api.openSettings) { try { api.openSettings() } catch {} } })
+  $('close').addEventListener('click', () => api.close())
+
+  api.onState(onMainState)
+  api.onTranscript(applyTranscript)
+  api.onNotice((n) => { if (n && n.text) notice(n.kind === 'warn' ? 'warn' : (n.kind === 'error' ? 'error' : 'ok'), n.text) })
+
+  // 关窗 / 卸载：作废所有续体并立刻停采集（主进程收到窗口关闭也会 cancel）——
+  // 这里保证麦克风指示与系统录音标记马上灭，两路流和画面轨一起停。
+  window.addEventListener('beforeunload', () => { gen++; teardownCap() })
+  window.addEventListener('pagehide', () => { gen++; teardownCap() })
+
+  renderConsent()
+  renderText()
+  syncButtons()
+  refreshStatus()
+})()
+</script>
+</body>
+</html>

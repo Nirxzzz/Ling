@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <link rel="stylesheet" href="ui.css">
 <script src="themes.js" data-auto></script>
+<script src="qr.js"></script>
+<!-- v1.63：设置搜索（本地目录 + 主动 AI 语义匹配）。模块由独立切片提供，缺失时本页降级为「只报不可用」，不编造结果。 -->
+<script src="settings-search.js"></script>
 <style>
   /* v1.31：设置卡 —— 自定义 API（OpenAI 兼容）+ 扫描间隔。新手引导也在这张卡里。
    * v1.37：API 区块按同类客户端（Cherry Studio / Chatbox / Open WebUI）重做：
@@ -62,10 +65,62 @@
   .tcard .sw { width: 22px; height: 22px; border-radius: 6px; flex: 0 0 auto; border: 1px solid rgba(var(--fg), .25); }
   .tcard .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tip { font-size: 10.5px; color: var(--tx-4); margin-top: 5px; line-height: 1.6; }
+  /* v1.62：连接串二维码（默认折叠，点开才本地渲染）+ 冲突三选 */
+  .qrbox { display: none; align-items: flex-start; gap: 9px; margin-top: 6px; }
+  .qrbox canvas { flex: 0 0 auto; background: #fff; border-radius: 5px; }
+  .qrbox .qrtip { font-size: 10.5px; color: var(--tx-4); line-height: 1.7; }
+  .conf { margin-top: 6px; padding: 7px 8px; border-radius: var(--r-sm);
+    border: 1px solid var(--hairline-soft); background: rgba(var(--fg),.04); }
+  .conf .hd2 { font-size: 11px; color: var(--tx-2); font-weight: 600; }
+  .conf .hd2 .side { float: right; font-weight: 400; color: var(--tx-4); }
+  .conf .vals { margin-top: 4px; font-size: 10.5px; color: var(--tx-3); line-height: 1.65; }
+  .conf .vals b { color: var(--tx-2); font-weight: 600; }
+  .conf .acts { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+  #lanStats { white-space: pre-line; }
+  /* v1.63：设置搜索栏 —— 压在卡片最顶部；470 宽小窗也不溢出（按钮不收缩、输入框吃掉剩余宽度）。
+   * 结果列表高度有上限，超出在自己里面滚，不让整张卡片越拉越长。 */
+  .sbar { margin-bottom: 10px; }
+  .sbar .srow { display: flex; gap: 5px; align-items: center; }
+  .sbar .srow .field { flex: 1 1 auto; min-width: 0; }
+  .sbar .srow .btn.mini { flex: 0 0 auto; padding: 4px 7px; }
+  .sbar .shint { font-size: 10.5px; color: var(--tx-4); line-height: 1.6; margin-top: 4px; }
+  .sbar .shint .link { font-size: 10.5px; }
+  .sbar .shint.bad { color: rgba(var(--danger), .95); }
+  #setSearchResults { display: none; margin-top: 6px; max-height: 156px; overflow-y: auto;
+    border: 1px solid var(--hairline-soft); border-radius: var(--r-sm); background: rgba(var(--fg),.04); }
+  #setSearchResults.open { display: block; }
+  .sitem { padding: 5px 8px; cursor: pointer; border-radius: 6px; border: 1px solid transparent; }
+  .sitem + .sitem { border-top: 1px solid var(--hairline-soft); border-radius: 0; }
+  .sitem:hover, .sitem.sel { background: rgba(var(--accent), .18); }
+  .sitem .st1 { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--tx-1);
+    white-space: nowrap; overflow: hidden; }
+  .sitem .st1 .nm { overflow: hidden; text-overflow: ellipsis; }
+  .sitem .st1 .tag { flex: 0 0 auto; margin: 0; padding: 0 4px; font-size: 9.5px; font-weight: 400;
+    border-radius: 4px; background: rgba(var(--accent), .28); color: rgb(var(--heading)); }
+  .sitem .st2 { font-size: 10px; color: var(--tx-4); line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ref { animation: srchit 1.8s ease-out 1; scroll-margin: 40px; }
+  @keyframes srchit {
+    0%   { box-shadow: 0 0 0 2px rgba(var(--accent), .85); background: rgba(var(--accent), .22); }
+    100% { box-shadow: 0 0 0 2px rgba(var(--accent), 0);   background: rgba(var(--accent), 0); }
+  }
+  @media (prefers-reduced-motion: reduce) { .ref { animation-duration: 1ms; } }
 </style>
 </head>
 <body>
   <div class="card" id="panel">
+    <!-- v1.63：设置搜索（对齐 Android 2.6.1，桌面独立线）——最顶部。
+         输入即时出本地结果；只有点「AI 匹配」或按 Enter 才联网；点结果只定位 + 短暂高亮，不改任何设置值。 -->
+    <div id="setSearchBar" class="sbar">
+      <div class="srow">
+        <input id="setSearchInput" class="field" type="text" spellcheck="false" autocomplete="off"
+          maxlength="120" placeholder="搜索设置：关键词或口语描述…" aria-label="搜索设置">
+        <button class="btn mini primary" id="setSearchAi">AI 匹配</button>
+        <button class="btn mini" id="setSearchCancel" style="display:none">取消</button>
+        <button class="btn mini" id="setSearchClear" style="display:none">清空</button>
+      </div>
+      <div id="setSearchResults" role="listbox" aria-label="搜索结果"></div>
+      <div class="shint" id="setSearchHint">输入即在本机匹配；要按意思找（比如「让小窗别挡住题目」）就点「AI 匹配」或按 Enter。</div>
+    </div>
     <div class="hd"><span class="dot"></span>API 设置<span class="now" id="curLabel"></span></div>
     <div class="sub">Ling 靠截图识别，模型要<b>能收图片</b>。填好地址和 Key，点「检测连接」直接告诉你行不行。</div>
     <div class="tip" id="chanLine"></div>
@@ -113,7 +168,7 @@
     <div class="lb"><b>做题解析</b><span class="rv">右键菜单里也能切</span></div>
     <div id="detail" class="chips"></div>
     <div class="tip"><b>简略</b>只点关键一步；<b>标准</b>分步讲、选择题说明错项；<b>详细</b>不跳步、逐个分析选项，再给同类题通用解法。
-      打开<b>纯小白</b>后用大白话讲，术语先解释、每步都写出来、尽量打比方（通用模式和追问也生效）。</div>
+     打开<b>纯小白</b>后用大白话讲，术语先解释；做题时每步都写出来、尽量打比方（通用与做题生效，追问沿用当前模式）。</div>
 
     <div class="lb"><b>API 档案</b><span class="rv">点档案名 = 立即切换生效</span></div>
     <div id="profiles" class="chips"></div>
@@ -134,6 +189,139 @@
     <div class="lb"><b>正文字号</b><span class="rv2" id="fsv"></span></div>
     <input id="fontSize" class="rng" type="range" min="12" max="18" step="1">
     <div class="tip">拖动就生效（面板开着也立刻变）。</div>
+
+    <div class="sep"></div>
+    <!-- v1.76：专注守护 + 陪伴。专注守护在小球右键菜单里开始（抓当时的前台应用），这里定参数；
+         陪伴是球旁定时出现的一句短话。全部点一下就生效，不用点保存。 -->
+    <div class="lb"><b>专注时长</b><span class="rv">右键菜单「专注守护」开始</span></div>
+    <div id="focusDur" class="chips"></div>
+    <div class="lb"><b>分心阈值</b><span class="rv">离开前台应用多久算分心</span></div>
+    <div id="focusAway" class="chips"></div>
+    <div class="tip">守护开始后小球亮一圈暖色环；切到别的应用累计满这个时长，球旁提醒一次（同一个离开回合只提醒一次），回到目标应用就恢复。连续约 30 秒抓不到前台应用会自动暂停，不打扰。只看前台是哪个 App，不截图、不记内容。</div>
+    <div class="lb"><b>陪伴</b><span class="rv">球旁隔一阵说一句</span></div>
+    <div id="compSw" class="chips"></div>
+    <div class="lb"><b>陪伴频率</b><span class="rv">每次展示后重新计时</span></div>
+    <div id="compFreq" class="chips"></div>
+    <div class="lb"><b>AI 陪伴短句</b><span class="rv">每第 3 句换接口写一句</span></div>
+    <div id="compAi" class="chips"></div>
+    <div class="tip">陪伴句默认全部来自本机内置短句池（鼓励 / 小知识 / 功能提示），不联网。开 AI 后每第 3 句请当前接口写一句（20 字以内，失败 / 超时自动回内置句），<b>会消耗接口额度</b>。</div>
+
+    <div class="sep"></div>
+    <!-- v1.61：局域网同步 —— 只有手动点「开始同步」才开端口；这张设置卡一关，主进程立刻 stop -->
+    <div class="lb"><b>局域网同步</b><span class="rv" id="lanState">未开启</span></div>
+    <div class="tip">同步范围：<b>知识卡</b> + 历史里点过 <b>★</b> 的收藏条目。电脑和手机连同一个 Wi-Fi，在手机 Ling 里粘贴连接串后手动同步。不做后台常驻：关掉这张设置卡或点「停止同步」，端口立刻关闭、连接串作废。</div>
+    <div class="row2" style="margin-top:6px">
+      <button class="btn mini primary" id="lanStart">开始同步</button>
+      <button class="btn mini" id="lanStop" style="display:none">停止同步</button>
+    </div>
+    <div id="lanBox" style="display:none">
+      <div class="lb"><b>连接串</b><span class="rv">手机粘贴这一整条，或点「显示二维码」让手机扫</span></div>
+      <div id="lanList"></div>
+      <div class="tip">⚠ 连接串最后一段就是本次的<b>密码</b>：谁拿到都能读写你同步的数据。别发群、别截图给别人；停止后这条串立即失效，下次开始会换新的。</div>
+    </div>
+    <!-- v1.62：上次同步的 before/after 统计 + 冲突三选。二维码只在本机渲染，不引用任何外网资源。 -->
+    <div class="lb" id="lanStatHead" style="display:none"><b>上次同步</b><span class="rv" id="lanStatAt"></span></div>
+    <div class="tip" id="lanStats"></div>
+    <div class="lb" id="lanConfHead" style="display:none"><b>同步冲突</b><span class="rv">选择保留哪一边</span></div>
+    <div id="lanConflicts"></div>
+    <div class="tip" id="lanHint"></div>
+    <div class="sep"></div>
+    <!-- v1.64：开放给外部 Agent（MCP）+ 手机常连（持久配对）。和上面的局域网同步是两件事：
+         局域网同步 = 点开才对一次数据；MCP = 本机外部 Agent 调 Ling 的工具；手机常连 = 手机后台常连。
+         两个开关都默认关，开关值会保存；端口被占用时如实报错，绝不自动换端口。 -->
+    <div class="lb morehead" id="mcpToggleHd"><b>外部 Agent（MCP）</b><span class="rv" id="mcpToggleHint">展开 ▾</span></div>
+    <div id="mcpBox" style="display:none">
+      <div class="lb"><b>MCP 服务</b><span class="rv" id="mcpState">未开启</span></div>
+      <div class="tip">只绑本机 <b>127.0.0.1</b>，给 Claude Desktop / Cherry Studio 这类本机 Agent 调 Ling 的工具（记忆、知识卡、错题、提醒、打开文件、存讲义）。手机走下面的「手机常连」，和这里互不影响。</div>
+      <div class="row2" style="margin-top:6px">
+        <button class="btn mini primary" id="mcpStart">开启</button>
+        <button class="btn mini" id="mcpStop" style="display:none">关闭</button>
+        <input id="mcpPort" class="field" type="number" min="1024" max="65535" step="1" style="flex:0 0 96px" title="端口（改完点「应用」）">
+        <button class="btn mini" id="mcpPortApply">应用端口</button>
+      </div>
+      <div id="mcpErr" class="res"></div>
+      <div class="lb"><b>客户端令牌</b><span class="rv">默认只有只读；写入 / 操作 / 私人记忆要显式勾选</span></div>
+      <div class="row2">
+        <input id="mcpClientName" class="field" type="text" maxlength="40" placeholder="客户端名字，如 claude-desktop">
+        <button class="btn mini primary" id="mcpClientAdd">签发</button>
+      </div>
+      <div id="mcpScopeRow" class="chips" style="margin-top:6px"></div>
+      <div class="tip">令牌只显示这一次，之后只能看名字 / 权限，看不到原串。丢了就撤销重建。</div>
+      <div id="mcpTokenSlot"></div>
+      <div id="mcpClients"></div>
+      <div class="lb" id="mcpSnippetHead" style="display:none"><b>配置片段</b><span class="rv">token 用环境变量占位</span></div>
+      <div id="mcpSnippetBox" style="display:none">
+        <textarea id="mcpSnippet" class="field" rows="8" readonly spellcheck="false" style="resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:10.5px;line-height:1.5"></textarea>
+        <div class="row2" style="margin-top:6px">
+          <button class="btn mini" id="mcpSnippetCopy">复制片段</button>
+          <span class="tip" style="margin:0">设置 <b>LING_MCP_TOKEN</b> 为你刚复制的令牌。</span>
+        </div>
+      </div>
+      <div class="lb"><b>可打开的文件目录</b><span class="rv" id="mcpRootsNow"></span></div>
+      <div id="mcpRoots"></div>
+      <div class="row2" style="margin-top:6px">
+        <button class="btn mini" id="mcpRootsAdd">添加目录…</button>
+        <button class="btn mini" id="mcpRootsReset">恢复默认</button>
+        <button class="btn mini" id="mcpOpenHandouts">打开讲义文件夹</button>
+      </div>
+      <div class="tip" id="mcpRootsTip">只允许这些目录里的真实文件（会解析软链接，扩展名也受限），每次打开都要在本机确认 30 秒。</div>
+      <div class="lb"><b>调用审计</b><span class="rv" id="mcpAuditNow"></span></div>
+      <div class="row2">
+        <button class="btn mini" id="mcpAuditRefresh">刷新</button>
+        <button class="btn mini" id="mcpAuditCopy">复制</button>
+        <button class="btn mini" id="mcpAuditExport">导出…</button>
+      </div>
+      <div id="mcpAuditList" class="conf" style="max-height:150px;overflow-y:auto"></div>
+      <div class="tip" id="mcpAuditHint">审计只记调用摘要（参数长度 / 结果 / 是否确认），不记 token、密钥、正文与截图。</div>
+    </div>
+
+    <div class="lb morehead" id="linkToggleHd"><b>手机常连（持久配对）</b><span class="rv" id="linkToggleHint">展开 ▾</span></div>
+    <div id="linkBox" style="display:none">
+      <div class="lb"><b>常连服务</b><span class="rv" id="linkState">未开启</span></div>
+      <div class="tip">和上面的「局域网同步」不一样：局域网同步是点一次对一次数据；这里是<b>持久配对</b> —— 手机扫码后后台常连，桌面上的外部 Agent 才能调手机（读屏、开应用、提醒）。关掉开关或退出 Ling，手机端立刻停止轮询。</div>
+      <div class="row2" style="margin-top:6px">
+        <button class="btn mini primary" id="linkStart">开启</button>
+        <button class="btn mini" id="linkStop" style="display:none">关闭</button>
+        <input id="linkPort" class="field" type="number" min="1024" max="65535" step="1" style="flex:0 0 96px" title="端口（改完点「应用」）">
+        <button class="btn mini" id="linkPortApply">应用端口</button>
+      </div>
+      <div id="linkErr" class="res"></div>
+      <div class="lb"><b>配对</b><span class="rv">手机扫码或粘贴连接串</span></div>
+      <div class="row2">
+        <input id="linkPairName" class="field" type="text" maxlength="24" placeholder="给手机起个名字（可选）">
+        <button class="btn mini primary" id="linkPairAdd">生成配对</button>
+      </div>
+      <div id="linkPairNew"></div>
+      <div class="lb" id="linkPairsHead" style="display:none"><b>已配对</b><span class="rv">撤销后手机要重新扫码</span></div>
+      <div id="linkPairs"></div>
+      <div id="linkDevices"></div>
+      <div class="tip" id="linkHint"></div>
+    </div>
+
+    <!-- v1.75：实时转写（语音 → 文字）。只做转写：不上传系统声音、不做建议、不存音频与文字。
+         两家（豆包 / 阿里云）各自一把 Key，分开加密保存，切换服务商不会互相覆盖；
+         这里读到的永远只是 hasKey 布尔 —— 明文 Key 只在主进程里，绝不回渲染器。 -->
+    <div class="lb morehead" id="voiceToggleHd"><b>实时转写（语音 → 文字）</b><span class="rv" id="voiceToggleHint">展开 ▾</span></div>
+    <div id="voiceBox" style="display:none">
+      <div class="lb"><b>转写服务商</b><span class="rv" id="voiceNow">未选择</span></div>
+      <div id="voiceProviders" class="chips"></div>
+      <div class="tip" id="voiceProviderHint">两家都是「边说边出字」的实时识别（16k 单声道）。选哪家就走哪家，<b>不会自动换另一家顶替</b> —— 失败就如实报错。</div>
+      <div id="voiceKeyBox">
+        <div class="lb"><b id="voiceKeyLabel">API Key</b><span class="rv"><span class="link" id="voiceKeyEye">👁 显示</span></span></div>
+        <div class="row2">
+          <input id="voiceKey" class="field" type="password" spellcheck="false" autocomplete="off" placeholder="粘贴这家服务商的 API Key">
+          <button class="btn mini primary" id="voiceKeySave">保存</button>
+          <button class="btn mini" id="voiceKeyDel">删除</button>
+        </div>
+        <div class="tip" id="voiceKeyHint"></div>
+      </div>
+      <div id="voiceErr" class="res"></div>
+      <div class="row2" style="margin-top:6px">
+        <button class="btn mini primary" id="voiceOpen">打开语音窗口</button>
+        <span class="tip" style="margin:0" id="voiceMicNow"></span>
+      </div>
+      <div class="tip">Key 用系统钥匙串加密后存在本机（Electron safeStorage）；系统加密不可用时会<b>拒绝保存</b>，绝不落明文。关闭转写窗口 = 立刻停止采集与上传；音频和转写文字都不写盘、不留历史。</div>
+    </div>
 
     <div class="sep"></div>
     <div class="lb morehead" id="v158Toggle"><b>翻译引擎 · 自定义模式 · 缓存 · 历史</b><span class="rv" id="v158Hint">展开 ▾</span></div>
@@ -170,7 +358,7 @@
 
       <div class="lb"><b>历史记录</b><span class="rv" id="histInfo"></span></div>
       <div id="histSw" class="chips"></div>
-      <div class="tip">每次识别（连同追问）和翻译都存在本机，最多 200 条，退出再开也在。单击小球打开面板里的历史列表。关掉后不再记新的。</div>
+      <div class="tip">每次识别（连同追问）和翻译都存在本机，最多 200 条，退出再开也在。单击小球打开面板里的历史列表。关掉后不再记新的。★ 收藏的条目不受 200 条上限影响，并会随「局域网同步」一起同步到手机。</div>
       <button class="btn mini" id="histClr" style="margin-top:6px">清空历史</button>
     </div>
     <div class="sep"></div>
@@ -368,7 +556,7 @@
     $('contrast').value = Math.round((a.contrast || 0.92) * 100)
     showVals()
     renderProfiles(s.profiles || [], s.activeProfile)
-    // v1.60：桌面端思考强度默认统一「高」
+    // v1.60：桌面端思考强度默认统一「高」（内测 / 公测相同）—— chip「(默认)」标记与提示文案不再分渠道
     thinkSel = s.thinkingEffort || 'high'
     renderThink(s.thinkingOptions)
     detailSel = s.examDetail || 'standard'; noviceOn = !!s.novice; detailList = s.examDetailOptions || []
@@ -376,13 +564,13 @@
     syncPresetFromBaseUrl()
     initV158(s)
     initLook(s)
+    initFocusCompanion(s)
+    // v1.59：版本 + 内测 / 公测；内测版用着内置接口时说清楚（地址和 Key 框是空的，不是没配）
     const nm = s.appName || 'Ling'
-    $('chanLine').textContent = nm + ' v' + (s.version || '')
-    // 更新源由主进程给；本开源构建默认没有维护者更新服务器，界面直说，不假装在线
-    $('updSrc').textContent = s.updateSource
-      ? '更新源：' + s.updateSource
-      : '更新源：未配置（本开源构建不提供维护者更新服务器）'
-    if (!s.updateSource) { $('updCheck').disabled = true; $('updState').textContent = '未配置更新源' }
+    // v1.60：正式版叫 Ling、内测版叫「Ling 内测」—— 名字里已经带「内测」就不再重复渠道
+    $('chanLine').textContent = nm + ' v' + (s.version || '') + ' ' + (s.channel || '')
+    // v1.60：默认更新源先显示出来（地址由主进程给，前端不硬编码，也不因此联网）
+    $('updSrc').textContent = '更新源：' + (s.updateSource || '未配置（设置 LING_UPDATE_URL 可自建）')
     if (s.firstRun) $('guide').style.display = 'block'
     fit()
   }).catch(() => fit())
@@ -414,6 +602,15 @@
     chipGroup($('sideSw'), [['left', '屏幕左边（默认，从左侧滑出）'], ['orb', '跟着小球']], s.panelSide || 'left', (v) => window.orbApi.saveSettings({ panelSide: v, keepOpen: true }))
   }
   $('fontSize').addEventListener('change', () => window.orbApi.saveSettings({ appearance: collect().appearance, keepOpen: true }))
+
+  /* —— v1.76：专注守护 + 陪伴（点一下就生效的部分保存；主进程存完立刻重排陪伴的下一次） —— */
+  function initFocusCompanion(s) {
+    chipGroup($('focusDur'), [[5, '5 分钟'], [25, '25 分钟（默认）'], [45, '45 分钟'], [90, '90 分钟']], Number(s.focusDurationMin) || 25, (v) => window.orbApi.saveSettings({ focusDurationMin: v, keepOpen: true }))
+    chipGroup($('focusAway'), [[10, '10 秒'], [20, '20 秒（默认）'], [30, '30 秒']], Number(s.focusAwaySec) || 20, (v) => window.orbApi.saveSettings({ focusAwaySec: v, keepOpen: true }))
+    chipGroup($('compSw'), [[true, '开（默认）'], [false, '关']], s.companionOn !== false, (v) => window.orbApi.saveSettings({ companionOn: v, keepOpen: true }))
+    chipGroup($('compFreq'), [['low', '低（60~180 分钟）'], ['med', '中（45~120 分钟）'], ['high', '高（15~60 分钟）']], s.companionFreq || 'med', (v) => window.orbApi.saveSettings({ companionFreq: v, keepOpen: true }))
+    chipGroup($('compAi'), [[false, '关（默认，不耗额度）'], [true, '开（消耗接口额度）']], !!s.companionAi, (v) => window.orbApi.saveSettings({ companionAi: v, keepOpen: true }))
+  }
 
   function showVals() {
     $('bgv').textContent = $('bgAlpha').value + '%'
@@ -545,6 +742,1009 @@
   })
   $('cacheClr').addEventListener('click', async () => { showInfo(await window.orbApi.clearCache()); setRes('ok', '✓ 缓存已清空'); fit() })
   $('histClr').addEventListener('click', async () => { if (!confirm('清空全部历史记录？')) return; showInfo(await window.orbApi.clearHistory()); setRes('ok', '✓ 历史已清空'); fit() })
+
+  /* —— v1.61：局域网同步（手动开 / 手动停；设置卡关闭时主进程 stop）—— */
+  let lanBusy = false
+  let lanSeq = 0            // 每次开 / 停都自增；异步回包过期的直接丢弃，不能把界面改回「已开启」
+  let lanPoll = null
+  let lanLastError = ''
+  function lanHint(text, bad) {
+    const el = $('lanHint')
+    if (!el) return
+    el.textContent = text || ''
+    el.style.color = bad ? 'rgba(var(--danger), .95)' : ''
+  }
+
+  /* v1.62：上次同步统计（只读，来自主进程同一次 apply 的 before/after） */
+  let lanLastExchanges = -1
+  const LAN_SIDE_LABEL = {
+    localKept: '本机版本在主记录',
+    peerKept: '手机版本在主记录',
+    unknown: '来源未标注'
+  }
+  function lanGroupText(name, s) {
+    if (!s) return ''
+    const parts = []
+    if (s.added) parts.push('+' + s.added + ' 新增')
+    if (s.updated) parts.push('~' + s.updated + ' 更新')
+    if (s.deleted) parts.push('-' + s.deleted + ' 删除')
+    if (s.restored) parts.push('↺' + s.restored + ' 恢复')
+    if (s.conflicts) parts.push('⚠' + s.conflicts + ' 冲突')
+    const body = parts.length ? parts.join('　') : '无变化'
+    return name + '：' + body + '（' + s.before + ' → ' + s.after + '）'
+  }
+  function lanStatsRender(stats) {
+    const box = $('lanStats')
+    const head = $('lanStatHead')
+    if (!box || !head) return
+    if (!stats || (!stats.cards && !stats.history)) {
+      head.style.display = 'none'
+      box.textContent = ''
+      return
+    }
+    head.style.display = ''
+    $('lanStatAt').textContent = stats.at ? new Date(stats.at).toLocaleTimeString() : ''
+    box.textContent = [lanGroupText('知识卡', stats.cards), lanGroupText('收藏', stats.history)]
+      .filter(Boolean).join('\n')
+  }
+
+  /* v1.62：冲突列表 + 三选。所有来自 payload 的文本都用 textContent 写入。 */
+  function lanValueText(v) {
+    if (v === null || v === undefined) return '（已删除 / 无内容）'
+    if (typeof v.front === 'string') return v.front + (v.back ? '　—　' + v.back : '')
+    if (typeof v.text === 'string') return (v.label ? v.label + '：' : '') + v.text
+    try { return JSON.stringify(v).slice(0, 200) } catch { return '（无法显示）' }
+  }
+  function lanResolve(copyUid, pick, btn) {
+    const old = btn.textContent
+    btn.disabled = true
+    btn.textContent = '处理中…'
+    Promise.resolve(window.orbApi.lanResolveConflict(copyUid, pick)).then((r) => {
+      btn.textContent = old
+      if (!r || !r.ok) {
+        btn.disabled = false
+        lanHint('✗ 冲突处理失败：' + ((r && r.error) || '未知错误'), true)
+        fit()
+        return
+      }
+      lanHint('✓ 已处理：' + (pick === 'KEEP_BASE' ? '保留主记录' : pick === 'KEEP_COPY' ? '保留副本' : '两条都保留') + '。下次同步会自动带上这个结果。')
+      renderLanConflicts(r.conflicts || [])
+      fit()
+    }).catch((e) => {
+      btn.textContent = old
+      btn.disabled = false
+      lanHint('✗ 冲突处理失败：' + ((e && e.message) || '未知错误'), true)
+      fit()
+    })
+  }
+  function renderLanConflicts(list) {
+    const head = $('lanConfHead')
+    const box = $('lanConflicts')
+    if (!head || !box) return
+    box.innerHTML = ''
+    const items = Array.isArray(list) ? list : []
+    const live = items.filter((c) => !c.resolved || c.resolved.pick === 'KEEP_BOTH')
+    head.style.display = live.length ? '' : 'none'
+    for (const c of live) {
+      // 后端只接受「副本还活着」的冲突；主墓碑时 KEEP_BASE / KEEP_BOTH 必然报错，
+      // 副本墓碑时三种选择都不能做。前端按同一语义禁用，别等后端抛错再提示。
+      const baseLive = c.baseValue !== null && c.baseValue !== undefined
+      const copyLive = c.copyValue !== null && c.copyValue !== undefined
+      const card = document.createElement('div')
+      card.className = 'conf'
+      const title = document.createElement('div')
+      title.className = 'hd2'
+      title.textContent = (c.kind === 'k' ? '知识卡冲突' : '收藏冲突')
+      if (c.resolved && c.resolved.pick === 'KEEP_BOTH') {
+        const badge = document.createElement('span')
+        badge.className = 'side'
+        badge.textContent = '已选择两条都留'
+        title.appendChild(badge)
+      } else {
+        const side = document.createElement('span')
+        side.className = 'side'
+        side.textContent = LAN_SIDE_LABEL[c.side] || LAN_SIDE_LABEL.unknown
+        title.appendChild(side)
+      }
+      card.appendChild(title)
+
+      const vals = document.createElement('div')
+      vals.className = 'vals'
+      const a = document.createElement('div')
+      const al = document.createElement('b')
+      al.textContent = '主记录：'
+      a.appendChild(al)
+      a.appendChild(document.createTextNode(lanValueText(c.baseValue)))
+      const b = document.createElement('div')
+      const bl = document.createElement('b')
+      bl.textContent = '副本：'
+      b.appendChild(bl)
+      b.appendChild(document.createTextNode(lanValueText(c.copyValue)))
+      vals.appendChild(a)
+      vals.appendChild(b)
+      card.appendChild(vals)
+
+      // 明确说明哪一边没有内容、为什么某些选择不可用（不靠后端报错来引导）。
+      const noteText = !copyLive
+        ? '副本已删除（无内容）：没有可保留的内容，三个选项都不可用。'
+        : !baseLive
+          ? '主记录已删除（无内容）：不能保留主记录，也不能两条都留；可保留副本内容恢复主记录。'
+          : ''
+      if (noteText) {
+        const note = document.createElement('div')
+        note.className = 'tip'
+        note.textContent = noteText
+        card.appendChild(note)
+      }
+
+      const acts = document.createElement('div')
+      acts.className = 'acts'
+      const choices = [
+        ['KEEP_BASE', '保留主记录'],
+        ['KEEP_COPY', '保留副本'],
+        ['KEEP_BOTH', '两条都留']
+      ]
+      for (const [pick, label] of choices) {
+        const btn = document.createElement('button')
+        btn.className = 'btn mini'
+        btn.textContent = label
+        // KEEP_BASE / KEEP_BOTH 都需要主记录有内容；副本没有内容时三者全部禁用。
+        if (!copyLive || (!baseLive && pick !== 'KEEP_COPY')) btn.disabled = true
+        if (c.resolved && c.resolved.pick === pick) btn.disabled = true
+        btn.addEventListener('click', () => {
+          for (const el of acts.querySelectorAll('button')) el.disabled = true
+          lanResolve(c.copyUid, pick, btn)
+        })
+        acts.appendChild(btn)
+      }
+      card.appendChild(acts)
+      box.appendChild(card)
+    }
+    fit()
+  }
+  async function lanConflictsRefresh() {
+    let r = null
+    try { r = await window.orbApi.lanConflicts() } catch (e) { r = { ok: false, error: (e && e.message) || '读取失败' } }
+    if (!r || !r.ok) {
+      if (r && r.error) lanHint('✗ 冲突列表读取失败：' + r.error, true)
+      renderLanConflicts([])
+      return
+    }
+    renderLanConflicts(r.conflicts || [])
+  }
+  // 开着同步时轻量轮询 lastError（库过大 / 本机磁盘错误要能看见），不改列表、不重绘输入框。
+  function lanPollSet(on) {
+    if (!on) {
+      if (lanPoll) { clearInterval(lanPoll); lanPoll = null }
+      return
+    }
+    if (lanPoll) return
+    lanPoll = setInterval(async () => {
+      if (lanBusy) return
+      let s = null
+      try { s = await window.orbApi.lanSyncStatus() } catch { return }
+      if (!s || !s.ok) return
+      if (!s.running) { lanPollSet(false); lanRefresh(); return }
+      lanStatsRender(s.lastStats)
+      if (s.exchanges !== lanLastExchanges) {
+        lanLastExchanges = s.exchanges
+        lanConflictsRefresh()
+      }
+      const err = s.lastError || ''
+      if (err === lanLastError) return
+      lanLastError = err
+      lanHint(err ? '✗ ' + err : (s.hint || '手机和电脑连同一个 Wi-Fi，粘贴连接串后点同步。这条串是密码，别外传。'), !!err)
+      fit()
+    }, 4000)
+  }
+  function renderLan(s) {
+    const on = !!(s && (s.running || s.port))
+    lanLastError = (s && s.lastError) || ''
+    $('lanState').textContent = on ? ('已开启 · 端口 ' + s.port) : '未开启'
+    $('lanStart').style.display = on ? 'none' : ''
+    $('lanStop').style.display = on ? '' : 'none'
+    $('lanStart').disabled = lanBusy
+    $('lanStop').disabled = lanBusy
+    $('lanBox').style.display = on ? 'block' : 'none'
+    const box = $('lanList')
+    box.innerHTML = ''
+    if (on) {
+      const list = s.connectionStrings || []
+      list.forEach((str, i) => {
+        const row = document.createElement('div')
+        row.className = 'row2'
+        row.style.marginTop = '6px'
+        const input = document.createElement('input')
+        input.className = 'field'
+        input.type = 'text'
+        input.readOnly = true
+        input.spellcheck = false
+        input.value = str
+        const btn = document.createElement('button')
+        btn.className = 'btn mini'
+        btn.textContent = '复制'
+        btn.addEventListener('click', async () => {
+          let r = null
+          try { r = await window.orbApi.lanSyncCopy(i) } catch (e) { r = { ok: false, error: (e && e.message) || '复制失败' } }
+          lanHint(r && r.ok ? '✓ 已复制连接串，去手机 Ling 里粘贴。' : '✗ ' + ((r && r.error) || '复制失败'), !(r && r.ok))
+          fit()
+        })
+        row.appendChild(input)
+        row.appendChild(btn)
+
+        // v1.62：二维码默认折叠；点开时才用本地 qr.js 画到 canvas，不联网、不进任何存储。
+        const qrBtn = document.createElement('button')
+        qrBtn.className = 'btn mini'
+        qrBtn.textContent = '显示二维码'
+        const qrWrap = document.createElement('div')
+        qrWrap.className = 'qrbox'
+        const canvas = document.createElement('canvas')
+        const qrTip = document.createElement('div')
+        qrTip.className = 'qrtip'
+        qrTip.textContent = '用手机 Ling 的「扫码配对」扫这张图。二维码只在本机生成；停止同步后同样失效。'
+        qrWrap.appendChild(canvas)
+        qrWrap.appendChild(qrTip)
+        qrBtn.addEventListener('click', () => {
+          const open = qrWrap.style.display !== 'flex'
+          if (open && canvas.dataset.done !== '1') {
+            try {
+              if (!window.QR || typeof window.QR.render !== 'function') throw new Error('qr.js 未加载')
+              window.QR.render(canvas, str, 180)
+              canvas.dataset.done = '1'
+            } catch (e) {
+              lanHint('✗ 二维码生成失败：' + ((e && e.message) || e), true)
+            }
+          }
+          qrWrap.style.display = open ? 'flex' : 'none'
+          qrBtn.textContent = open ? '收起二维码' : '显示二维码'
+          fit()
+        })
+        row.appendChild(qrBtn)
+        box.appendChild(row)
+        box.appendChild(qrWrap)
+      })
+      if (!list.length) lanHint(s.hint || '没找到局域网 IPv4 地址', true)
+      else lanHint(s.lastError ? '✗ ' + s.lastError : (s.hint || '手机和电脑连同一个 Wi-Fi，粘贴连接串后点同步。这条串是密码，别外传。'), !!s.lastError)
+    } else {
+      lanHint(s && s.error ? '✗ ' + s.error : '只有点「开始同步」才开端口；关掉这张设置卡会立刻停止。', !!(s && s.error))
+    }
+    lanPollSet(on)
+    lanStatsRender(s && s.lastStats)
+    lanLastExchanges = s && typeof s.exchanges === 'number' ? s.exchanges : -1
+    lanConflictsRefresh()
+    fit()
+  }
+  async function lanRefresh() {
+    const seq = lanSeq
+    let s = null
+    try { s = await window.orbApi.lanSyncStatus() } catch (e) { s = { ok: false, error: (e && e.message) || '读取失败' } }
+    if (seq !== lanSeq) return
+    renderLan(s)
+  }
+  $('lanStart').addEventListener('click', async () => {
+    if (lanBusy) return
+    const seq = ++lanSeq
+    lanBusy = true
+    $('lanStart').disabled = true
+    lanHint('正在开启…')
+    fit()
+    let r = null
+    try { r = await window.orbApi.lanSyncStart() } catch (e) { r = { ok: false, error: (e && e.message) || '开启失败' } }
+    lanBusy = false
+    // 期间已经停止 / 关闭：这次开启的结果作废，绝不再把界面改回「已开启」。
+    if (seq !== lanSeq) return
+    if (!r || !r.ok) {
+      renderLan(null)
+      lanHint('✗ 开启失败：' + ((r && r.error) || '未知错误'), true)
+      $('lanStart').disabled = false
+      fit()
+      return
+    }
+    renderLan(r)
+  })
+  $('lanStop').addEventListener('click', async () => {
+    if (lanBusy) return
+    const seq = ++lanSeq
+    lanBusy = true
+    $('lanStop').disabled = true
+    lanHint('正在停止…')
+    fit()
+    try { await window.orbApi.lanSyncStop() } catch {}
+    lanBusy = false
+    if (seq !== lanSeq) return
+    await lanRefresh()
+    lanHint('已停止：端口已关闭，连接串已失效。')
+    fit()
+  })
+  // 设置卡关闭 / 刷新前先真停一次；主进程的 closed 事件还会再兜一次。
+  window.addEventListener('beforeunload', () => {
+    lanSeq += 1
+    lanPollSet(false)
+    try { Promise.resolve(window.orbApi.lanSyncStop()).catch(() => {}) } catch {}
+  })
+  lanRefresh()
+
+  /* ================= v1.64：外部 Agent（MCP）+ 手机常连（持久配对） =================
+   * 只做展示与转发：
+   *   · 两个开关的值由主进程落盘（默认关），这里不发「启动时自动开」；
+   *   · token 只有签发那一次回包里有：显示在一次性的只读框里，离开/收起就清掉，之后再也拿不到；
+   *   · 端口被占用时把主进程的错误原文显示出来，不自动换端口、不假装已开启；
+   *   · 审计只显示主进程给的摘要，页面不自己拼、不缓存。
+   */
+  // 默认只有 read（主进程也强制加 read）；write / act / personal 必须用户自己点亮
+  let mcpBusy = false, mcpScopes = [], mcpTokenShown = ''
+  const MCP_SCOPE_LABEL = {
+    read: '读（记忆 / 知识卡 / 错题 / 状态）',
+    write: '写（加记忆 / 加卡 / 建提醒 / 存讲义）',
+    act: '操作（打开文件 / 让手机读屏、开应用）',
+    personal: '私人记忆（情绪 / 关系类）'
+  }
+  /* 错误与成功分两种样式（沿用 .res.ok / .res.bad），别把成功也涂成红色。 */
+  function mcpErr(msg) {
+    const el = $('mcpErr')
+    el.className = 'res ' + (msg ? 'bad' : '')
+    el.textContent = msg || ''
+  }
+  function mcpNote(msg) {
+    const el = $('mcpErr')
+    el.className = 'res ' + (msg ? 'ok' : '')
+    el.textContent = msg || ''
+  }
+  function linkErr(msg) {
+    const el = $('linkErr')
+    el.className = 'res ' + (msg ? 'bad' : '')
+    el.textContent = msg || ''
+  }
+  function linkNote(msg) {
+    const el = $('linkErr')
+    el.className = 'res ' + (msg ? 'ok' : '')
+    el.textContent = msg || ''
+  }
+  function mcpScopeRender() {
+    const box = $('mcpScopeRow'); box.innerHTML = ''
+    Object.keys(MCP_SCOPE_LABEL).forEach((id) => {
+      const c = document.createElement('span')
+      const locked = id === 'read'
+      const on = locked || mcpScopes.includes(id)
+      c.className = 'chip clickable' + (on ? ' sel' : '')
+      c.textContent = (on ? '✓ ' : '') + MCP_SCOPE_LABEL[id] + (locked ? '（必有）' : '')
+      if (!locked) {
+        c.addEventListener('click', () => {
+          mcpScopes = mcpScopes.includes(id) ? mcpScopes.filter((x) => x !== id) : mcpScopes.concat([id])
+          mcpScopeRender(); fit()
+        })
+      }
+      box.appendChild(c)
+    })
+  }
+  function mcpClientRow(c) {
+    const row = document.createElement('div')
+    row.className = 'row2'
+    row.style.marginTop = '6px'
+    const info = document.createElement('input')
+    info.className = 'field'
+    info.type = 'text'
+    info.readOnly = true
+    info.spellcheck = false
+    const used = c.lastUsedAt ? new Date(c.lastUsedAt) : null
+    const usedTxt = (used && !isNaN(used.getTime()))
+      ? ('最近用过 ' + (used.getMonth() + 1) + '-' + used.getDate() + ' ' + String(used.getHours()).padStart(2, '0') + ':' + String(used.getMinutes()).padStart(2, '0'))
+      : '还没用过'
+    info.value = (c.name || c.id) + ' · ' + ((c.scopes || []).join('/') || 'read') + ' · ' + usedTxt
+    const rv = document.createElement('button')
+    rv.className = 'btn mini'
+    rv.textContent = '撤销'
+    rv.addEventListener('click', async () => {
+      rv.disabled = true
+      let r = null
+      try { r = await window.orbApi.mcpClientRevoke(c.id) } catch (e) { r = { ok: false, error: (e && e.message) || '撤销失败' } }
+      if (!r || !r.ok) { mcpErr('✗ 撤销失败：' + ((r && r.error) || '未知错误')); rv.disabled = false; fit(); return }
+      mcpNote('✓ 已撤销「' + (c.name || c.id) + '」：它的令牌立刻失效'
+        + (r.cancelled ? '，同时取消 ' + r.cancelled + ' 条还挂在手机上的指令' : '') + '。')
+      renderMcp(r)
+    })
+    const rb = document.createElement('button')
+    rb.className = 'btn mini'
+    rb.textContent = '撤销其写入'
+    rb.title = '只撤销该客户端写入、且你之后没改过的条目'
+    rb.addEventListener('click', async () => {
+      rb.disabled = true
+      let r = null
+      try { r = await window.orbApi.mcpRollback(c.id) } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+      rb.disabled = false
+      if (!r) mcpErr('✗ 回滚失败：没有返回结果')
+      else if (r.cancelled) mcpErr('')
+      else if (r.error) mcpErr('✗ 回滚失败：' + r.error)
+      else if (!r.ok) {
+        // tools 的 ok=false 且没有 error：这次本来就没有可撤销的写入，不是故障
+        mcpNote('「' + (c.name || c.id) + '」没有可撤销的写入（它没写过，或写入都已被你改动 / 复习过而保留）。')
+      } else {
+        // 真实回滚结果（tools 返回的分项计数），你改过 / 复习过的条目按设计保留
+        const parts = []
+        if (r.cards_removed) parts.push('知识卡 ' + r.cards_removed + ' 张')
+        if (r.handouts_removed) parts.push('讲义 ' + r.handouts_removed + ' 篇')
+        if (r.phone && r.phone.removed) parts.push('手机记忆 ' + r.phone.removed + ' 条')
+        if (r.phone && r.phone.todos_removed) parts.push('手机提醒 ' + r.phone.todos_removed + ' 条')
+        const keep = []
+        if (r.cards_skipped_edited) keep.push('改过的卡 ' + r.cards_skipped_edited)
+        if (r.cards_skipped_reviewed) keep.push('已复习的卡 ' + r.cards_skipped_reviewed)
+        if (r.handouts_skipped_edited) keep.push('改过的讲义 ' + r.handouts_skipped_edited)
+        let phoneNote = ''
+        if (r.phone && r.phone.error) phoneNote = '手机侧没撤销成功：' + r.phone.error
+        else if (r.phone && r.phone.skipped) phoneNote = '手机侧未动（' + r.phone.skipped + '）'
+        mcpNote('✓ 已撤销「' + (c.name || c.id) + '」写入的 ' + (parts.length ? parts.join('、') : '0 条')
+          + (keep.length ? '；保留：' + keep.join('、') : '')
+          + (phoneNote ? '。' + phoneNote + '。' : '。'))
+      }
+      fit()
+    })
+    row.appendChild(info); row.appendChild(rv); row.appendChild(rb)
+    return row
+  }
+  /* 每个面板用自己那一条提示行：MCP 的结果不写进「局域网同步」那行，免得两个功能互相串。
+   * Link 的常驻说明走 #linkHint（那是它自己的小字行），操作结果走 #linkErr。 */
+  function linkHintText(text, bad) {
+    const el = $('linkHint')
+    if (!el) return
+    el.textContent = text || ''
+    el.style.color = bad ? 'rgba(var(--danger), .95)' : ''
+  }
+  function renderMcp(s) {
+    const on = !!(s && s.running)
+    $('mcpState').textContent = on ? ('已开启 · 127.0.0.1:' + ((s && s.port) || '')) : '未开启'
+    $('mcpStart').style.display = on ? 'none' : ''
+    $('mcpStop').style.display = on ? '' : 'none'
+    $('mcpStart').disabled = mcpBusy
+    $('mcpStop').disabled = mcpBusy
+    const portEl = $('mcpPort')
+    if (s && s.port && document.activeElement !== portEl) portEl.value = String(s.port)
+    mcpErr(s && s.error ? '✗ ' + s.error : '')
+    const box = $('mcpClients'); box.innerHTML = ''
+    const clients = (s && Array.isArray(s.clients)) ? s.clients : []
+    if (s && s.clientsError) {
+      const d = document.createElement('div')
+      d.className = 'tip'
+      d.textContent = '✗ 客户端列表读取失败：' + s.clientsError
+      box.appendChild(d)
+    }
+    if (!clients.length) {
+      const d = document.createElement('div')
+      d.className = 'tip'
+      d.textContent = '还没有客户端。签发后把配置片段填进客户端的 MCP 设置。'
+      box.appendChild(d)
+    }
+    clients.forEach((c) => box.appendChild(mcpClientRow(c)))
+    // 根目录
+    const rootsBox = $('mcpRoots'); rootsBox.innerHTML = ''
+    const roots = (s && Array.isArray(s.roots)) ? s.roots : []
+    roots.forEach((p) => {
+      const row = document.createElement('div')
+      row.className = 'row2'
+      row.style.marginTop = '6px'
+      const f = document.createElement('input')
+      f.className = 'field'; f.type = 'text'; f.readOnly = true; f.spellcheck = false; f.value = p
+      const b = document.createElement('button')
+      b.className = 'btn mini'
+      b.textContent = '移除'
+      b.addEventListener('click', async () => {
+        b.disabled = true
+        let r = null
+        try { r = await window.orbApi.mcpRootsRemove(p) } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+        if (!r || !r.ok) { mcpErr('✗ 移除失败：' + ((r && r.error) || '未知错误')); b.disabled = false; fit(); return }
+        renderMcp(r)
+      })
+      row.appendChild(f); row.appendChild(b)
+      rootsBox.appendChild(row)
+    })
+    $('mcpRootsNow').textContent = (s && s.rootsCustom) ? '自定义 ' + roots.length + ' 个' : '默认（文稿 / 下载 / 桌面）'
+    if (s && s.handoutsDir) $('mcpRootsTip').textContent = '讲义保存到：' + s.handoutsDir + '（只允许上面这些目录里的真实文件，扩展名也受限；每次打开都要在本机确认 30 秒）。'
+    fit()
+  }
+  async function mcpRefresh() {
+    let s = null
+    try { s = await window.orbApi.mcpStatus() } catch (e) { s = { ok: false, error: (e && e.message) || '读取失败' } }
+    if (!s || !s.ok) {
+      mcpErr('✗ 读取 MCP 状态失败：' + ((s && s.error) || '未知错误'))
+      fit()
+      return
+    }
+    renderMcp(s)
+    renderLink(s.link)
+  }
+  function mcpTokenClear() {
+    mcpTokenShown = ''
+    const slot = $('mcpTokenSlot'); if (slot) slot.innerHTML = ''
+  }
+  function mcpTokenShow(token, snippet, port) {
+    mcpTokenShown = String(token || '')
+    $('mcpSnippetHead').style.display = ''
+    $('mcpSnippetBox').style.display = ''
+    $('mcpSnippet').value = String(snippet || '')
+    const slot = $('mcpTokenSlot'); slot.innerHTML = ''
+    const warn = document.createElement('div')
+    warn.className = 'tip'
+    warn.style.color = 'rgba(var(--warn), .95)'
+    warn.textContent = '⚠ 令牌只显示这一次（端口 ' + port + '）：现在复制走，这块收起 / 卡片关掉就再也看不到，丢了只能撤销重建。'
+    const row = document.createElement('div')
+    row.className = 'row2'
+    row.style.marginTop = '6px'
+    const f = document.createElement('input')
+    f.className = 'field'
+    f.type = 'text'; f.readOnly = true; f.spellcheck = false
+    f.value = mcpTokenShown
+    const b = document.createElement('button')
+    b.className = 'btn mini primary'
+    b.textContent = '复制令牌'
+    b.addEventListener('click', () => {
+      try { window.orbApi.copy(mcpTokenShown) } catch {}
+      b.textContent = '已复制'
+      setTimeout(() => { b.textContent = '复制令牌' }, 1600)
+    })
+    row.appendChild(f); row.appendChild(b)
+    slot.appendChild(warn); slot.appendChild(row)
+    fit()
+  }
+  $('mcpToggleHd').addEventListener('click', () => {
+    const open = $('mcpBox').style.display === 'none'
+    $('mcpBox').style.display = open ? 'block' : 'none'
+    $('mcpToggleHint').textContent = open ? '收起 ▴' : '展开 ▾'
+    if (open) mcpRefresh(); else mcpTokenClear()
+    fit()
+  })
+  /* 「正在…」用 .res.busy（中性灰），成功用 .ok，失败用 .bad —— 三种状态别混。 */
+  function mcpBusyNote(msg) {
+    const el = $('mcpErr')
+    el.className = 'res ' + (msg ? 'busy' : '')
+    el.textContent = msg || ''
+  }
+  $('mcpStart').addEventListener('click', async () => {
+    if (mcpBusy) return
+    mcpBusy = true; $('mcpStart').disabled = true
+    mcpBusyNote('正在开启…')
+    let r = null
+    try { r = await window.orbApi.mcpSetEnabled(true) } catch (e) { r = { ok: false, error: (e && e.message) || '开启失败' } }
+    mcpBusy = false
+    if (!r) { mcpErr('✗ 开启失败：没有返回结果'); $('mcpStart').disabled = false; fit(); return }
+    renderMcp(r)
+    if (!r.ok) { mcpErr('✗ 开启失败：' + (r.error || '未知错误') + '（开关已保持关闭）'); fit(); return }
+    mcpNote('✓ 已开启：本机 127.0.0.1:' + (r.port || '') + '。客户端配置里的地址要和这个端口一致。')
+    fit()
+  })
+  $('mcpStop').addEventListener('click', async () => {
+    if (mcpBusy) return
+    mcpBusy = true; $('mcpStop').disabled = true
+    mcpBusyNote('正在关闭…')
+    let r = null
+    try { r = await window.orbApi.mcpSetEnabled(false) } catch (e) { r = { ok: false, error: (e && e.message) || '关闭失败' } }
+    mcpBusy = false
+    if (!r) { mcpErr('✗ 关闭失败：没有返回结果'); $('mcpStop').disabled = false; fit(); return }
+    renderMcp(r)
+    if (!r.ok) { mcpErr('✗ 关闭失败：' + (r.error || '未知错误')); fit(); return }
+    mcpNote('已关闭：端口已释放，客户端现在连不上。')
+    fit()
+  })
+  $('mcpPortApply').addEventListener('click', async () => {
+    if (mcpBusy) return
+    const p = Number($('mcpPort').value)
+    if (!Number.isInteger(p) || p < 1024 || p > 65535) { mcpErr('✗ 端口要在 1024–65535 之间'); fit(); return }
+    mcpBusy = true; $('mcpPortApply').disabled = true
+    let r = null
+    try { r = await window.orbApi.mcpSetPort(p) } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+    mcpBusy = false; $('mcpPortApply').disabled = false
+    renderMcp(r)
+    if (!r.ok) mcpErr('✗ ' + (r.error || '端口没改成'))
+    else mcpNote('端口已改成 ' + r.port + '；客户端配置里的地址也要跟着改。')
+    fit()
+  })
+  $('mcpClientAdd').addEventListener('click', async () => {
+    const name = String($('mcpClientName').value || '').trim()
+    if (!name) { mcpErr('✗ 先给客户端起个名字'); fit(); return }
+    $('mcpClientAdd').disabled = true
+    let r = null
+    try { r = await window.orbApi.mcpClientCreate({ name: name, scopes: mcpScopes.slice() }) } catch (e) { r = { ok: false, error: (e && e.message) || '签发失败' } }
+    $('mcpClientAdd').disabled = false
+    if (!r || !r.ok) { mcpErr('✗ 签发失败：' + ((r && r.error) || '未知错误')); fit(); return }
+    mcpNote('✓ 令牌已签发（权限：' + (r.client && r.client.scopes ? r.client.scopes.join(' / ') : 'read') + '）。')
+    $('mcpClientName').value = ''
+    mcpTokenShow(r.token, r.snippet, r.port)
+    await mcpRefresh()
+    fit()
+  })
+  $('mcpSnippetCopy').addEventListener('click', () => {
+    try { window.orbApi.copy($('mcpSnippet').value) } catch {}
+    mcpNote('配置片段已复制（token 仍是 ${LING_MCP_TOKEN} 占位，记得给客户端设置环境变量）。')
+  })
+  $('mcpRootsAdd').addEventListener('click', async () => {
+    let r = null
+    try { r = await window.orbApi.mcpRootsAdd() } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+    if (!r || !r.ok) { if (!(r && r.cancelled)) mcpErr('✗ 添加目录失败：' + ((r && r.error) || '未知错误')); fit(); return }
+    mcpNote('✓ 已添加可打开目录。'); renderMcp(r); fit()
+  })
+  $('mcpRootsReset').addEventListener('click', async () => {
+    let r = null
+    try { r = await window.orbApi.mcpRootsReset() } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+    if (!r || !r.ok) { mcpErr('✗ 恢复默认失败：' + ((r && r.error) || '未知错误')); fit(); return }
+    mcpNote('已恢复默认目录（文稿 / 下载 / 桌面）。'); renderMcp(r); fit()
+  })
+  $('mcpOpenHandouts').addEventListener('click', async () => {
+    let r = null
+    try { r = await window.orbApi.mcpOpenHandouts() } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+    if (!r || !r.ok) { mcpErr('✗ 打开讲义文件夹失败：' + ((r && r.error) || '未知错误')); fit(); return }
+    mcpNote('已打开讲义文件夹：' + (r.path || '')); fit()
+  })
+  function renderAudit(list) {
+    const box = $('mcpAuditList'); box.innerHTML = ''
+    const evs = Array.isArray(list) ? list : []
+    if (!evs.length) { box.innerHTML = '<div class="tip">还没有调用记录。</div>'; return }
+    evs.forEach((e) => {
+      const row = document.createElement('div')
+      row.className = 'vals'
+      const t = e && e.at ? new Date(e.at) : null
+      const when = t && !isNaN(t.getTime()) ? (String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0') + ' ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0')) : ''
+      const tool = (e && (e.tool || e.event || e.action)) || '?'
+      const client = (e && (e.client || e.clientId)) || ''
+      const outcome = (e && (e.outcome || (e.ok === true ? 'ok' : e.ok === false ? 'error' : ''))) || ''
+      const extra = []
+      if (e && e.level) extra.push('L' + e.level)
+      if (e && e.confirm) extra.push('确认:' + e.confirm)
+      if (e && e.ms != null) extra.push(e.ms + 'ms')
+      if (e && e.error) extra.push(String(e.error).slice(0, 60))
+      row.textContent = when + '　' + tool + (client ? '　' + client : '') + (outcome ? '　' + outcome : '') + (extra.length ? '　' + extra.join(' · ') : '')
+      box.appendChild(row)
+    })
+  }
+  async function auditRefresh() {
+    let r = null
+    try { r = await window.orbApi.mcpAuditList(30) } catch (e) { r = { ok: false, error: (e && e.message) || '读取失败' } }
+    if (!r || !r.ok) { $('mcpAuditNow').textContent = '读取失败'; renderAudit([]); mcpErr('✗ 审计读取失败：' + ((r && r.error) || '未知错误')); fit(); return }
+    $('mcpAuditNow').textContent = (r.events || []).length + ' 条'
+    renderAudit(r.events)
+    fit()
+  }
+  $('mcpAuditRefresh').addEventListener('click', () => auditRefresh())
+  $('mcpAuditCopy').addEventListener('click', async () => {
+    let r = null
+    try { r = await window.orbApi.mcpAuditCopy() } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+    if (!r || !r.ok) mcpErr('✗ 复制审计失败：' + ((r && r.error) || '未知错误'))
+    else mcpNote('审计已复制到剪贴板（' + r.bytes + ' 字节）。')
+    fit()
+  })
+  $('mcpAuditExport').addEventListener('click', async () => {
+    let r = null
+    try { r = await window.orbApi.mcpAuditExport() } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+    if (!r || !r.ok) { if (!(r && r.cancelled)) mcpErr('✗ 导出失败：' + ((r && r.error) || '未知错误')) }
+    else mcpNote('审计已导出：' + (r.path || '') + '（' + r.bytes + ' 字节）')
+    fit()
+  })
+
+  /* ---- 手机常连 ---- */
+  let linkNewPair = null
+  function linkNewPairRender() {
+    const box = $('linkPairNew'); box.innerHTML = ''
+    if (!linkNewPair) return
+    const uris = linkNewPair.uris || []
+    const row = document.createElement('div')
+    row.className = 'row2'
+    row.style.marginTop = '6px'
+    const input = document.createElement('input')
+    input.className = 'field'; input.type = 'text'; input.readOnly = true; input.spellcheck = false
+    input.value = uris[0] || ''
+    const copy = document.createElement('button')
+    copy.className = 'btn mini'
+    copy.textContent = '复制'
+    copy.addEventListener('click', () => {
+      try { window.orbApi.copy(input.value) } catch {}
+      copy.textContent = '已复制'
+      setTimeout(() => { copy.textContent = '复制' }, 1600)
+    })
+    const qrBtn = document.createElement('button')
+    qrBtn.className = 'btn mini'
+    qrBtn.textContent = '显示二维码'
+    const wrap = document.createElement('div')
+    wrap.className = 'qrbox'
+    const canvas = document.createElement('canvas')
+    const tip = document.createElement('div')
+    tip.className = 'qrtip'
+    tip.textContent = '用手机 Ling 的「扫码配对」扫这张图。二维码只在本机生成；撤销配对后同样失效。'
+    wrap.appendChild(canvas); wrap.appendChild(tip)
+    qrBtn.addEventListener('click', () => {
+      const open = wrap.style.display !== 'flex'
+      if (open && canvas.dataset.done !== '1') {
+        try {
+          if (!window.QR || typeof window.QR.render !== 'function') throw new Error('qr.js 未加载')
+          window.QR.render(canvas, input.value, 180)
+          canvas.dataset.done = '1'
+        } catch (e) { linkErr('✗ 二维码生成失败：' + ((e && e.message) || e)) }
+      }
+      wrap.style.display = open ? 'flex' : 'none'
+      qrBtn.textContent = open ? '收起二维码' : '显示二维码'
+      fit()
+    })
+    row.appendChild(input); row.appendChild(copy); row.appendChild(qrBtn)
+    box.appendChild(row); box.appendChild(wrap)
+    if (uris.length > 1) {
+      const d = document.createElement('div')
+      d.className = 'tip'
+      d.textContent = '这台电脑有多张网卡：手机要和电脑在同一网段，扫码后连不上就换另一条 —— ' + uris.slice(1).join('　')
+      box.appendChild(d)
+    }
+    const warn = document.createElement('div')
+    warn.className = 'tip'
+    warn.style.color = 'rgba(var(--warn), .95)'
+    warn.textContent = '⚠ 这条串本身就是密钥：别发群、别截图给别人。不想用了就在下面撤销配对。'
+    box.appendChild(warn)
+  }
+  function renderLink(s) {
+    const on = !!(s && s.running)
+    $('linkState').textContent = on ? ('已开启 · 端口 ' + ((s && s.port) || '')) : '未开启'
+    $('linkStart').style.display = on ? 'none' : ''
+    $('linkStop').style.display = on ? '' : 'none'
+    const portEl = $('linkPort')
+    if (s && s.port && document.activeElement !== portEl) portEl.value = String(s.port)
+    linkErr(s && s.error ? '✗ ' + s.error : '')
+    // 已配对列表
+    const pairs = (s && Array.isArray(s.pairs)) ? s.pairs : []
+    const devs = (s && Array.isArray(s.devices)) ? s.devices : []
+    const devById = new Map(devs.map((d) => [d.id, d]))
+    $('linkPairsHead').style.display = pairs.length ? '' : 'none'
+    const pbox = $('linkPairs'); pbox.innerHTML = ''
+    pairs.forEach((p) => {
+      const d = devById.get(p.id) || null
+      const row = document.createElement('div')
+      row.className = 'row2'
+      row.style.marginTop = '6px'
+      const f = document.createElement('input')
+      f.className = 'field'; f.type = 'text'; f.readOnly = true; f.spellcheck = false
+      // 刚重启时手机还没来轮询，online=false 是正常的 —— 文案写成「等待连接」而不是「出错」
+      f.value = (p.name || '手机') + ' · ' + (d ? (d.online ? '在线' : '等待连接') : '等待连接')
+      const b = document.createElement('button')
+      b.className = 'btn mini'
+      b.textContent = '撤销'
+      b.addEventListener('click', async () => {
+        b.disabled = true
+        let r = null
+        try { r = await window.orbApi.linkPairRevoke(p.id) } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+        // Link 落盘失败时返回 ok:false，配对**仍然有效**（它自己的错误文案已经写明，别重复叠加）。
+        // 只做两件事：如实报错 + 不清空列表（按返回的真实 status 重绘，配对可能还在）。
+        if (!r || !r.ok) {
+          const why = (r && r.error) || '未知错误'
+          const stillValid = /仍然有效|没有这个配对/.test(why) ? '' : '（配对状态没变，收起再展开分组可刷新）'
+          linkErr('✗ ' + why + stillValid)
+          if (r && r.status) renderLink(r.status)
+          b.disabled = false
+          fit()
+          return
+        }
+        linkNote('✓ 已撤销这个配对：手机需要重新扫码才能连上。')
+        renderLink(r.status)
+        fit()
+      })
+      row.appendChild(f); row.appendChild(b)
+      pbox.appendChild(row)
+    })
+    // 设备能力：caps 与「这台手机上报的可打开应用别名」。
+    // 真正放开哪些应用由手机端设置页勾选（桌面看不到也没有权威），所以这里只列别名，不标「已开启」。
+    const dbox = $('linkDevices'); dbox.innerHTML = ''
+    devs.forEach((d) => {
+      if (!d.caps || !d.caps.length) return
+      const one = document.createElement('div')
+      one.className = 'tip'
+      const apps = (d.apps || []).map((a) => a.name || a.alias).filter(Boolean)
+      one.textContent = (d.name || d.model || '手机') + ' 支持：' + d.caps.join(' / ')
+        + (apps.length ? '；应用别名：' + apps.join('、') + '（具体放开哪几个在手机的 Ling 设置里勾选）' : '；可打开的应用需在手机设置里勾选')
+      dbox.appendChild(one)
+    })
+    if (on && !pairs.length) linkHintText('还没配对：点「生成配对」出二维码，用手机 Ling 扫码。')
+    else if (!on && pairs.length) linkHintText('已有 ' + pairs.length + ' 个配对，但服务没开 —— 点「开启」手机才能连上。')
+    else if (!on) linkHintText('只有点「开启」才开端口；关掉开关或退出 Ling，手机端立刻停止轮询。')
+    else if (pairs.length) linkHintText('服务在跑。手机在线状态由它最近一次轮询决定：刚启动时可能先显示「等待连接」，几秒后自己会变。')
+    fit()
+  }
+  $('linkToggleHd').addEventListener('click', () => {
+    const open = $('linkBox').style.display === 'none'
+    $('linkBox').style.display = open ? 'block' : 'none'
+    $('linkToggleHint').textContent = open ? '收起 ▴' : '展开 ▾'
+    if (open) { linkNewPair = null; linkNewPairRender(); mcpRefresh() }
+    fit()
+  })
+  function linkBusyNote(msg) {
+    const el = $('linkErr')
+    el.className = 'res ' + (msg ? 'busy' : '')
+    el.textContent = msg || ''
+  }
+  $('linkStart').addEventListener('click', async () => {
+    $('linkStart').disabled = true
+    linkBusyNote('正在开启…')
+    let r = null
+    try { r = await window.orbApi.linkSetEnabled(true) } catch (e) { r = { ok: false, error: (e && e.message) || '开启失败' } }
+    $('linkStart').disabled = false
+    if (!r) { linkErr('✗ 开启失败：没有返回结果'); fit(); return }
+    renderLink(r)
+    if (!r.ok) { linkErr('✗ 开启失败：' + (r.error || '未知错误') + '（开关已保持关闭）'); fit(); return }
+    linkNote('✓ 已开启 · 端口 ' + (r.port || '') + '。现在生成配对让手机扫码。')
+    fit()
+  })
+  $('linkStop').addEventListener('click', async () => {
+    $('linkStop').disabled = true
+    linkBusyNote('正在关闭…')
+    let r = null
+    try { r = await window.orbApi.linkSetEnabled(false) } catch (e) { r = { ok: false, error: (e && e.message) || '关闭失败' } }
+    $('linkStop').disabled = false
+    if (!r) { linkErr('✗ 关闭失败：没有返回结果'); fit(); return }
+    renderLink(r)
+    if (!r.ok) { linkErr('✗ 关闭失败：' + (r.error || '未知错误')); fit(); return }
+    linkNewPair = null; linkNewPairRender()
+    linkNote('已关闭：手机端会立刻停止轮询；配对关系仍保留，下次开启后手机自动重连。')
+    fit()
+  })
+  $('linkPortApply').addEventListener('click', async () => {
+    const p = Number($('linkPort').value)
+    if (!Number.isInteger(p) || p < 1024 || p > 65535) { linkErr('✗ 端口要在 1024–65535 之间'); fit(); return }
+    $('linkPortApply').disabled = true
+    let r = null
+    try { r = await window.orbApi.linkSetPort(p) } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+    $('linkPortApply').disabled = false
+    if (r) renderLink(r)
+    if (!r || !r.ok) linkErr('✗ ' + ((r && r.error) || '端口没改成'))
+    else linkNote('端口已改成 ' + (r.port || p) + '（手机需要重新扫码，因为连接串里的端口变了）。')
+    fit()
+  })
+  $('linkPairAdd').addEventListener('click', async () => {
+    $('linkPairAdd').disabled = true
+    linkBusyNote('正在生成配对…')
+    let r = null
+    try { r = await window.orbApi.linkPairCreate(String($('linkPairName').value || '')) } catch (e) { r = { ok: false, error: (e && e.message) || '失败' } }
+    $('linkPairAdd').disabled = false
+    if (!r || !r.ok) { linkErr('✗ 生成配对失败：' + ((r && r.error) || '未知错误')); fit(); return }
+    linkNote('✓ 配对已生成：让手机扫码（或复制连接串粘贴到手机 Ling）。')
+    $('linkPairName').value = ''
+    linkNewPair = r.pair
+    linkNewPairRender()
+    if (r.status) renderLink(r.status)
+    fit()
+  })
+  mcpScopeRender()
+  /* ================= v1.75：实时转写（语音 → 文字） =================
+   * 这里只做「选服务商 / 存或删各自的 Key / 打开转写窗口」。
+   * 边界（主进程也逐条再核一遍）：
+   *   - 页面拿到的永远是 hasKey 布尔与 micStatus，从没有明文 Key；保存后输入框立刻清空。
+   *   - 两家 Key 分开存；系统加密不可用时主进程拒绝保存，这里把原因原样显示，绝不假装存上了。
+   *   - 不自动注入任何 Key（包括内测版内置配置）：实时转写的凭据只能由用户在这里填。
+   */
+  let voiceState = null
+  let voiceBusy = false
+  function voiceErr(msg, kind) {
+    const el = $('voiceErr')
+    el.className = 'res ' + (msg ? (kind || 'bad') : '')
+    el.textContent = msg || ''
+  }
+  const VOICE_MIC_LABEL = { granted: '麦克风：已授权', denied: '麦克风：已拒绝（到系统设置里改）', restricted: '麦克风：被系统限制', 'not-determined': '麦克风：还没问过（第一次开始时会请求）', unknown: '麦克风：未知' }
+  function voiceProviderOf(id) {
+    return (voiceState && voiceState.providers ? voiceState.providers.find((p) => p.id === id) : null) || null
+  }
+  function renderVoice() {
+    const s = voiceState || {}
+    const cur = s.provider || ''
+    $('voiceNow').textContent = cur ? ('当前：' + ((voiceProviderOf(cur) || {}).label || cur)) : '未选择'
+    const box = $('voiceProviders')
+    box.innerHTML = ''
+    ;(s.providers || []).forEach((p) => {
+      const c = document.createElement('span')
+      const on = p.id === cur
+      c.className = 'chip clickable' + (on ? ' sel' : '')
+      c.textContent = (on ? '✓ ' : '') + p.label + (p.hasKey ? '（Key 已存）' : '（未填 Key）')
+      c.addEventListener('click', () => voicePickProvider(p.id))
+      box.appendChild(c)
+    })
+    const p = voiceProviderOf(cur)
+    $('voiceProviderHint').innerHTML = p
+      ? escHtml(p.keyHint) + (s.hasKey ? '' : '　<b>还没填 Key，填好保存后才能开始转写。</b>')
+      : '两家都是「边说边出字」的实时识别（16k 单声道）。选哪家就走哪家，<b>不会自动换另一家顶替</b> —— 失败就如实报错。'
+    if (p) {
+      $('voiceKeyLabel').textContent = p.label + ' 的 API Key'
+      $('voiceKey').placeholder = p.hasKey ? '已保存（要换就粘贴新的再点保存）' : '粘贴这家服务商的 API Key'
+      $('voiceKeyHint').textContent = p.hasKey
+        ? '这台机器上已加密保存了这把 Key（看不到原文，这是故意的）。删除后需要重新填写。'
+        : '还没保存过 Key。Key 只会加密写进本机的转写密钥文件，不再回显。'
+    } else {
+      $('voiceKeyLabel').textContent = 'API Key'
+      $('voiceKey').placeholder = '先在上面选一家服务商'
+      $('voiceKeyHint').textContent = ''
+    }
+    $('voiceKeyBox').style.display = p ? '' : 'none'
+    $('voiceKeySave').disabled = !p || voiceBusy
+    $('voiceKeyDel').disabled = !p || voiceBusy || !(s.hasKey)
+    // v1.78：窗口里既能配腾讯凭据、也能配音色偏好，所以「还没配转写 Key」不该把入口锁死
+    //（否则新用户永远打不开那个能填凭据的窗口）。真正的 gate 在窗口内的开始按钮与主进程。
+    $('voiceOpen').disabled = voiceBusy
+    $('voiceMicNow').textContent = VOICE_MIC_LABEL[s.micStatus] || ''
+    if (!s.encryptionAvailable) {
+      voiceErr('本机系统加密不可用（钥匙串被锁 / 没有安全存储）：现在不能保存 Key，已存的也读不出来。解锁钥匙串后重试。', 'bad')
+    } else if (s.error) {
+      voiceErr(s.error, 'bad')
+    } else if (!voiceBusy && $('voiceErr').classList.contains('ok')) {
+      // 成功提示保留到下一次操作
+    } else if (!voiceBusy) {
+      voiceErr('')
+    }
+    fit()
+  }
+  async function voiceRefresh(quiet) {
+    let r = null
+    try { r = await window.orbApi.voiceStatus() } catch (e) { r = { ok: false, error: (e && e.message) || '读取失败' } }
+    if (!r || !r.ok) { if (!quiet) voiceErr((r && r.error) || '读取转写配置失败'); return null }
+    voiceState = r
+    renderVoice()
+    return r
+  }
+  async function voicePickProvider(id) {
+    if (voiceBusy || !id) return
+    voiceBusy = true; renderVoice()
+    let r = null
+    try { r = await window.orbApi.voiceSelectProvider(id) } catch (e) { r = { ok: false, error: (e && e.message) || '切换失败' } }
+    voiceBusy = false
+    if (!r || !r.ok) { voiceErr('✗ 切换服务商失败：' + ((r && r.error) || '未知错误')); if (r && r.providers) { voiceState = r; renderVoice() } return }
+    voiceState = r
+    $('voiceKey').value = ''
+    voiceErr('✓ 已选「' + ((voiceProviderOf(id) || {}).label || id) + '」；改服务商后要重新开始一次转写。', 'ok')
+    renderVoice()
+  }
+  $('voiceToggleHd').addEventListener('click', () => {
+    const open = $('voiceBox').style.display === 'none'
+    $('voiceBox').style.display = open ? 'block' : 'none'
+    $('voiceToggleHint').textContent = open ? '收起 ▴' : '展开 ▾'
+    if (open) voiceRefresh()
+    fit()
+  })
+  $('voiceKeyEye').addEventListener('click', () => {
+    const i = $('voiceKey')
+    const show = i.type === 'password'
+    i.type = show ? 'text' : 'password'
+    $('voiceKeyEye').textContent = show ? '🙈 隐藏' : '👁 显示'
+  })
+  $('voiceKeySave').addEventListener('click', async () => {
+    if (voiceBusy || !voiceState || !voiceState.provider) return
+    const key = $('voiceKey').value.trim()
+    if (!key) { voiceErr('✗ 先把 Key 粘贴进输入框'); return }
+    voiceBusy = true; renderVoice()
+    voiceErr('正在加密保存…', 'busy')
+    let r = null
+    try { r = await window.orbApi.voiceSaveKey(voiceState.provider, key) } catch (e) { r = { ok: false, error: (e && e.message) || '保存失败' } }
+    voiceBusy = false
+    $('voiceKey').value = ''                    // 不管成功失败，输入框里都不留 Key
+    if (!r || !r.ok) {
+      voiceErr('✗ 保存失败：' + ((r && r.error) || '未知错误') + '（没有写入任何明文）')
+      if (r && r.providers) { voiceState = r; renderVoice() }
+      return
+    }
+    voiceState = r
+    renderVoice()
+    voiceErr('✓ 已加密保存「' + ((voiceProviderOf(r.provider) || {}).label || r.provider) + '」的 Key；现在可以打开转写窗口。', 'ok')
+  })
+  $('voiceKeyDel').addEventListener('click', async () => {
+    if (voiceBusy || !voiceState || !voiceState.provider) return
+    const id = voiceState.provider
+    voiceBusy = true; renderVoice()
+    let r = null
+    try { r = await window.orbApi.voiceDeleteKey(id) } catch (e) { r = { ok: false, error: (e && e.message) || '删除失败' } }
+    voiceBusy = false
+    if (!r || !r.ok) { voiceErr('✗ 删除失败：' + ((r && r.error) || '未知错误')); if (r && r.providers) { voiceState = r; renderVoice() } return }
+    voiceState = r
+    renderVoice()
+    voiceErr(r.removed ? '✓ 已删除这把 Key（正在用它的转写会话已立刻停止）。' : '这把 Key 本来就没存过。', 'ok')
+  })
+  $('voiceOpen').addEventListener('click', async () => {
+    if (voiceBusy) return
+    voiceBusy = true; renderVoice()
+    let r = null
+    try { r = await window.orbApi.voiceOpen() } catch (e) { r = { ok: false, error: (e && e.message) || '打开失败' } }
+    voiceBusy = false
+    if (!r || !r.ok) { voiceErr('✗ 打不开转写窗口：' + ((r && r.error) || '未知错误')); renderVoice(); return }
+    voiceErr('✓ 转写窗口已打开：勾选同意后点「开始转写」。', 'ok')
+    renderVoice()
+  })
+
+
   $('v158Toggle').addEventListener('click', () => {
     const m = $('v158'); const open = m.style.display === 'none'
     m.style.display = open ? 'block' : 'none'; $('v158Hint').textContent = open ? '收起 ▴' : '展开 ▾'; fit()
@@ -665,6 +1865,373 @@
   })
   fit()
 
+  /* ================= v1.63：设置搜索（对齐 Android 2.6.1，桌面独立线） =================
+   * 两段，来源互不混淆：
+   *   ① 本机即时匹配 —— 直接复用 settings-search.js 的 search()（标题 + 路径 + 口头说法别名），
+   *      再按 id 映射回页面上的 catalog 条目；输入就出，不联网。页面不另建匹配逻辑；
+   *   ② AI 语义匹配 —— 只在点「AI 匹配」或 Enter 时走 orbApi.searchSettings，只发 query + 固定白名单目录。
+   * 点结果只做「定位 + 短暂高亮」：所属折叠分组（v158 / 其他）折叠着先展开；控件被条件隐藏时
+   * （DeepL / 百度框、档案名、同步停止 / 连接串 / 统计 / 冲突、申请 Key 链接）只定位到可见的所属分组控件，
+   * 并提示需要先手动选择 / 开启，绝不改设置值去把控件露出来。
+   * 异步一律 generation + requestId 双判定：改输入 / 取消 / blur / 隐藏 / beforeunload 都让上一轮作废，
+   * 迟到的 IPC 回包只被丢弃，不会把旧结果画到新输入上。 */
+  const SEARCH_MOD = window.LingSettingsSearch || null
+  const SEARCH_CATALOG = (SEARCH_MOD && Array.isArray(SEARCH_MOD.catalog))
+    ? SEARCH_MOD.catalog.filter((e) => e && typeof e.id === 'string' && typeof e.targetId === 'string') : []
+  const SEARCH_ITEMS = SEARCH_CATALOG.map((e) => {
+    const path = String(e.path == null ? '' : e.path)
+    return { entry: e, path: path, head: path.split('/')[0] }
+  })
+  const SEARCH_BY_ID = new Map(SEARCH_ITEMS.map((it) => [it.entry.id, it]))
+  const SEARCH_LOCAL_MAX = 30
+  const SEARCH_AI_MAX = 8
+  const SEARCH_HINT_IDLE = SEARCH_ITEMS.length
+    ? '输入即在本机匹配；要按意思找（比如「让小窗别挡住题目」）就点「AI 匹配」或按 Enter。'
+    : '设置搜索目录没加载成功：只能手动找，或点「AI 匹配」（若可用）。'
+
+  let searchGen = 0            // 每轮输入变化 / 取消都 +1；迟到回包 gen 对不上就丢
+  let searchReqId = null       // 当前在飞的 requestId（同一窗口同时只有一个）
+  let searchRows = []          // 界面上正在显示的结果（按显示顺序，元素 = SEARCH_ITEMS 项）
+  let searchSel = -1
+  let searchRefEl = null       // 当前高亮中的控件（结束 / 下一次定位时清掉）
+  const searchNorm = (t) => String(t == null ? '' : t).trim().toLowerCase()
+
+  function searchHint(text, bad) {
+    const el = $('setSearchHint')
+    if (!el) return
+    el.classList.toggle('bad', !!bad)
+    el.textContent = text || ''
+  }
+  // 缺接口 / 缺 Key：保留本地结果，只多给一个「配置接口」入口（聚焦地址框，不改值）
+  function searchHintConfig(prefix, bad) {
+    const el = $('setSearchHint')
+    if (!el) return
+    el.classList.toggle('bad', !!bad)
+    el.textContent = prefix + '　'
+    const link = document.createElement('span')
+    link.className = 'link'
+    link.id = 'setSearchCfgLink'
+    link.textContent = '去「配置接口」'
+    link.addEventListener('click', () => {
+      searchExpandFor('baseUrl')
+      const b = $('baseUrl')
+      if (!b) return
+      b.scrollIntoView({ block: 'center' })
+      b.focus(); b.select()
+      searchFlash(b)
+    })
+    el.appendChild(link)
+  }
+  const searchIsConfigError = (err) => /未配置|没配置|没有配置|配置接口|not ?configured|no ?api|api ?key|key.*(missing|empty)|missing.*key|unauthor|鉴权|密钥/i.test(String(err || ''))
+
+  function searchSetButtons() {
+    const hasQ = !!searchNorm($('setSearchInput').value)
+    $('setSearchClear').style.display = $('setSearchInput').value ? '' : 'none'
+    $('setSearchCancel').style.display = searchReqId ? '' : 'none'
+    $('setSearchAi').disabled = !hasQ || !(window.orbApi && typeof window.orbApi.searchSettings === 'function')
+  }
+  function searchFlash(el, ms) {
+    if (searchRefEl && searchRefEl !== el) searchRefEl.classList.remove('ref')
+    searchRefEl = el
+    el.classList.remove('ref')
+    void el.offsetWidth                // 重放动画（同一项连点两次也要再亮一次）
+    el.classList.add('ref')
+    setTimeout(() => { if (searchRefEl === el) { el.classList.remove('ref'); searchRefEl = null } }, ms || 1900)
+  }
+  /* 分组展开：按目标控件在哪来决定展开哪个折叠分组（v158 里包含翻译 / 模式 / 缓存 / 历史四组），
+   * 不再按目录 head 猜 —— head 只有「翻译 / 自定义模式 / 缓存 / 历史 / 其他」，v158 只认前两类会漏。 */
+  function searchInGroup(id) {
+    let el = null
+    try { el = document.getElementById(id) } catch { el = null }
+    if (!el || typeof el.closest !== 'function') return null
+    try {
+      if (el.closest('#v158')) return 'v158'
+      if (el.closest('#more')) return 'more'
+      if (el.closest('#mcpBox')) return 'mcpBox'
+      if (el.closest('#linkBox')) return 'linkBox'
+      if (el.closest('#voiceBox')) return 'voiceBox'
+    } catch { return null }
+  }
+  // 控件自己隐藏（条件不满足）时，按这些映射退到可见的所属分组控件；没在表里就往上找最近的可见祖先
+  const SEARCH_GROUP_OF = {
+    deeplBox: 'engine', baiduBox: 'engine', bdModel: 'engine', dlEye: 'engine', bdAppId: 'engine', bdKey: 'engine', bdSecret: 'engine', bdEye: 'engine',
+    profileName: 'saveas',
+    lanStop: 'lanStart', lanBox: 'lanStart', lanList: 'lanStart',
+    lanStats: 'lanStart', lanStatHead: 'lanStart', lanStatAt: 'lanStart',
+    lanConflicts: 'lanStart', lanConfHead: 'lanStart',
+    // v1.64：MCP / 手机常连折叠分组里的控件，没开启时退到分组头附近的可见按钮
+    mcpStop: 'mcpStart', mcpPort: 'mcpStart', mcpPortApply: 'mcpStart', mcpErr: 'mcpStart',
+    mcpClientName: 'mcpStart', mcpClientAdd: 'mcpStart', mcpScopeRow: 'mcpStart', mcpTokenSlot: 'mcpStart',
+    mcpClients: 'mcpStart', mcpSnippetHead: 'mcpStart', mcpSnippetBox: 'mcpStart',
+    mcpRootsNow: 'mcpStart', mcpRoots: 'mcpStart', mcpRootsTip: 'mcpStart',
+    mcpAuditNow: 'mcpStart', mcpAuditList: 'mcpStart', mcpAuditHint: 'mcpStart',
+    linkStop: 'linkStart', linkPort: 'linkStart', linkPortApply: 'linkStart', linkErr: 'linkStart',
+    linkPairName: 'linkStart', linkPairAdd: 'linkStart', linkPairNew: 'linkStart',
+    linkPairsHead: 'linkStart', linkPairs: 'linkStart', linkDevices: 'linkStart', linkHint: 'linkStart',
+    // v1.75：实时转写分组里，没选服务商时 Key 行是隐藏的 —— 退到分组里一定看得见的 chip / 按钮
+    voiceKey: 'voiceProviders', voiceKeySave: 'voiceProviders', voiceKeyDel: 'voiceProviders',
+    voiceKeyBox: 'voiceProviders', voiceKeyLabel: 'voiceProviders', voiceKeyHint: 'voiceProviders',
+    voiceErr: 'voiceProviders', voiceOpen: 'voiceProviders', voiceMicNow: 'voiceProviders',
+    keyLink: 'apiKey'
+  }
+  function searchVisibleEl(el) {
+    while (el && el !== document.body) {
+      if (el.style && el.style.display === 'none') return null
+      if (el.offsetParent === null) return null
+      el = el.parentElement
+    }
+    return el
+  }
+  function searchResolveAnchor(entry) {
+    let direct = null
+    try { direct = document.getElementById(entry.targetId) } catch { direct = null }
+    if (!direct) return { el: null }
+    if (searchVisibleEl(direct)) return { el: direct, hidden: false }
+    let group = null
+    try { group = SEARCH_GROUP_OF[entry.targetId] ? document.getElementById(SEARCH_GROUP_OF[entry.targetId]) : null } catch { group = null }
+    if (group && searchVisibleEl(group)) return { el: group, hidden: true }
+    return { el: null, hidden: true }
+  }
+  const GROUP_HINT_ID = { v158: 'v158Hint', more: 'moreHint', mcpBox: 'mcpToggleHint', linkBox: 'linkToggleHint', voiceBox: 'voiceToggleHint' }
+  function searchExpandGroup(which) {
+    const box = $(which)
+    if (!box || box.style.display !== 'none') return
+    box.style.display = 'block'
+    const hint = GROUP_HINT_ID[which] ? $(GROUP_HINT_ID[which]) : null
+    if (hint) hint.textContent = '收起 ▴'
+    // v1.64：新分组展开时顺手拉一次真实状态，免得搜过去看到「未开启」但其实服务在跑
+    if (which === 'mcpBox' || which === 'linkBox') { try { mcpRefresh() } catch {} }
+    if (which === 'voiceBox') { try { voiceRefresh(true) } catch {} }
+  }
+  function searchExpandFor(id) {
+    const g = searchInGroup(id)
+    if (g) searchExpandGroup(g)
+  }
+
+  // —— ① 本机：直接使用 settings-search.js 的 search()，只按 id 映射回页面目录 ——
+  function searchLocal(q) {
+    if (!searchNorm(q) || !SEARCH_MOD || typeof SEARCH_MOD.search !== 'function') return []
+    let hits = []
+    try { hits = SEARCH_MOD.search(q) } catch { hits = [] }
+    if (!Array.isArray(hits)) return []
+    const out = []
+    for (const e of hits) {
+      const it = e && SEARCH_BY_ID.get(e.id)
+      if (!it) continue
+      out.push(it)
+      if (out.length >= SEARCH_LOCAL_MAX) break
+    }
+    return out
+  }
+
+  function searchRender() {
+    const box = $('setSearchResults')
+    box.textContent = ''
+    searchRows.forEach((it, i) => {
+      const row = document.createElement('div')
+      row.className = 'sitem' + (i === searchSel ? ' sel' : '')
+      row.setAttribute('role', 'option')
+      const t1 = document.createElement('div')
+      t1.className = 'st1'
+      const nm = document.createElement('span')
+      nm.className = 'nm'
+      nm.textContent = String(it.entry.title)      // 目录文案一律 textContent，绝不当 HTML
+      t1.appendChild(nm)
+      if (it.entry.advanced) {
+        const tag = document.createElement('span')
+        tag.className = 'tag'
+        tag.textContent = '需展开'
+        t1.appendChild(tag)
+      }
+      const t2 = document.createElement('div')
+      t2.className = 'st2'
+      t2.textContent = it.path                    // 路径也只有标题层级，不含任何设置值
+      row.appendChild(t1)
+      row.appendChild(t2)
+      row.addEventListener('click', () => searchGo(i))
+      box.appendChild(row)
+    })
+    box.classList.toggle('open', searchRows.length > 0)
+  }
+
+  // 本机优先；AI 只补本机没有的
+  function searchApply(local, ai) {
+    const seen = new Set(), list = []
+    for (const it of local.concat(ai || [])) if (!seen.has(it)) { seen.add(it); list.push(it) }
+    searchRows = list
+    if (searchSel >= searchRows.length) searchSel = -1
+    searchRender()
+  }
+
+  function searchIdleHint() { searchHint(SEARCH_HINT_IDLE, !SEARCH_ITEMS.length) }
+
+  function searchRunLocal() {
+    const q = $('setSearchInput').value
+    if (!searchNorm(q)) {
+      searchRows = []; searchSel = -1; searchRender()
+      searchIdleHint()
+      searchSetButtons()
+      return
+    }
+    const local = searchLocal(q)
+    searchApply(local, [])
+    if (local.length) searchHint('本机 ' + local.length + ' 条。点一条就跳过去；要按意思找再点「AI 匹配」。')
+    else searchHint('本机没找到「' + q.trim() + '」。点「AI 匹配」按意思找（会把这几个字和设置目录发给当前接口的模型）。')
+    searchSetButtons()
+  }
+
+  // requestId 只用本机随机串：不含输入内容、不落盘
+  function searchNewReqId() {
+    const rnd = (window.crypto && typeof window.crypto.randomUUID === 'function')
+      ? window.crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2))
+    return 'ss-' + rnd
+  }
+
+  function searchCancelAi() {
+    const id = searchReqId
+    searchReqId = null
+    searchGen++
+    if (id && window.orbApi && typeof window.orbApi.cancelSettingsSearch === 'function') {
+      try { window.orbApi.cancelSettingsSearch(id) } catch {}
+    }
+    searchSetButtons()
+    return !!id
+  }
+
+  function searchAi() {
+    const q = $('setSearchInput').value
+    if (!searchNorm(q)) return
+    if (!window.orbApi || typeof window.orbApi.searchSettings !== 'function') {
+      searchHintConfig('当前版本还没有 AI 匹配接口，本地搜索结果照常可用。先在「配置接口」里更新版本。', true)
+      searchSetButtons()
+      return
+    }
+    if (searchReqId) searchCancelAi()
+    const gen = ++searchGen
+    const local = searchLocal(q)
+    searchApply(local, [])                 // 本机结果先摆着，AI 回来再补；失败也不清
+    const requestId = searchNewReqId()
+    searchReqId = requestId
+    searchSetButtons()
+    searchHint('AI 正在按意思找…（点「取消」立刻停）')
+    fit()
+    let p = null
+    // 只发 query 和 requestId；目录标题/路径由 preload/main 侧的固定 catalog 带上，页面不拼、不带任何设置值
+    try { p = Promise.resolve(window.orbApi.searchSettings({ query: q, requestId })) } catch (e) { p = Promise.reject(e) }
+    p.then((r) => {
+      if (gen !== searchGen || searchReqId !== requestId) return   // 迟到的回包：输入已变 / 已取消 / 已失焦
+      searchReqId = null
+      searchSetButtons()
+      if (!r || r.ok !== true) {
+        if (r && r.cancelled) return
+        const err = (r && r.error) || ''
+        if (searchIsConfigError(err)) searchHintConfig('AI 匹配需要先在「配置接口」里填好地址和 Key（本地搜索结果仍可用）。', true)
+        else searchHint('AI 匹配失败：' + (err || '未知错误') + '。本地搜索结果仍可用。', true)
+        fit()
+        return
+      }
+      let ai = []
+      try {
+        const ids = (SEARCH_MOD && typeof SEARCH_MOD.parseIds === 'function' && Array.isArray(r.ids))
+          ? SEARCH_MOD.parseIds(r.ids.join(',')) : []
+        ai = (Array.isArray(ids) ? ids : []).map((id) => SEARCH_BY_ID.get(id)).filter(Boolean)
+      } catch { ai = [] }
+      ai = ai.slice(0, SEARCH_AI_MAX)
+      searchApply(local, ai)
+      const extra = ai.filter((it) => !local.includes(it)).length
+      if (!local.length && !ai.length) {
+        searchHint('本机和 AI 都没找到「' + q.trim() + '」。换个说法（比如「字大小」「同步」「配色」），或从下面逐项找。')
+      } else {
+        searchHint(extra ? 'AI 又补了 ' + extra + ' 条可能相关的设置。点一条就跳过去。' : 'AI 没找到更多相关设置。点一条跳过去。')
+      }
+      fit()
+    }).catch((e) => {
+      if (gen !== searchGen || searchReqId !== requestId) return
+      searchReqId = null
+      searchSetButtons()
+      const msg = (e && e.message) || String(e || '')
+      if (searchIsConfigError(msg)) searchHintConfig('AI 匹配需要先在「配置接口」里填好地址和 Key（本地搜索结果仍可用）。', true)
+      else searchHint('AI 匹配失败：' + (msg || '未知错误') + '。本地搜索结果仍可用。', true)
+      fit()
+    })
+  }
+
+  // 定位：先展开所属折叠分组 → 再按新高度撑窗 → 滚到控件 → 亮一下就恢复；不改任何设置值
+  function searchGo(i) {
+    const it = searchRows[i]
+    if (!it) return
+    searchSel = i
+    searchRender()
+    searchExpandFor(it.entry.targetId)
+    fit()
+    const title = String(it.entry.title)
+    const a = searchResolveAnchor(it.entry)
+    if (!a.el) {
+      searchHint('「' + title + '」现在没显示（还没加载完，或要满足条件才出现）—— 展开对应分组、先手动开启后再找；没有替你改任何设置。', true)
+      fit()
+      return
+    }
+    a.el.scrollIntoView({ block: 'center', inline: 'nearest' })
+    searchFlash(a.el)
+    if (a.hidden) searchHint('「' + title + '」要先在页面上手动选择 / 开启对应选项才会出现，这里只带你到所属分组；没有替你改任何设置。')
+    else if (it.entry.advanced) searchHint('「' + title + '」在折叠分组里，已经替你展开并定位；值没有改动。')
+    else searchHint('已定位到「' + title + '」；值没有改动。')
+    fit()
+  }
+
+  function searchClear() {
+    searchCancelAi()
+    searchGen++
+    $('setSearchInput').value = ''
+    searchRows = []; searchSel = -1
+    searchRender()
+    searchIdleHint()
+    searchSetButtons()
+    if (searchRefEl) { searchRefEl.classList.remove('ref'); searchRefEl = null }
+    fit()
+    $('setSearchInput').focus()
+  }
+
+  $('setSearchInput').addEventListener('input', () => {
+    searchCancelAi()                 // 输入一变，在飞的 AI 回包立刻作废 + 单向取消
+    searchRunLocal()
+    fit()
+  })
+  $('setSearchInput').addEventListener('keydown', (e) => {
+    // Enter 和「AI 匹配」等价；其它键不拦截（Esc 交给页面的取消设置逻辑）
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); searchAi(); return }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!searchRows.length) return
+      e.preventDefault()
+      const n = searchRows.length
+      searchSel = e.key === 'ArrowDown' ? (searchSel + 1) % n : (searchSel <= 0 ? n - 1 : searchSel - 1)
+      searchRender()
+      const row = $('setSearchResults').children[searchSel]
+      if (row) row.scrollIntoView({ block: 'nearest' })
+    }
+  })
+  $('setSearchAi').addEventListener('click', () => searchAi())
+  $('setSearchCancel').addEventListener('click', () => {
+    if (searchCancelAi()) searchHint('已取消 AI 匹配；本机结果还在。')
+    fit()
+  })
+  $('setSearchClear').addEventListener('click', () => searchClear())
+
+  // 失焦 / 隐藏 / 关窗：在飞的请求单向取消，迟到结果由 gen 丢弃
+  window.addEventListener('blur', () => { if (searchReqId) searchCancelAi() })
+  document.addEventListener('visibilitychange', () => { if (document.hidden && searchReqId) searchCancelAi() })
+  window.addEventListener('beforeunload', () => {
+    const id = searchReqId
+    searchReqId = null
+    searchGen++
+    if (id && window.orbApi && typeof window.orbApi.cancelSettingsSearch === 'function') {
+      try { window.orbApi.cancelSettingsSearch(id) } catch {}
+    }
+  })
+  searchIdleHint()
+  searchSetButtons()
+  fit()
+
   /* v1.60：桌面内置更新通道 —— 只做「检查 / 下载」，源与下载目标都由主进程决定（前端传不了任何 URL / 路径）。
    * 来自 manifest 的版本号 / notes 一律 textContent 写入 —— 哪怕源被投毒塞 HTML，也只会当纯文本显示，不执行。 */
   let updLast = null, updDownloading = false
@@ -683,14 +2250,14 @@
       // 严格更大才是「新版本」；相等是「已是最新版」（仍可重新下载）；通道版本更低时明确提示，绝不诱导用「下载最新版」回退
       // canDownload 且版本号不同 = 严格更新（通道更低时 canDownload 为 false，落到下面单独提示）
       const newer = !!(r.latestVersion && r.latestVersion !== r.currentVersion && r.canDownload)
-      if (r.unsupported) updState('当前平台暂无安装包')
+      if (r.unsupported) updState(r.message || '当前平台暂无安装包')
       else if (newer) updState('发现新版本 v' + r.latestVersion)
-      else if (r.latestVersion && r.latestVersion !== r.currentVersion) updState('本机版本高于通道（v' + r.currentVersion + ' > v' + r.latestVersion + '），不提供下载')
+      else if (r.latestVersion && r.latestVersion !== r.currentVersion) updState(r.message || ('本机版本高于通道（v' + r.currentVersion + ' > v' + r.latestVersion + '），不提供下载'))
       else updState('已是最新版 v' + r.currentVersion)
       let note = r.notes || ''
-      if (r.unsupported) note = (note ? note + '　' : '') + '当前平台（' + (r.platformKey || '未知') + '）这次没有提供安装包，暂不支持。'
+      if (r.unsupported) note = (note ? note + '　' : '') + '这次发布的清单没有提供当前平台（' + (r.platformKey || '未知') + '）的安装包，也不会退回下载旧包。'
       $('updNotes').textContent = note
-      $('updSrc').textContent = r.sourceUrl ? '更新源：' + r.sourceUrl : '更新源：未配置（本开源构建不提供维护者更新服务器）'
+      $('updSrc').textContent = '更新源：' + (r.sourceUrl || '未配置')
       updRefresh(); fit()
     }).catch((e) => { updLast = null; $('updCheck').disabled = false; updState('检查失败'); $('updNotes').textContent = (e && e.message) || '未知错误'; updRefresh(); fit() })
   })

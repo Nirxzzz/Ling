@@ -29,7 +29,8 @@ object Novice {
         a11yConnected: Boolean,
     ): List<Hint> = listOf(
         Hint(hasOverlay, "悬浮窗权限：小球能显示在屏幕上的前提", if (hasOverlay) "" else "设置 → 应用 → ${Preset.appName} → 显示在其他应用上层"),
-        Hint(hasApi, "接口：识别靠它，要自己填", if (hasApi) "" else "设置 → 接口 → 填地址 / Key / 模型"),
+        Hint(hasApi, "接口：识别靠它" + "，要自己填",
+            if (hasApi) "" else "设置 → 接口 → 填地址 / Key / 模型"),
         Hint(!a11ySupported || a11yOn, "无障碍截屏：在系统里授权一次，之后识别不用每次点录屏框",
             when {
                 !a11ySupported -> ""

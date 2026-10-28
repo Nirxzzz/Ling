@@ -114,6 +114,39 @@ object AutoScanPolicy {
     /** 跳过这一轮时状态行写的话（rounds 是算上这一轮之后连续几轮没变） */
     fun skippedStatus(rounds: Int): String = "画面没变化 · 第 $rounds 轮跳过（没调接口）"
 
+    // ---------------- 会话记页与下一轮截止（v1.91） ----------------
+    //
+    // 自动扫描一开就是一次「会话」：面板那行「第 N 页 · 下次自动识题 XXs」的页数只在这里算。
+    // 只数**真的成功换了一页**：手动识别、失败 / 取消、同一画面（含被指纹预检跳过的那些轮）都不算。
+    // 新画面命中缓存也算（那同样是一次成功识别，只是没调接口），答案碰巧和上一页一样也不影响记页。
+
+    /** 一次自动扫描会话的记页状态；[fp] = 上一张**记过页**的画面指纹（不是上一轮看过的） */
+    data class Pages(val pages: Int = 0, val fp: String = "") {
+        /** 重新开一轮扫描：页数从 0 数（开始 / 继续扫描） */
+        fun reset(): Pages = Pages()
+
+        /**
+         * 这一轮算不算新的一页：
+         *  - 手动双击 / 框选 / 图片识别（autoRound=false）不算；
+         *  - 失败 / 取消 / 空答案（ok=false）不算；
+         *  - 拿不到指纹（null / 空）不算 —— 无法确认是「新画面」；
+         *  - 同一指纹只算一次（同屏重复成功、指纹预检跳过的轮次都不会把页数刷上去）。
+         */
+        fun recognized(autoRound: Boolean, fp: String?, ok: Boolean): Pages {
+            if (!autoRound || !ok || fp.isNullOrEmpty() || fp == this.fp) return this
+            return Pages(pages + 1, fp)
+        }
+    }
+
+    /** 下一轮的**单调**截止时刻：intervalMs 非法（<=0）就当成「现在」 */
+    fun deadline(now: Long, intervalMs: Long): Long = now + intervalMs.coerceAtLeast(0L)
+
+    /**
+     * 距下一轮还有多久：截止时刻已过 / 没有截止时刻 → 0。
+     * 调用方用 SystemClock.elapsedRealtime()（不是墙上时钟），用户改时间 / 时区都不影响倒计时。
+     */
+    fun remaining(deadline: Long, now: Long): Long = if (deadline <= 0L) 0L else (deadline - now).coerceAtLeast(0L)
+
     // ---------------- 连续失败（v1.86） ----------------
     //
     // 被动模式下面板**没有状态行**（`AnswerPanel.applyPassive` 把 status 收起来、窗口还不可触摸），

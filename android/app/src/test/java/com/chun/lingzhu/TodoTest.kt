@@ -4,10 +4,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * M3 待办：列表 / 去重 / 排序 / 到期判断 / 简报文案。
- * 只测 [Todo] 里的纯函数；[Todo.Store]、[TodoReceiver]、[TodoNotify] 碰 Android，不在这里。
+ * [Todo.Store] / [TodoReceiver] / [TodoNotify] 碰 Android，不在这里；存储层的并发不变量在文末用 [FileMemo.update] 测。
  */
 class TodoTest {
     private val now = 1_760_000_000_000L
@@ -247,6 +248,53 @@ class TodoTest {
         assertEquals(50, Todo.NOTI_ID)
         assertEquals("todo", Todo.CHANNEL)
         assertEquals(30 * 60_000L, TodoReceiver.SNOOZE_MS)
+    }
+
+    /**
+     * 存储层不变量（回归）：读改写必须针对**当前**值，不能拿旧快照整表写。
+     * Todo.Store 需要 Context 测不了，但它与 [Schedule.sync] 的原子读改写都落在 [FileMemo.update] 上，测这一层。
+     */
+    private fun edit(f: File, transform: (List<Todo.Item>) -> List<Todo.Item>) =
+        FileMemo.update(f, { Todo.parse(it) }, { Todo.toJson(it) }, transform)
+
+    private fun raw(f: File): List<Todo.Item> = FileMemo.get(f) { Todo.parse(it) }
+
+    private fun it_(text: String, id: Long) = Todo.Item(id, text, 1_000L, 1L)
+
+    /** 与 Todo.Store 的 add 同一形状：发 id → 插到最前（不走 [Todo.add] 的去重，免得测成去重语义） */
+    private fun append(l: List<Todo.Item>, text: String): List<Todo.Item> =
+        listOf(it_(text, (l.maxOfOrNull { it.id } ?: 0L) + 1)) + l
+
+    @Test fun eachEditSeesLatestValueNotStaleSnapshot() {
+        val f = File.createTempFile("todo-rmw", ".json")
+        try {
+            edit(f) { append(it, "A") }
+            edit(f) { append(it, "B") }                          // 用户期间新增
+            edit(f) { cur -> cur.filterNot { t -> t.text == "A" } }   // 用户期间删除
+            // sync 式整表重排：必须基于当前（只有 B）而不是某个更早的快照
+            edit(f) { cur -> cur.filterNot { t -> t.ruleId > 0 } + Todo.Item(9L, "规则项", 5_000L, 1L, ruleId = 9L) }
+            val out = raw(f)
+            assertEquals("用户删掉的条目不能被物化重排带回", listOf("B", "规则项"), out.map { it.text })
+            assertEquals(1, out.count { it.ruleId > 0 })
+        } finally {
+            FileMemo.clear(f, emptyList<Todo.Item>()); FileMemo.flush()
+            f.delete(); File(f.path + ".tmp").delete()
+        }
+    }
+
+    @Test fun concurrentEditsNeverLoseOrDuplicate() {
+        val f = File.createTempFile("todo-concurrent", ".json")
+        try {
+            val a = Thread { repeat(40) { n -> edit(f) { append(it, "A$n") } } }
+            val b = Thread { repeat(40) { n -> edit(f) { append(it, "B$n") } } }
+            a.start(); b.start(); a.join(); b.join()
+            val out = raw(f)
+            assertEquals("并发新增一条都不能丢", 80, out.size)
+            assertEquals("id 不能重复", 80, out.map { it.id }.toSet().size)
+        } finally {
+            FileMemo.clear(f, emptyList<Todo.Item>()); FileMemo.flush()
+            f.delete(); File(f.path + ".tmp").delete()
+        }
     }
 
     // ---------------- 提醒震动：通知通道选择（纯逻辑） ----------------

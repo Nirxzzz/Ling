@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, screen, systemPreferences, ipcMain, nativeImage, shell, clipboard, globalShortcut, dialog } = require('electron')
+const { app, BrowserWindow, desktopCapturer, screen, systemPreferences, ipcMain, nativeImage, shell, clipboard, globalShortcut, dialog, safeStorage } = require('electron')
 // 启动埋点：永远只保留最后一次启动，出问题时先看它
 const DEBUG_DIR = (process.platform === 'win32' ? require('node:os').tmpdir() : '/tmp')   // v1.30：win 上没有 /tmp
 const BOOT_LOG = DEBUG_DIR + '/orb-boot.log'
@@ -27,21 +27,31 @@ const X = require('./extras')   // v1.58：百度翻译 / 结果缓存 / 历史�
 const P = require('./prompts')   // v1.60：识别关键词 + 追问 what / why（和答案面板共用）
 const TH = require('./themes')   // v1.60：配色（默认护眼）
 const U = require('./update')    // v1.60：桌面内置更新通道（manifest 校验 / 版本比较 / 平台资产，纯逻辑）
+const { LanSync } = require('./lan-sync')   // v1.61：局域网同步服务（仅设置卡手动开启）
 const https = require('node:https')   // v1.60：更新源与下载包都走 Node stream，不整包进内存
 const http = require('node:http')
 const crypto = require('node:crypto')
 const { Transform } = require('node:stream')
 const { pipeline } = require('node:stream/promises')   // v1.60：下载用 pipeline，结束即文件 close，避免半截 part / 悬挂 promise
 
-// 窗口标题、权限提示、设置页里的名字都跟着它。
-const APP_NAME = 'Ling'
+// 开源构建没有内置接口：这个判定恒为 false，调用点照旧可用。
+function usingBuiltinApi() { return false }
 const { spawnSync, spawn } = require('node:child_process')
+// v1.75：实时转写的窗口 / IPC / 会话控制都在 voice-main.js（协议在 voice-asr.js，密钥在 voice-secrets.js）。
+// 主进程这里只做接线：给它窗口工具、日志、sender 判定，其余全在那个模块里。
+const voiceMain = require('./voice-main')
+/* v1.76：专注守护 / 陪伴 —— 状态机与排程在 focusguard-main.js / companion-main.js，
+ * 这里只接线（气泡窗 / 前台探测 / 接口短句 / 设置持久化）。文件缺失只记日志停用那一个功能，不拖垮主进程。 */
+let focusGuard = null
+let companion = null
+try { focusGuard = require('./focusguard-main') } catch (e) { bootLog('X 专注守护模块加载失败 ' + ((e && e.message) || e)) }
+try { companion = require('./companion-main') } catch (e) { bootLog('X 陪伴模块加载失败 ' + ((e && e.message) || e)) }
 
 process.on('uncaughtException', (e) => { bootLog('X uncaughtException ' + (e && e.stack || e)) ; console.error('[orb] uncaughtException', e && e.message) })
 process.on('unhandledRejection', (e) => { bootLog('X unhandledRejection ' + (e && (e.stack || e.message) || String(e))) ; console.error('[orb] unhandledRejection', e && (e && e.message || String(e))) })
 
 // v1.31：API 可在设置卡里自定义（OpenAI 兼容格式：地址 + Key + 模型名）。
-// 开源构建不预置任何接口：未配置时由设置卡引导用户填写（也允许用环境变量预置）。
+// 未配置时回落到环境变量 / 本地网关默认值。
 const API_DEFAULTS = {
   baseUrl: process.env.AI_BASE_URL || '',
   model: process.env.AI_MODEL || '',
@@ -49,11 +59,19 @@ const API_DEFAULTS = {
 }
 function apiCfg() {
   const a = orbState.api || {}
+  // v1.59 内测版：自己没填接口地址时整套用内置的（不和自己填的混用，免得把内置 Key 发到别人的服务器）
   return {
     baseUrl: ((typeof a.baseUrl === 'string' && a.baseUrl.trim()) || API_DEFAULTS.baseUrl).replace(/\/+$/, ''),
     model: (typeof a.model === 'string' && a.model.trim()) || API_DEFAULTS.model,
     apiKey: (typeof a.apiKey === 'string' && a.apiKey.trim()) || API_DEFAULTS.apiKey
   }
+}
+/* v1.61.1：新手卡的「试一次识别」只在接口真的可用时才开一次识别。
+ * 内测版有内置接口；正式版必须自己填过地址（Key 可以留空，交给默认值 / 本地网关）。 */
+function apiReady() {
+  if (usingBuiltinApi()) return true
+  const a = orbState.api || {}
+  return !!(typeof a.baseUrl === 'string' && a.baseUrl.trim())
 }
 
 /* v1.41/v1.42：DeepSeek-V4.1 系列**默认开思考模式**（effort 默认 high），思维链算在输出 token 里。
@@ -68,14 +86,15 @@ const EXAM_DETAILS = ['brief', 'standard', 'detailed']
 /* v1.74：去掉硬性字数封顶（brief 150 / standard 400 的老档位删掉）——字数上限会逼模型少写关键步骤，
  * 现在只按 brief / standard / detailed 控制深度（见 EXAM_DETAIL_RULES），不封顶。 */
 const EXAM_DETAIL_LABEL = { brief: '简略', standard: '标准', detailed: '详细' }
+// v1.59：默认解析强度 —— 内测版「详细」（用户要求），公测维持「标准」。PRESET 在文件头部已初始化，这里引用安全
 const EXAM_DETAIL_DEFAULT = 'standard'
 function examDetail() { return EXAM_DETAILS.includes(orbState.examDetail) ? orbState.examDetail : EXAM_DETAIL_DEFAULT }
 function isDeepSeekCfg(cfg) {
   return /deepseek/i.test(String((cfg && cfg.baseUrl) || '')) || /^deepseek/i.test(String((cfg && cfg.model) || ''))
 }
-// v1.60：桌面端默认思考强度统一为「高」（DeepSeek 官方默认）
+// v1.60：桌面端默认思考强度统一为「高」（内测 / 公测相同；DeepSeek 官方默认）
 const THINK_DEFAULT = 'high'
-function thinkEffort() { return THINK_EFFORTS.includes(orbState.thinkingEffort) ? orbState.thinkingEffort : THINK_DEFAULT }   // 默认 high；显式已存 off/low/max 照旧生效
+function thinkEffort() { return THINK_EFFORTS.includes(orbState.thinkingEffort) ? orbState.thinkingEffort : THINK_DEFAULT }   // 默认：内测 / 公测均 high；显式已存 off/low/max 照旧生效
 function thinkingOf(cfg, force) {
   if (!isDeepSeekCfg(cfg)) return {}
   const eff = force === 'off' ? 'off' : thinkEffort()
@@ -94,12 +113,13 @@ const ANSWER_W = 300
 const ANSWER_MAX_H = 480
 
 const stateFs = require('node:fs')
-// Windows 通知 / 任务栏分组用独立 AppUserModelID，不继承其他 Ling 安装。
-if (process.platform === 'win32') app.setAppUserModelId('com.ling.opensource')
-// 开源构建使用独立目录：不与已安装的 Ling 正式版 / 内测版共用 state.json。
-// 也保证开发模式（electron .）不会读写生产数据。LING_USER_DATA 仅给测试 / 截图用。
+// v1.30：钉死 userData 目录为 orb-ai。改名「灵珠」后 productName/name 都会变，
+// 不钉死的话 Electron 会把 userData 搬到新名字目录下，state.json（位置/热键/开关）全部丢。
+// v1.59：内测版用自己的目录（orb-ai-internal），和正式版能同时开、互不改设置；第一次启动把正式版的设置抄一份过来
+// v1.60 改名 Ling：productName 变了也不影响 —— 这里钉的是固定目录名，不跟 productName 走（appId 也没改）。
+// LING_USER_DATA 只给测试 / 截图用（指到临时目录，不碰正在用的设置，也不和正在运行的实例抢单实例锁）
 app.setPath('userData', process.env.LING_USER_DATA || path.join(app.getPath('appData'), 'ling-opensource'))
-// v1.60：单实例锁在钉好 userData 之后 —— 锁文件在 userData 里。
+// v1.60：单实例锁挪到钉好 userData 之后 —— 锁文件在 userData 里，以前锁跟着 productName 走（改名 Ling 后会和旧内测版 Ling 抢同一把锁）
 const gotSingleLock = app.requestSingleInstanceLock()
 bootLog('B 单实例锁 gotSingleLock=' + gotSingleLock)
 if (!gotSingleLock) { bootLog('C 已有实例在跑 → 主动退出'); app.quit() }
@@ -107,18 +127,61 @@ app.on('second-instance', () => { if (orbWin && !orbWin.isDestroyed()) { orbWin.
 const statePath = path.join(app.getPath('userData'), 'state.json')
 // 注意：这里的默认值必须写字面量。LANGS / DEFAULT_TRANS_LANG / MODES 都声明在文件后面，
 // 模块级初始化里引用它们会踩 TDZ（ReferenceError: Cannot access ... before initialization）。
-let orbState = { autoScan: false, x: null, y: null, hintShown: false, panelTitle: 'AI 屏幕解析', translateOnCopy: false, translateHotkey: '', mode: 'general', transLang: 'auto', api: null, apiOnboarded: false, scanIntervalMs: 20000, appearance: null, apiProfiles: [], activeProfile: null, thinkingEffort: THINK_DEFAULT, examDetail: EXAM_DETAIL_DEFAULT, novice: false, transEngine: 'ai', deepl: null, baidu: null, useCache: true, saveHistory: true, customModes: null, modeOpacity: {}, keywords: true, theme: TH.DEFAULT, panelSide: 'left' }
+/* v1.64：mcp / link 两个开关默认关（新装一律关，不自动监听）。port / roots / enabled 都会落盘。 */
+let orbState = { autoScan: false, x: null, y: null, hintShown: false, panelTitle: 'AI 屏幕解析', translateOnCopy: false, translateHotkey: '', mode: 'general', transLang: 'auto', api: null, apiOnboarded: false, scanIntervalMs: 20000, appearance: null, apiProfiles: [], activeProfile: null, thinkingEffort: THINK_DEFAULT, examDetail: EXAM_DETAIL_DEFAULT, novice: false, transEngine: 'ai', deepl: null, baidu: null, useCache: true, saveHistory: true, customModes: null, modeOpacity: {}, keywords: true, theme: TH.DEFAULT, panelSide: 'left', mcp: null, link: null, focusDurationMin: 25, focusAwaySec: 20, companionOn: true, companionFreq: 'med', companionAi: false }
 let moveSaveTimer = null
 // v1.59 翻译引擎：auto = DeepL → 百度 → 大模型（依次兜底）；也可以只用其中一个。写字面量（loadState 在模块初始化时就要用）
 const TRANS_ENGINES = ['auto', 'deepl', 'baidu', 'ai']
 function defaultEngine() { return 'ai' }
 function deeplKey() { return (orbState.deepl && orbState.deepl.apiKey) || '' }
 const ENGINE_LABEL = { deepl: 'DeepL', baidu: '百度', ai: 'AI' }
+/* v1.61.1：坐标读盘只认 JSON 里的真数字（saveState 一直写 getBounds 的整数）。
+ * 老写法 `Number(j.x) || null` 会把 0（合法的左上角坐标）当成「没存过」——
+ * 而 Number(null) 又是 0，所以这里不做任何类型转换：null / undefined / 字符串 / 布尔都按「没存过」处理。 */
+function numOrNull(v) {
+  return (typeof v === 'number' && Number.isFinite(v)) ? v : null
+}
+/* v1.64：两个服务的落盘形状。只认白名单字段，端口越界 / 类型不对一律回默认值（不猜用户意图）。 */
+function stateMcpAndLink(j) {
+  const out = { mcp: null, link: null }
+  const m = j && j.mcp
+  if (m && typeof m === 'object') {
+    out.mcp = {
+      enabled: !!m.enabled,
+      port: (Number.isInteger(m.port) && m.port >= 1024 && m.port <= 65535) ? m.port : 47321,
+      roots: Array.isArray(m.roots) ? m.roots.filter((x) => typeof x === 'string' && x).slice(0, 20) : []
+    }
+  }
+  const l = j && j.link
+  if (l && typeof l === 'object') {
+    out.link = {
+      enabled: !!l.enabled,
+      port: (Number.isInteger(l.port) && l.port >= 1024 && l.port <= 65535) ? l.port : 47322
+    }
+  }
+  return out
+}
+/* v1.76：专注守护 / 陪伴的取值规则（loadState / saveState / settings:get/save 共用一份）。
+ * 专注时长 1..240 分钟、分心阈值 5..300 秒，越界回默认（默认 25 分 / 20 秒，同 start 的钳制）。 */
+const COMPANION_FREQS = ['low', 'med', 'high']
+function focusDurationMin() { const v = Math.round(Number(orbState.focusDurationMin)); return Number.isFinite(v) ? Math.min(240, Math.max(1, v)) : 25 }
+function focusAwaySec() { const v = Math.round(Number(orbState.focusAwaySec)); return Number.isFinite(v) ? Math.min(300, Math.max(5, v)) : 20 }
+function companionFreq() { return COMPANION_FREQS.includes(orbState.companionFreq) ? orbState.companionFreq : 'med' }
+function focusCompanionOf(j) {
+  const s = (j && typeof j === 'object') ? j : {}
+  return {
+    focusDurationMin: Number.isFinite(Math.round(Number(s.focusDurationMin))) ? Math.min(240, Math.max(1, Math.round(Number(s.focusDurationMin)))) : 25,
+    focusAwaySec: Number.isFinite(Math.round(Number(s.focusAwaySec))) ? Math.min(300, Math.max(5, Math.round(Number(s.focusAwaySec)))) : 20,
+    companionOn: s.companionOn !== false,
+    companionFreq: COMPANION_FREQS.includes(String(s.companionFreq)) ? String(s.companionFreq) : 'med',
+    companionAi: s.companionAi === true
+  }
+}
 function loadState() {
   try {
     const j = JSON.parse(stateFs.readFileSync(statePath, 'utf8'))
     if (j && typeof j === 'object') {
-      orbState = { autoScan: !!j.autoScan, x: (Number(j.x) || null), y: (Number(j.y) || null), hintShown: !!j.hintShown, panelTitle: typeof j.panelTitle === 'string' ? j.panelTitle : 'AI 屏幕解析', translateOnCopy: !!j.translateOnCopy, translateHotkey: typeof j.translateHotkey === 'string' ? j.translateHotkey : '', translateHotkeySet: !!j.translateHotkeySet, thinkingEffort: THINK_EFFORTS.includes(j.thinkingEffort) ? j.thinkingEffort : THINK_DEFAULT, examDetail: EXAM_DETAILS.includes(j.examDetail) ? j.examDetail : EXAM_DETAIL_DEFAULT, novice: !!j.novice, mode: RETIRED_MODES[j.mode] || ((MODES[j.mode] || /^custom:/.test(String(j.mode || ''))) ? j.mode : 'general'), transLang: LANGS.some((l) => l.id === j.transLang) ? j.transLang : DEFAULT_TRANS_LANG,
+      orbState = { autoScan: !!j.autoScan, x: numOrNull(j.x), y: numOrNull(j.y), hintShown: !!j.hintShown, panelTitle: typeof j.panelTitle === 'string' ? j.panelTitle : 'AI 屏幕解析', translateOnCopy: !!j.translateOnCopy, translateHotkey: typeof j.translateHotkey === 'string' ? j.translateHotkey : '', translateHotkeySet: !!j.translateHotkeySet, thinkingEffort: THINK_EFFORTS.includes(j.thinkingEffort) ? j.thinkingEffort : THINK_DEFAULT, examDetail: EXAM_DETAILS.includes(j.examDetail) ? j.examDetail : EXAM_DETAIL_DEFAULT, novice: !!j.novice, mode: RETIRED_MODES[j.mode] || ((MODES[j.mode] || /^custom:/.test(String(j.mode || ''))) ? j.mode : 'general'), transLang: LANGS.some((l) => l.id === j.transLang) ? j.transLang : DEFAULT_TRANS_LANG,
         api: (j.api && typeof j.api === 'object') ? { baseUrl: String(j.api.baseUrl || ''), apiKey: String(j.api.apiKey || ''), model: String(j.api.model || '') } : null,
         apiOnboarded: !!j.apiOnboarded,
         scanIntervalMs: Math.min(3600000, Math.max(5000, Number(j.scanIntervalMs) || 20000)),
@@ -137,7 +200,16 @@ function loadState() {
           bgAlpha: Math.min(0.85, Math.max(0.25, Number(j.appearance.bgAlpha) || 0.50)),
           fontSize: Math.min(18, Math.max(12, Number(j.appearance.fontSize) || 14)),
           contrast: Math.min(1, Math.max(0.7, Number(j.appearance.contrast) || 0.92))
-        } : null }
+        } : null,
+        // v1.64：MCP / 手机常连（默认 null = 都没开过 = 关）
+        mcp: stateMcpAndLink(j).mcp,
+        link: stateMcpAndLink(j).link,
+        // v1.76：专注守护 / 陪伴（老 state.json 没有这些字段 = 用默认值）
+        focusDurationMin: focusCompanionOf(j).focusDurationMin,
+        focusAwaySec: focusCompanionOf(j).focusAwaySec,
+        companionOn: focusCompanionOf(j).companionOn,
+        companionFreq: focusCompanionOf(j).companionFreq,
+        companionAi: focusCompanionOf(j).companionAi }
     }
   } catch {}
 }
@@ -166,6 +238,17 @@ function saveState() {
     if (orbState.keywords === false) out.keywords = false
     if (orbState.theme && orbState.theme !== TH.DEFAULT) out.theme = orbState.theme
     if (orbState.panelSide && orbState.panelSide !== 'left') out.panelSide = orbState.panelSide
+    /* v1.64：两个开关的值要落盘 —— 用户明确要求「各开关持久保存，但新装默认关」。
+     * enabled 记的是用户在设置卡里的选择；下次启动按它自动起（端口占用照样如实报错，不换端口）。 */
+    if (orbState.mcp) out.mcp = { enabled: !!orbState.mcp.enabled, port: mcpPort(), roots: Array.isArray(orbState.mcp.roots) ? orbState.mcp.roots.slice(0, 20) : [] }
+    if (orbState.link) out.link = { enabled: !!orbState.link.enabled, port: linkPort() }
+    /* v1.76：专注守护 / 陪伴的偏好也落盘（白名单：不写这五个字段的旧版本读回来 = 全默认值）。 */
+    const fc = focusCompanionOf(orbState)
+    out.focusDurationMin = fc.focusDurationMin
+    out.focusAwaySec = fc.focusAwaySec
+    out.companionOn = fc.companionOn
+    out.companionFreq = fc.companionFreq
+    out.companionAi = fc.companionAi
     stateFs.writeFileSync(statePath, JSON.stringify(out), { mode: 0o600 })
   } catch (e) { console.error('[orb] saveState', e && e.message) }
 }
@@ -183,74 +266,28 @@ const history = []
  * 右键小球切换。每个模式 = 一套提示词 + 一套面板排版。
  * 想加新模式：往 MODES 里加一条，再在 answer.html 的 renderExam 里按需加排版即可。
  */
-function noviceGeneralPrompt() {
-  const brief = examDetail() === 'brief'
-  return PERSONA + '\n\n' + '你是一个屏幕解析助手。用户把当前屏幕截图发给你（可能有多张，对应多个显示器，重点内容可能出现在任意一张里）。\n\n'
-    + NOVICE_STYLE + '\n\n'
-    + '分两种情况输出：\n'
-    + '1. 画面里有题目或问题（作业题、考试题、报错、对话框里的提问），先保证解对、解完整，按这个格式：\n'
-    + '**答案：**（选择题写选项字母 + 内容；其他题写最终结果）\n\n'
-    + '**为什么：**\n1. …\n2. …\n（' + (brief ? '只写必需的步骤，能省则省' : '按需要写必要的步骤') + '，每步一行，写「做什么 —— 为什么这么做」；该有的依据和关键步骤不能省）\n\n'
-    + (brief ? '' : '**其他选项错在哪：**（只有选择题才写，挑最容易混的一两个错项，每个一行：「A 错：……」）\n\n')
-    + '**记住：**一句能背下来的话；这题有典型易错点再补一句「最容易错在……」，没有就省掉。\n\n'
-    + '2. 画面里没有题目：用大白话讲清楚 —— 这是什么界面、现在在干什么、画面上出现的专业词分别是什么意思（每个一行），最后一句告诉他下一步可以做什么。\n\n'
-    + '题干、符号或图形条件看不清时，不要自己猜一种理解就当条件往下做：说明缺了什么、只解能确定的部分，缺的条件决定答案时请用户补一张更清楚的图；不要给好几套可能的答案。\n\n'
-    + MATH_RULE + '。\n'
-    + '用中文，直接输出，不要寒暄，不要输出「[无题目]」这类标记。'
-}
+
+/* v1.77（2026-10-27）：屏幕识别提示词精简 —— 只留任务和真正的输出契约。
+ * 人格（PERSONA）、共享「讲法」（P.STYLE）、小白教学套路（NOVICE_STYLE）、「用中文 / 不要寒暄」这类收尾纪律
+ * 一律不再拼进识别链路；通用模式只留最小任务，纯小白在通用里仅追加一句大白话要求（做题另有小白格式）。
+ * 做题（含纯小白做题）的答案 / 分节 / LaTeX 契约、自定义模式的用户要求、关键词 TERMS_RULE 与追问开关原样保留。 */
 
 /* v1.58（对齐安卓）：面板会排版 LaTeX 了（math.js）—— 高数题用纯文本写分式 / 积分挤成一行没法看。
- * 推导一步一行：面板窄，一行塞好几个等号会折得乱七八糟。 */
-/* v1.71（对齐安卓 Prompts.kt PERSONA 逐字）：唯一一份人格，替代以前逐处贴的「不要寒暄」补丁 */
-const PERSONA = '你是小Ling，住在用户手机里的悬浮球。你在替用户解决他正对着屏幕遇到的题目和疑问。\n' +
-    '- 身份边界：这个应用叫 Ling，你是它里面的助手小Ling。用户问「Ling 是什么」时说应用，自称永远是小Ling。\n' +
-    '\n说话方式：\n' +
-    '- 干练。给结论，再给依据。不要铺垫、不要过渡、不要总结。\n' +
-    '- 句子短，一句一件事。手机上不用长段落。\n' +
-    '- 不用敬语，不用「好的」「当然」「没问题」「希望对你有帮助」「让我来帮你分析一下」。\n' +
-    '- 不说「显然」「易得」「不难看出」。\n' +
-    '- 不用颜文字、不用感叹号、不写「~」。\n' +
-    '- 不要每次结尾都问「还需要我做什么」。只在用户确实有一个明确的下一步没做时，用一句话说出来。\n' +
-    '\n分寸：\n' +
-    '- 你记得用户的处境，但不每次都提。只有当记忆和这次的画面真的有关时才提，一句话带过。\n' +
-    '- 不要寒暄、不撒娇、不表达情绪、不说自己像人。\n' +
-    '\n' + P.STYLE
-
+ * 推导一步一行：面板窄，一行塞好几个等号会折得乱七八糟。只给做题模式用，通用 / 自定义不注入排版纪律。 */
 const MATH_RULE = '只有确实出现公式时才用 LaTeX 写：行内用 $…$，单独成行的式子用 $$…$$（分式 \\frac、根号、极限、积分、求和、上下标都照常写，面板会排版）；没有公式就用普通文字，不要为了排版硬套 LaTeX。推导按需要分行，把必要的步骤和依据写清就行，不要机械地一个等号占一行'
 
-/* v1.58：自定义模式（对齐安卓 v1.54 / v1.58）：可以建很多个，各有名字和解析要求 */
+/* v1.58：自定义模式（对齐安卓 v1.54 / v1.58）：可以建很多个，各有名字和解析要求。
+ * 提示词 = 图片说明 + 用户自己写的要求（空着就用设置页里那个示例），不再拼人格 / 小白 / 数学格式。 */
 const CUSTOM_EXAMPLE = '先用一句话说这是什么界面或什么题。\n如果有题目：先给答案，再分步讲解，最后列出考点。\n如果没有题目：列出画面里的关键信息（数字、文字、状态、报错），再给我一条建议。'
 function customPrompt(userPrompt) {
-  return PERSONA + '\n\n' + '下面是当前屏幕的截图（可能有多张，对应多个显示器）。按我的要求解析：\n' + (String(userPrompt || '').trim() || CUSTOM_EXAMPLE) + '\n\n'
-    + (orbState.novice ? NOVICE_STYLE + '\n\n' : '')
-    + MATH_RULE + '。\n直接输出，不要寒暄。'
+  return '下面是当前屏幕的截图（可能有多张，对应多个显示器）。按下面的要求解析：\n' + (String(userPrompt || '').trim() || CUSTOM_EXAMPLE)
 }
 
+/* 通用：最小任务 —— 只要求识别并说明画面内容；纯小白在通用里也只追加一句大白话要求，不另设讲法 / 格式 */
 function generalPrompt() {
-  if (orbState.novice) return noviceGeneralPrompt()
-  return PERSONA + '\n\n'
-    + '你是一个屏幕解析助手。用户把当前屏幕截图发给你（可能有多张，对应多个显示器，重点内容可能出现在任意一张里）。请始终对画面做「整体解析」，分两种情况：\n'
-    + '1. 画面中有明确的题目或问题（作业题、考试题、报错、对话框里的提问）：先给答案（选择题给出正确选项和内容），再把必要的依据和步骤讲清 —— 先保证解对、解完整，再考虑简洁；题干、符号或图形条件看不清时不要自己猜一种理解就当条件往下做，说明缺了什么、只解能确定的部分，会决定答案时请用户补图；\n'
-    + '2. 画面中没有题目：就直接解析画面本身 —— 这是什么场景/什么界面、正在做什么、画面里值得注意的关键信息（数字、文字、状态、进度、报错），最后用一句话给出可操作的建议。\n'
-    + MATH_RULE + '。\n'
-    + '用中文，直接输出，不要寒暄，不要输出「[无题目]」这类标记。'
-    + noviceRule()
+  return '这是当前屏幕的截图（可能有多张，对应多个显示器）。识别并说明画面内容。'
+    + (orbState.novice ? '用大白话解释，遇到术语先说明含义。' : '')
 }
-
-/* v1.49：纯小白 —— 对通用 / 做题 / 追问都生效（追问复用同一段系统提示） */
-/* v1.52：纯小白重做。v1.49 只是在原格式后面追加几条要求，实测（mimo，3 道样题）的毛病：
- *   解析是一整段长文、比方生硬（「给她这一票人发个加 s 的小标记」）、考点里又冒术语（受力平衡）、
- *   「简略」把错项分析砍了、通用模式被「不超过 150 字」卡死 —— 指令互相打架，两头都没做好。
- * 现在：纯小白是一套独立的讲解格式（做题 / 通用各一套），解析强度只管深浅，不再和小白要求冲突。 */
-const NOVICE_STYLE = '读者是完全没基础的初学者（纯小白）。写法要求：\n'
-  + '- 像耐心的家教跟初一学生说话：句子短（一句不超过 25 个字），一句只讲一件事；不要在一句话中间换行；\n'
-  + '- 讲题要把该有的步骤和依据讲全，不能因为「句子短」就漏掉关键一步；宁可多几句话，也要解对、解完整；\n'
-  + '- 不堆专业名词；非用不可时，第一次出现就在括号里用大白话解释；\n'
-  + '- 不说「显然」「易得」「同理」「不难看出」；算式一步都不省；\n'
-  + '- 只写可核验的依据和步骤，不要写心里的猜测、犹豫或试错过程；\n'
-  + '- 比方只在真能帮助理解时才用，全文最多一个，要贴近日常（买东西、分东西、走路）；宁可不用，也不要生硬的比方；\n'
-  + '- 图里有看不清的字、符号或图形条件：不要自己猜一种理解就把题做下去。先说清哪里看不清、缺了哪个条件；只解能确定的部分，不确定处标成「需要……才能确定」；缺的条件决定答案时，就请用户补一张更清楚的图。不要给好几套可能的答案。'
-function noviceRule() { return '' }   // v1.52 起小白走独立格式（见 noviceExamPrompt / noviceGeneralPrompt），这里保留空实现给老调用点
 
 // v1.49：「## 解析」「## 考点」两段按解析强度换写法；三段式标题不变（answer.html 靠它排版）
 const EXAM_DETAIL_RULES = {
@@ -281,14 +318,12 @@ function noviceExamPrompt() {
   secs.push('## 其他选项错在哪\n只有选择题才写这一段（不是选择题就连标题一起省掉）。挑最容易混的一两个错项，每个一行：「A 错：……」，一句大白话。')
   secs.push('## 记住这句\n一句能背下来的规律；这题有典型易错点再补一句「最容易错在……」，没有就省掉。')
   if (d === 'detailed') secs.push('## 举一反三\n出一道同类的小题（只写题目和答案），再用一句话说这类题的通用做法。')
-  return PERSONA + '\n\n'
-    + '你是耐心的家教，在帮一个完全没基础的学生做题。用户把当前屏幕截图发给你（可能有多张，对应多个显示器，题目可能出现在任意一张里）。\n\n'
-    + NOVICE_STYLE + '\n\n'
-    + '先保证解对、解完整，再考虑简短。找到画面里的题目并解答，严格按下面的格式输出，标题原样照抄（含 ##），顺序不变：\n\n'
+  return '用户把当前屏幕截图发给你（可能有多张，对应多个显示器，题目可能出现在任意一张里）。\n'
+    + '找到画面里的题目并解答，先保证解对、解完整。严格按下面的格式输出，标题原样照抄（含 ##），顺序不变：\n\n'
     + secs.join('\n\n') + '\n\n'
     + '硬性要求：\n'
-    + '- 不寒暄、不用敬语、不复述整道题干；\n'
-    + '- 只写可核验的依据和步骤，不要写心里的猜测、犹豫或试错过程；\n'
+    + '- 不复述整道题干；\n'
+    + '- 只写可核验的依据和步骤，不要写猜测、犹豫或试错过程；\n'
     + '- ' + MATH_RULE + '；\n'
     + '- 题干、符号或图形条件看不清时，不要自己猜一种理解就当条件往下做：说明缺了什么、只解能确定的部分，缺的条件决定答案时请用户补一张更清楚的图；不要给好几套可能的答案；\n'
     + '- 画面里确实没有题目时：第一行只输出「未发现题目」，另起一段用两三句大白话说明画面内容；\n'
@@ -298,9 +333,8 @@ function noviceExamPrompt() {
 
 function examPrompt() {
   if (orbState.novice) return noviceExamPrompt()
-  return PERSONA + '\n\n'
-    + '你是考试答题助手。用户把当前屏幕截图发给你（可能有多张，对应多个显示器，题目可能出现在任意一张里）。\n'
-    + '先保证解对、解完整，再考虑简洁。找到画面里的题目并解答，输出必须严格用下面三段式，标题原样照抄（含 ##）：\n\n'
+  return '用户把当前屏幕截图发给你（可能有多张，对应多个显示器，题目可能出现在任意一张里）。\n'
+    + '找到画面里的题目并解答，先保证解对、解完整。输出必须严格用下面三段式，标题原样照抄（含 ##）：\n\n'
     + '## 答案\n'
     + '直接给结论。选择题：正确选项字母 + 选项内容（例：B. 鲸鱼）；多选/填空/简答/计算：给最终结果。\n\n'
     + '## 解析\n'
@@ -308,14 +342,13 @@ function examPrompt() {
     + '## 考点\n'
     + EXAM_DETAIL_RULES[examDetail()].point + '\n\n'
     + '硬性要求：\n'
-    + '- 不重复题干、不寒暄、不用敬语；\n'
-    + '- 只写可核验的依据和解题步骤，不要写内心的猜测、犹豫或试错过程；\n'
+    + '- 不复述题干；\n'
+    + '- 只写可核验的依据和解题步骤，不要写猜测、犹豫或试错过程；\n'
     + '- ' + MATH_RULE + '；\n'
     + '- 题干、符号或图形条件看不清时，不要自己猜一种理解就当条件往下做：说明缺了什么、只解能确定的部分，缺的条件决定答案时请用户补一张更清楚的图；不要给好几套可能的答案；\n'
     + '- 画面里确实没有题目时：第一行只输出「未发现题目」，另起一段用两三句话说明画面内容；\n'
     + '- 画面里有多道题时，每道题独立按上面的三段式回答，并在「## 答案」前加一行 `### 第 N 题`（N 按题号从 1 开始）；\n'
     + '- 同一道题的（1）（2）小问不算多道题，但每个小问要分开写清：「## 答案」和「## 解析」里按（1）（2）分别作答，不要把几个小问揉成一段。'
-    + noviceRule()
 }
 
 /* v1.65 的「通识」模式在 v1.60 取消（同安卓）：名词词块改成所有模式都有，见 prompts.js 的 TERMS_RULE +
@@ -550,6 +583,14 @@ function topMost(window, layer = LAYER_PANEL) {
   window.setAlwaysOnTop(true, 'screen-saver', layer)
   allSpaces(window)
 }
+/* v1.61.1：小球默认在左侧中部，而结果面板默认也从屏幕左边滑出（x = wa.x + 12，宽 300）——
+ * 两者在 x 轴上重叠，后建的面板会把球压在下面。不挪动球的初始位置（用户指定的就是左中），
+ * 只把球在同层（都是 alwaysOnTop 第 1 层）里重新抬到最前：topMost 重设层级 + moveTop 提 z 序。 */
+function orbToFront() {
+  if (!orbWin || orbWin.isDestroyed()) return
+  try { topMost(orbWin) } catch {}
+  try { orbWin.moveTop() } catch {}
+}
 
 /* ---------------- 弹窗显隐过渡（v1.48） ----------------
  * 以前所有弹窗都是 show:true 直接建 —— 窗口先出现、内容 100~200ms 后才画上，关的时候一帧消失。
@@ -622,11 +663,15 @@ function freezeWin(w) {
   return closing
 }
 
+/* v1.61.1：默认落点改到主屏工作区**左侧中间**（用户指定的桌面布局）。
+ * 左留 16px 是给球体外圈光晕的呼吸位；纵向按窗口高度居中 ——
+ * 球体在窗口里居中，所以视觉中心正好落在工作区竖直中点。
+ * 只影响「没存过位置」的首次启动和菜单里的「复位小球」；已存坐标照旧。 */
 function orbDefaultPos() {
   const wa = screen.getPrimaryDisplay().workArea
   return {
-    x: wa.x + wa.width - ORB_SIZE - 16,
-    y: wa.y + wa.height - ORB_SIZE - 84
+    x: Math.round(wa.x + 16),
+    y: Math.round(wa.y + (wa.height - ORB_WIN) / 2)
   }
 }
 
@@ -680,6 +725,8 @@ function placeOrb() {
     orbWin.setBounds({ x: b.x, y: b.y, width: ORB_WIN, height: ORB_WIN })
     logCapture('ORB_RESIZE 小球窗口被系统改成 ' + b.width + 'x' + b.height + '，已掰回 ' + ORB_WIN + 'x' + ORB_WIN)
   })
+  // v1.76：orb:guard 这类推送统一走 sendToWin —— 渲染层没就绪时先排队，加载完补发（不丢守护状态）
+  orbWin.webContents.on('did-finish-load', () => { if (orbWin) winReady(orbWin) })
   orbWin.loadFile(path.join(__dirname, 'orb.html'))
   orbWin.on('closed', () => { orbWin = null })
 }
@@ -745,8 +792,8 @@ function placeAnswer() {
   topMost(answerWin)
   hideFromMissionControl(answerWin)
   answerWin.loadFile(path.join(__dirname, 'answer.html'))
-  if (side === 'left') answerWin.once('ready-to-show', () => slideIn(answerWin, x))
-  else revealOnReady(answerWin, false)
+  if (side === 'left') answerWin.once('ready-to-show', () => { slideIn(answerWin, x); orbToFront() })
+  else answerWin.once('ready-to-show', () => { revealWin(answerWin, false); orbToFront() })
   const aw = answerWin
   aw.webContents.on('did-finish-load', () => { winReady(aw); sendMode() })
   answerWin.on('closed', () => { if (answerWin === aw) answerWin = null })
@@ -997,7 +1044,6 @@ async function streamTranslate(prompt) {
   let res
   try {
     const cfg = apiCfg()
-    if (!cfg.baseUrl || !cfg.model) throw new Error('还没配置 AI 接口：右键小球 → 设置，填接口地址、模型和 API Key')
     res = await fetch(cfg.baseUrl + '/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.apiKey },
@@ -1052,7 +1098,7 @@ async function streamTranslate(prompt) {
 const TRANS_CACHE_V = 'tr-rich-1'          // 输出内容版本：旧的一行 / 一句话结果不再命中（换了键，自动失效）
 const NOTE_NO_AI = '（只有机器译文，没有讲解：没有配置 AI 模型；可在设置里填 AI 接口）'
 const NOTE_AI_FAIL = '（只有机器译文，没有讲解：AI 讲解没成功）'
-/** AI 是否「配置过」—— 用户自己填了地址才算；没有内置接口 */
+/** AI 是否「配置过」——只认用户自己填的地址；开源构建没有内置接口。 */
 function aiConfigured() {
   const a = orbState.api || {}
   return !!(typeof a.baseUrl === 'string' && a.baseUrl.trim())
@@ -1178,19 +1224,841 @@ let _transCache = null, _solveCache = null, _histStore = null
 function transCache() { return _transCache || (_transCache = new X.Cache(app.getPath('userData'), 'translate', 300)) }
 function solveCache() { return _solveCache || (_solveCache = new X.Cache(app.getPath('userData'), 'solve', 100)) }
 function histStore() { return _histStore || (_histStore = new X.JsonStore(path.join(app.getPath('userData'), 'history.json'))) }
+/**
+ * 历史落盘走 tmp + rename：同步服务会同时读这份文件（lan-store 的 historyRead / historyWrite），
+ * 直接 writeFileSync 可能让另一端读到半截 JSON。
+ * strict = true 时写失败必须抛出：同步落盘不能返回 false 假装成功（那会把磁盘错误错报成网络错误）。
+ */
+function histWriteAtomic(list, strict) {
+  const file = histStore().file
+  const tmp = file + '.tmp'
+  try {
+    stateFs.writeFileSync(tmp, JSON.stringify(list), { mode: 0o600 })
+    stateFs.renameSync(tmp, file)
+    return true
+  } catch (err) {
+    try { stateFs.unlinkSync(tmp) } catch {}
+    if (strict) {
+      const why = String((err && err.message) || err || '未知错误')
+      const wrapped = new Error('历史写入失败：' + why)
+      wrapped.cause = err
+      throw wrapped
+    }
+    return false
+  }
+}
+
+/** 同步读历史：坏 JSON / 读失败必须抛，不能当成空库 —— 空库会让另一端把收藏全删掉。 */
+function histReadStrict() {
+  const store = histStore()
+  if (typeof store.readStrict === 'function') return store.readStrict()
+  if (typeof X.readStrict === 'function') return X.readStrict(store.file)
+  throw new Error('历史严格读取不可用（extras.js 缺少 readStrict），已停止同步以保护本机历史')
+}
+
+/**
+ * 历史最多 200 条（v1.58），但 ★ 收藏的条目不受这个上限裁剪：
+ * 新记录插到最前，非收藏最多留 X.HISTORY_MAX 条，收藏原样保留。
+ */
+function historyAddKeepStars(list, entry) {
+  const first = list[0]
+  if (first && first.kind === entry.kind && first.text === entry.text && (first.src || '') === (entry.src || '')) return list
+  const all = [entry].concat(list)
+  const out = []
+  let plain = 0
+  for (const item of all) {
+    if (item && item.star) { out.push(item); continue }
+    if (plain < X.HISTORY_MAX) { out.push(item); plain += 1 }
+  }
+  return out
+}
+
 /** 返回这条的时间戳 id（关了保存时返回 0） */
 function historyAdd(e) {
   if (orbState.saveHistory === false || !e || !String(e.text || '').trim()) return 0
+  // v1.61.2：冷启动 pending journal 必须先恢复；守卫失败就不写，返回 0（不假成功）。
+  try { X.runWriteGuard() } catch (err) { lanGuardNotice(err); return 0 }
   const l = histStore().read()
   const id = Math.max(Date.now(), (l[0] && l[0].t + 1) || 0)
-  const nl = X.historyAddList(l, Object.assign({ t: id }, e))
-  histStore().write(nl)
+  const nl = historyAddKeepStars(l, Object.assign({ t: id }, e))
+  histWriteAtomic(nl)
   return nl[0].t
 }
 function historyUpdate(id, text) {
   if (!id || !String(text || '').trim()) return
-  histStore().write(histStore().read().map((x) => x.t === id ? Object.assign({}, x, { text }) : x))
+  try { X.runWriteGuard() } catch (err) { lanGuardNotice(err); return }
+  histWriteAtomic(histStore().read().map((x) => x.t === id ? Object.assign({}, x, { text }) : x))
 }
+
+/* ================= v1.61：局域网同步（手动开启，停即关闭） =================
+ * 只有用户在设置卡里点「开始同步」才监听；设置卡一关 / App 退出立刻 stop：
+ *   · socket 全部 destroy，session key 直接丢掉（下次开启是新 key、新连接串）
+ *   · 不做后台常驻，也不在开机 / 启动时自动开
+ * 数据层（记录形状 / 时钟 / 冲突副本 / 落盘）全部在 lan-store.js，本段只做接线：
+ *   knowledge = 现有真实 Knowledge.Store 实例（严格读取走 listStrict）
+ *   historyRead / historyWrite = main 的 histStore（严格读；原子写且失败必抛，保留 star）
+ */
+let _lanStore = null
+let _lanSync = null
+/** v1.61.2：恢复失败后一直保留，直到本进程里有一次恢复真正成功。 */
+let _lanRecoverError = null
+
+function lanStore() {
+  if (_lanStore) return _lanStore
+  let mod
+  try { mod = require('./lan-store') }
+  catch { throw new Error('同步数据层未安装（缺少 lan-store.js），暂时不能开启同步') }
+  const Ctor = mod && (mod.LanStore || mod.default || mod)
+  if (typeof Ctor !== 'function') throw new Error('lan-store.js 没有导出 LanStore，暂时不能开启同步')
+  const cards = kcardStore()
+  if (typeof cards.listStrict !== 'function') {
+    throw new Error('知识库严格读取不可用（knowledge.listStrict 缺失），已停止同步以保护本机卡片')
+  }
+  _lanStore = new Ctor({
+    dir: app.getPath('userData'),
+    // 直接把真实 Store 交过去：lan-store 会用 listStrict / nextId / replaceFromSync，
+    // 并把「编辑前先恢复 journal」的守卫装到实例上。再包一层会把这些能力挡掉。
+    knowledge: cards,
+    historyRead: histReadStrict,
+    historyWrite: (list) => {
+      // 写失败必须抛：lan-store 只有拿到异常才会回滚 / 不 ack。
+      if (!Array.isArray(list)) throw new TypeError('同步写回历史需要数组')
+      histWriteAtomic(list, true)
+    }
+  })
+  _lanRecoverError = null
+  return _lanStore
+}
+
+/**
+ * v1.61.2：冷启动 pending journal 的惰性恢复守卫。
+ *
+ * 同步只在用户点「开始同步」时才建 LanStore，但上次同步中途崩溃留下的 journal 必须在
+ * **下一次业务写盘之前**重放；否则历史 / 知识卡先落盘，随后恢复又用 journal 里的旧内容
+ * 把它们覆盖掉（历史编辑的 X.runWriteGuard 以前就是这样空转到同步开启为止）。
+ *
+ * 这里不提前构造 LanStore（没有 journal 时不建 sidecar、更不监听端口），只在真的看到
+ * journal 时才构造：
+ *   · 恢复成功 → lan-store 会把自己的守卫装到 K/X 上，后续业务写正常；
+ *   · 恢复失败 → 错误一直留在 _lanRecoverError，之后每次写都继续拒绝；
+ *     journal 原样保留，不删除、不隔离后继续编辑。
+ */
+function lanJournalPending() {
+  try { return stateFs.existsSync(path.join(app.getPath('userData'), 'lan-sync.journal.json')) }
+  catch { return false }
+}
+
+function lanRecoveryGuard() {
+  if (_lanRecoverError) throw _lanRecoverError
+  if (!lanJournalPending()) return
+  try { lanStore() }
+  catch (err) {
+    const wrapped = new Error('同步恢复失败，数据未写入：' + lanErrorText(err))
+    wrapped.cause = err
+    _lanRecoverError = wrapped
+    modeLog(wrapped.message)
+    throw wrapped
+  }
+}
+
+/** app.whenReady 里、任何 UI 之前调用：历史与知识卡落盘前都先过这道守卫。 */
+function installLanWriteGuards() {
+  X.setWriteGuard(lanRecoveryGuard)
+  if (K && typeof K.setWriteGuard === 'function') K.setWriteGuard(lanRecoveryGuard)
+}
+
+/** 守卫拒绝写时给用户看的话：明确「没写进去」，不退化成「抽不出内容」。 */
+function lanGuardNotice(err) {
+  const msg = '同步恢复失败，数据未写入'
+  const why = lanErrorText(err)
+  modeLog(msg + (why && why !== msg ? '：' + why : ''))
+  pushNotice(msg)
+  transSendIfOpen('trans:badge', msg)   // 翻译面板没开就什么都不做
+  return msg
+}
+
+function lanSync() {
+  if (!_lanSync) _lanSync = new LanSync({ store: lanStore() })
+  return _lanSync
+}
+
+function lanSyncStop() {
+  if (!_lanSync) return Promise.resolve({ ok: true })
+  try {
+    return Promise.resolve(_lanSync.stop()).catch((err) => {
+      modeLog('局域网同步停止失败：' + lanErrorText(err))
+      return { ok: false, error: lanErrorText(err) }
+    })
+  } catch (err) {
+    modeLog('局域网同步停止失败：' + lanErrorText(err))
+    return Promise.resolve({ ok: false, error: lanErrorText(err) })
+  }
+}
+
+/** 敏感 IPC 只认设置窗口的 webContents，别的 renderer 一律拒绝。 */
+function isSettingsSender(e) {
+  return !!(e && e.sender && settingsWin && !settingsWin.isDestroyed() && e.sender === settingsWin.webContents)
+}
+
+function lanErrorText(err) {
+  return String((err && err.message) || err || '未知错误').replace(/^lan-sync:\s*/, '')
+}
+
+ipcMain.handle('lan-sync:status', (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  try {
+    if (!_lanSync) return { ok: true, running: false, port: 0, connectionStrings: [], hint: '', startedAt: 0, lastExchangeAt: 0, exchanges: 0, conflicts: 0, lastStats: null, lastError: '' }
+    return Object.assign({ ok: true }, _lanSync.status())
+  } catch (err) { return { ok: false, error: lanErrorText(err) } }
+})
+
+ipcMain.handle('lan-sync:start', async (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  try {
+    const r = await lanSync().start()
+    // listen 是异步的：等它回来时设置卡可能已经关掉。绝不能让端口在看不见的界面里继续开着。
+    if (!isSettingsSender(e)) {
+      await lanSyncStop()
+      return { ok: false, error: '设置窗口已关闭，同步已停止', running: false }
+    }
+    return Object.assign({ ok: true }, r)
+  } catch (err) {
+    // 失败也要把可能开了一半的端口收掉，再如实报错。
+    await lanSyncStop()
+    modeLog('局域网同步开启失败：' + lanErrorText(err))
+    return { ok: false, error: lanErrorText(err), running: false }
+  }
+})
+
+ipcMain.handle('lan-sync:stop', async (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const r = await lanSyncStop()
+  return Object.assign({ ok: true }, r)
+})
+
+ipcMain.handle('lan-sync:copy', (e, index) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const idx = Number(index)
+  if (!Number.isInteger(idx) || idx < 0) return { ok: false, error: '没有这条连接串' }
+  let list = []
+  try { list = _lanSync ? _lanSync.status().connectionStrings : [] } catch {}
+  if (!list[idx]) return { ok: false, error: '连接串已失效，请重新开始同步' }
+  clipboard.writeText(list[idx])
+  return { ok: true }
+})
+
+/* v1.62：冲突查看 / 三选解决。两个入口都只接受设置窗口，且都在 lan-store 的锁内事务里落盘。 */
+/** 没同步过（sidecar 与 journal 都不存在）就别为了「看冲突」新建 sidecar。 */
+function lanConflictList() {
+  if (_lanStore) return _lanStore.listConflicts()
+  let hasState = false
+  try { hasState = stateFs.existsSync(path.join(app.getPath('userData'), 'lan-sync.json')) } catch {}
+  if (!hasState && !lanJournalPending()) return []
+  return lanStore().listConflicts()
+}
+
+ipcMain.handle('lan-sync:conflicts', (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  try { return { ok: true, conflicts: lanConflictList() } }
+  catch (err) { return { ok: false, error: lanErrorText(err) } }
+})
+
+ipcMain.handle('lan-sync:resolve', (e, copyUid, pick) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  try {
+    const store = lanStore()
+    const r = store.resolveConflict(String(copyUid == null ? '' : copyUid), String(pick == null ? '' : pick))
+    return Object.assign({ ok: true }, r, { conflicts: store.listConflicts() })
+  } catch (err) {
+    return { ok: false, error: lanErrorText(err) }
+  }
+})
+
+/* ================= v1.64：MCP（供本机外部 Agent）+ 手机常连（持久配对） =================
+ * 三条线彼此独立，别混：
+ *   · 局域网同步（v1.61）：点「开始同步」才开端口，设置卡一关就停 —— 一次性对数据；
+ *   · MCP（本段）：只绑 127.0.0.1:<mcpPort>，给本机 MCP 客户端调 Ling 的工具；
+ *   · 手机常连（本段）：绑私网地址，手机扫码后持久配对、后台轮询。
+ * 三条硬约束：① 两个开关默认关、新装一律关（开关值持久保存，下次启动按上次的选择起）；
+ * ② 端口占用绝不自动换一个 —— 如实报错，让用户自己改；③ 只有当前设置窗口的 webContents
+ * 能调这些 IPC（签发 token / 撤销 / 改端口 / 审计都算敏感），别处 renderer 一律「没有权限」。
+ * 退出：before-quit 先发起 stop，will-quit 等它真的关完 socket 再退出（和 LAN 同步同一套写法）。
+ */
+const MCP_DEFAULT_PORT = 47321
+const LINK_DEFAULT_PORT = 47322
+const MCP_SCOPES = ['read', 'write', 'act', 'personal']
+const DESKTOP_CONFIRM_MS = 30000   // T9 桌面打开文件：本机确认框 30 秒不选 = 拒绝
+
+let _mcpAuth = null
+let _mcpAudit = null
+let _mcpTools = null
+let _mcpHub = null
+let _link = null
+
+/** 模块缺失 / 载入失败时给用户看的话 —— 绝不伪造「已开启」。 */
+function svcRequire(name, what) {
+  try { return require(name) }
+  catch (err) { throw new Error(what + '不可用（无法加载 ' + name + '.js）：' + svcErrorText(err)) }
+}
+function svcErrorText(err) {
+  return String((err && err.message) || err || '未知错误').replace(/^(mcp-hub|mcp-auth|mcp-audit|mcp-tools|ling-link):\s*/, '')
+}
+
+/** token 哈希 / 审计 / 回滚日志都在 mcp/；Link 的配对密钥单独放 link/；讲义在 handouts/。 */
+function mcpDir() { return path.join(app.getPath('userData'), 'mcp') }
+function linkDir() { return path.join(app.getPath('userData'), 'link') }
+function handoutsDir() { return path.join(app.getPath('userData'), 'handouts') }
+
+function portOk(v) {
+  const n = Number(v)
+  return (Number.isInteger(n) && n >= 1024 && n <= 65535) ? n : 0
+}
+function mcpPort() { return portOk(orbState.mcp && orbState.mcp.port) || MCP_DEFAULT_PORT }
+function linkPort() { return portOk(orbState.link && orbState.link.port) || LINK_DEFAULT_PORT }
+
+/** 用户没配根目录时给三个默认位置（T9 只允许这些目录里的真实文件）。 */
+function mcpRootsEffective() {
+  const own = (orbState.mcp && Array.isArray(orbState.mcp.roots)) ? orbState.mcp.roots.filter((x) => typeof x === 'string' && x) : []
+  if (own.length) return own.slice()
+  const out = []
+  for (const k of ['documents', 'downloads', 'desktop']) {
+    try { const p = app.getPath(k); if (p) out.push(p) } catch {}
+  }
+  return out
+}
+
+function mcpAuthGet() {
+  if (!_mcpAuth) {
+    const mod = svcRequire('./mcp-auth', 'MCP 鉴权模块')
+    if (typeof mod.createAuth !== 'function') throw new Error('mcp-auth.js 没有导出 createAuth')
+    _mcpAuth = mod.createAuth({ dir: mcpDir() })
+  }
+  return _mcpAuth
+}
+function mcpAuditGet() {
+  if (!_mcpAudit) {
+    const mod = svcRequire('./mcp-audit', 'MCP 审计模块')
+    if (typeof mod.createAudit !== 'function') throw new Error('mcp-audit.js 没有导出 createAudit')
+    _mcpAudit = mod.createAudit({ dir: mcpDir() })
+  }
+  return _mcpAudit
+}
+
+/* tools 拿到的 link 是薄转发：Link 没开时抛 PHONE_OFFLINE 之类的错误码，由 tools 转成 MCP 错误。
+ * 这里不在构造期就起监听，也不在没开 Link 时去建目录。 */
+const linkFacade = {
+  call: (...a) => lingLinkGet().call(...a),
+  status: () => { try { return lingLinkGet().status() } catch (err) { return { running: false, port: 0, error: svcErrorText(err), devices: [] } } },
+  cancelClient: (id) => { try { return lingLinkGet().cancelClient(id) } catch { return 0 } }
+}
+
+function mcpToolsGet() {
+  if (!_mcpTools) {
+    const mod = svcRequire('./mcp-tools', 'MCP 工具模块')
+    if (typeof mod.createTools !== 'function') throw new Error('mcp-tools.js 没有导出 createTools')
+    _mcpTools = mod.createTools({
+      // 真实数据层：知识卡 Store（带 listStrict / nextId / remove）、历史严格读、LAN 恢复守卫
+      store: () => kcardStore(),
+      // 严格读：只有「文件不存在」算空；损坏 / 读失败必须抛，不能把坏库当空库交给 Agent
+      history: () => histStore().readStrict(),
+      guard: () => X.runWriteGuard(),
+      afterWrite: () => { pushKcardMenuBadge() },
+      link: linkFacade,
+      audit: mcpAuditGet(),
+      confirmFile: (o) => confirmDesktopFile(o),
+      openFile: (p) => openDesktopFile(p),
+      roots: () => mcpRootsEffective(),
+      dir: mcpDir(),
+      handoutsDir: handoutsDir(),
+      version: app.getVersion()
+    })
+  }
+  return _mcpTools
+}
+
+function mcpHubGet() {
+  if (!_mcpHub) {
+    const mod = svcRequire('./mcp-hub', 'MCP 服务模块')
+    if (typeof mod.createHub !== 'function') throw new Error('mcp-hub.js 没有导出 createHub')
+    _mcpHub = mod.createHub({ auth: mcpAuthGet(), audit: mcpAuditGet(), tools: mcpToolsGet(), port: mcpPort(), version: app.getVersion() })
+  }
+  return _mcpHub
+}
+
+function lingLinkGet() {
+  if (!_link) {
+    const mod = svcRequire('./ling-link', '手机常连模块')
+    if (typeof mod.createLink !== 'function') throw new Error('ling-link.js 没有导出 createLink')
+    _link = mod.createLink({
+      dir: linkDir(),
+      port: linkPort(),
+      /* 事件里不含链接密钥 / 配对串 / 请求体（Link owner 保证）。
+       * 审计只保留白名单字段（event/ts/client/tool/pair/reason/count/...），所以这里把
+       * Link 的 type 与嵌套 entry 展平到白名单字段上，别指望 audit 会替你保留任意键。 */
+      onEvent: (ev) => {
+        const e2 = ev || {}
+        const kind = String(e2.type || 'event')
+        const row = { event: 'link_' + kind.replace(/[^a-z-]/g, ''), ts: Date.now() }
+        if (e2.pairId) row.pair = String(e2.pairId)
+        if (e2.name) row.note = String(e2.name)
+        if (e2.model) row.device = String(e2.model)
+        if (e2.caps != null) row.count = Number(e2.caps) || 0
+        if (e2.count != null) row.count = Number(e2.count) || 0
+        if (e2.reason) row.reason = String(e2.reason)
+        if (e2.clientId) row.client = String(e2.clientId)
+        if (e2.entry && typeof e2.entry === 'object') {
+          if (e2.entry.id) row.target = String(e2.entry.id)
+          if (e2.entry.tool) row.tool = String(e2.entry.tool)
+          if (e2.entry.client) {
+            const c = e2.entry.client
+            row.client = String((c && c.id) || c)
+            if (c && c.name) row.clientName = String(c.name)
+          }
+          if (e2.entry.state) row.reason = String(e2.entry.state)
+          if (e2.entry.pairId) row.pair = String(e2.entry.pairId)
+        }
+        try { mcpAuditGet().record(row) } catch {}
+      }
+    })
+  }
+  return _link
+}
+
+async function mcpHubStart() {
+  try {
+    const hub = mcpHubGet()
+    await hub.start()
+    const s = hub.status()
+    if (s && s.error) { modeLog('MCP 服务启动后报错：' + s.error); return { ok: false, error: String(s.error) } }
+    modeLog('MCP 服务已开启 127.0.0.1:' + ((s && s.port) || mcpPort()))
+    return { ok: true }
+  } catch (err) {
+    const msg = svcErrorText(err)
+    modeLog('MCP 服务开启失败：' + msg)
+    return { ok: false, error: msg }
+  }
+}
+async function mcpHubStop() {
+  if (!_mcpHub) return { ok: true }
+  try { await _mcpHub.stop(); modeLog('MCP 服务已停止'); return { ok: true } }
+  catch (err) { const msg = svcErrorText(err); modeLog('MCP 服务停止失败：' + msg); return { ok: false, error: msg } }
+}
+async function linkStart() {
+  try {
+    const l = lingLinkGet()
+    await l.start()
+    const s = l.status()
+    if (s && s.error) { modeLog('手机常连启动后报错：' + s.error); return { ok: false, error: String(s.error) } }
+    modeLog('手机常连已开启 端口 ' + ((s && s.port) || linkPort()))
+    return { ok: true }
+  } catch (err) {
+    const msg = svcErrorText(err)
+    modeLog('手机常连开启失败：' + msg)
+    return { ok: false, error: msg }
+  }
+}
+async function linkStop() {
+  if (!_link) return { ok: true }
+  try { await _link.stop(); modeLog('手机常连已停止'); return { ok: true } }
+  catch (err) { const msg = svcErrorText(err); modeLog('手机常连停止失败：' + msg); return { ok: false, error: msg } }
+}
+
+/** 设置页要的形状：绝不带 token / 哈希 / 配对密钥。lastUsedAt 只是时间戳，用来显示「最近用过」。 */
+function safeClient(c) {
+  return {
+    id: String((c && c.id) || ''), name: String((c && c.name) || ''),
+    scopes: (c && Array.isArray(c.scopes)) ? c.scopes.slice() : [],
+    tools: (c && Array.isArray(c.tools)) ? c.tools.slice() : null,
+    createdAt: (c && c.createdAt) || 0,
+    lastUsedAt: (c && c.lastUsedAt) || 0
+  }
+}
+function hubStatusSafe() {
+  const out = { running: false, port: mcpPort(), error: '' }
+  try {
+    if (_mcpHub) {
+      const s = _mcpHub.status()
+      if (s) {
+        out.running = !!s.running
+        if (s.port) out.port = s.port
+        out.error = s.error ? String(s.error) : ''
+      }
+    }
+  } catch (err) { out.error = svcErrorText(err) }
+  return out
+}
+function linkStatusSafe() {
+  const out = { running: false, port: linkPort(), error: '', devices: [], pairs: [], lateResults: 0 }
+  try {
+    if (_link) {
+      // status() 会惰性加载 link-pairs.json：重启后不用先 start 也能列出已配对手机
+      const s = _link.status() || {}
+      out.running = !!s.running
+      if (s.port) out.port = s.port
+      out.error = s.error ? String(s.error) : ''
+      out.devices = Array.isArray(s.devices) ? s.devices.map((d) => ({
+        id: String((d && d.id) || ''), name: String((d && d.name) || ''),
+        online: !!(d && d.online), lastSeen: (d && d.lastSeen) || 0,
+        caps: (d && Array.isArray(d.caps)) ? d.caps.slice() : [],
+        // apps 只有别名与显示名；手机上到底放开了哪些由手机端 LinkSettingsActivity 决定，桌面不猜
+        apps: (d && Array.isArray(d.apps)) ? d.apps.map((a) => ({ alias: String((a && a.alias) || ''), name: String((a && a.name) || '') })) : [],
+        model: (d && d.model) ? String(d.model) : '', queued: Number((d && d.queued) || 0)
+      })) : []
+      out.pairs = Array.isArray(s.pairs) ? s.pairs.map((p) => ({
+        id: String((p && p.id) || ''), name: String((p && p.name) || ''), createdAt: (p && p.createdAt) || 0
+      })) : []
+      out.lateResults = Array.isArray(s.lateResults) ? s.lateResults.length : Number(s.lateResults || 0)
+    }
+  } catch (err) { out.error = svcErrorText(err) }
+  return out
+}
+
+function mcpStatusPayload() {
+  const hub = hubStatusSafe()
+  let clients = [], clientsError = ''
+  try { clients = mcpAuthGet().list().map(safeClient) } catch (err) { clientsError = svcErrorText(err) }
+  return {
+    ok: true, enabled: !!(orbState.mcp && orbState.mcp.enabled), running: hub.running, port: hub.port, error: hub.error,
+    clients: clients, clientsError: clientsError, roots: mcpRootsEffective(),
+    rootsCustom: !!(orbState.mcp && Array.isArray(orbState.mcp.roots) && orbState.mcp.roots.length),
+    handoutsDir: handoutsDir(), version: app.getVersion(), scopes: MCP_SCOPES.slice(),
+    link: linkStatusSafe()
+  }
+}
+
+/** T9 本机确认框：真实路径与客户端名必须显示；模型给的理由只作附加说明（标明未核实）。 */
+async function confirmDesktopFile(o) {
+  const opt = o || {}
+  const client = opt.client || {}
+  const file = String(opt.path || '')
+  const reason = String(opt.reason || '').slice(0, 400)
+  const parent = (settingsWin && !settingsWin.isDestroyed()) ? settingsWin
+    : (orbWin && !orbWin.isDestroyed()) ? orbWin : null
+  if (!file) return false
+  if (!parent) { modeLog('桌面打开文件被拒绝：没有可用的确认窗口'); return false }
+  const ac = new AbortController()
+  const timer = setTimeout(() => { try { ac.abort() } catch {} }, DESKTOP_CONFIRM_MS)
+  const onAbort = () => { try { ac.abort() } catch {} }
+  let detach = () => {}
+  try {
+    if (opt.signal) {
+      if (opt.signal.aborted) onAbort()
+      else {
+        opt.signal.addEventListener('abort', onAbort, { once: true })
+        detach = () => { try { opt.signal.removeEventListener('abort', onAbort) } catch {} }
+      }
+    }
+  } catch {}
+  let allowed = false
+  try {
+    const r = await dialog.showMessageBox(parent, {
+      type: 'warning',
+      title: '外部 Agent 请求打开文件',
+      message: '「' + (client.name || client.id || '外部客户端') + '」请求用本机程序打开一个文件',
+      detail: '客户端：' + (client.name || '未知') + (client.id ? '（' + client.id + '）' : '') +
+        '\n路径：' + file +
+        (reason ? '\n客户端给的理由（未核实，只作参考）：' + reason : '') +
+        '\n\n30 秒内不选就按拒绝处理；只有你点「允许打开」才会打开。',
+      buttons: ['拒绝', '允许打开'],
+      defaultId: 0, cancelId: 0, noLink: true,
+      signal: ac.signal
+    })
+    allowed = !!(r && r.response === 1)
+  } catch (err) {
+    // 超时 abort / 窗口被关：一律按拒绝处理，绝不猜「用户大概同意」
+    allowed = false
+    modeLog('桌面打开文件确认未完成（按拒绝处理）：' + svcErrorText(err))
+  } finally {
+    clearTimeout(timer)
+    detach()
+  }
+  modeLog('桌面打开文件：' + (allowed ? '允许' : '拒绝') + ' client=' + (client.id || '?') + ' path=' + file)
+  return allowed
+}
+/** 打开真实文件：返回错误字符串（空串 = 成功）。 */
+async function openDesktopFile(p) {
+  const file = String(p || '')
+  if (!file) return '路径为空'
+  try { return String((await shell.openPath(file)) || '') } catch (err) { return svcErrorText(err) }
+}
+
+/* ---- 配置片段：token 只放占位符 —— 真实 token 只在签发那一次让用户复制 ---- */
+function mcpConfigSnippet(name) {
+  const slug = String(name || 'ling').replace(/[^\w.-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'ling'
+  const port = mcpPort()
+  const bridge = path.join(__dirname, 'ling-mcp-bridge.js')
+  const httpCfg = { mcpServers: {} }
+  httpCfg.mcpServers[slug] = { url: 'http://127.0.0.1:' + port + '/mcp', headers: { Authorization: 'Bearer ${LING_MCP_TOKEN}' } }
+  const stdioCfg = { mcpServers: {} }
+  stdioCfg.mcpServers[slug] = { command: process.execPath, args: [bridge], env: { ELECTRON_RUN_AS_NODE: '1', LING_MCP_TOKEN: '${LING_MCP_TOKEN}' } }
+  return [
+    '# 方式一：Streamable HTTP（推荐，客户端直接连本机端口）',
+    JSON.stringify(httpCfg, null, 2),
+    '',
+    '# 方式二：stdio 桥接（客户端只能拉起子进程时用）',
+    JSON.stringify(stdioCfg, null, 2),
+    '',
+    '# 环境变量：LING_MCP_TOKEN = 刚才签发的那串 token（只显示一次，丢了就撤销重建）',
+    '# 端口不是 ' + port + ' 时再加 LING_MCP_URL=http://127.0.0.1:' + port + '/mcp'
+  ].join('\n')
+}
+
+ipcMain.handle('mcp:status', (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  try { return mcpStatusPayload() } catch (err) { return { ok: false, error: svcErrorText(err) } }
+})
+
+ipcMain.handle('mcp:set-enabled', async (e, on) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const want = on === true
+  orbState.mcp = Object.assign({ enabled: false, port: MCP_DEFAULT_PORT, roots: [] }, orbState.mcp || {}, { enabled: want })
+  if (want) {
+    const r = await mcpHubStart()
+    if (!r.ok) {
+      // 打不开就如实回到「关」，不留假的已开启状态
+      orbState.mcp.enabled = false
+      saveState()
+      return Object.assign(mcpStatusPayload(), { ok: false, error: r.error })
+    }
+  } else {
+    await mcpHubStop()
+  }
+  saveState()
+  return mcpStatusPayload()
+})
+
+ipcMain.handle('mcp:set-port', async (e, p) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const next = portOk(p)
+  if (!next) return { ok: false, error: '端口要在 1024–65535 之间' }
+  const prevPort = mcpPort()
+  if (next === prevPort) return mcpStatusPayload()
+  const wasRunning = hubStatusSafe().running
+  if (wasRunning) { await mcpHubStop(); _mcpHub = null }
+  orbState.mcp = Object.assign({ enabled: false, roots: [] }, orbState.mcp || {}, { port: next })
+  saveState()
+  if (!wasRunning) return mcpStatusPayload()
+  const r = await mcpHubStart()
+  if (r.ok) return mcpStatusPayload()
+  // 新端口用不了：改回原端口并如实说明，绝不悄悄换第三个端口
+  await mcpHubStop(); _mcpHub = null
+  orbState.mcp.port = prevPort
+  saveState()
+  const back = await mcpHubStart()
+  return Object.assign(mcpStatusPayload(), {
+    ok: false,
+    error: '端口 ' + next + ' 用不了（' + r.error + '），已改回 ' + prevPort + (back.ok ? '' : '；原端口也没起来：' + back.error)
+  })
+})
+
+ipcMain.handle('mcp:client-create', (e, o) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const opt = o || {}
+  const name = String(opt.name || '').trim().slice(0, 40)
+  if (!name) return { ok: false, error: '先给客户端起个名字（比如 claude-desktop）' }
+  // 默认只有 read；write / act / personal 必须在界面上显式勾选后才进 scope
+  const picked = Array.isArray(opt.scopes) ? opt.scopes.filter((s) => MCP_SCOPES.includes(s)) : []
+  const scopes = Array.from(new Set(['read'].concat(picked)))
+  const tools = Array.isArray(opt.tools) ? opt.tools.filter((t) => typeof t === 'string' && t).slice(0, 40) : undefined
+  try {
+    const r = mcpAuthGet().create({ name, scopes, tools })
+    if (!r || !r.client || !r.token) return { ok: false, error: '签发失败（模块没有返回 token）' }
+    // 审计只保留白名单字段：scope 是字符串，scopes 数组会被丢掉
+    try { mcpAuditGet().record({ event: 'client_created', client: r.client.id, clientName: r.client.name, scope: scopes.join(',') }) } catch {}
+    // token 只在这一刻回给设置页；之后任何 IPC 都不会再给
+    return { ok: true, client: safeClient(r.client), token: String(r.token), snippet: mcpConfigSnippet(name), port: mcpPort() }
+  } catch (err) { return { ok: false, error: svcErrorText(err) } }
+})
+
+ipcMain.handle('mcp:client-revoke', async (e, id) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const cid = String(id || '')
+  if (!cid) return { ok: false, error: '缺少客户端 id' }
+  let r = { ok: true }
+  let existed = false
+  try { existed = mcpAuthGet().revoke(cid) === true } catch (err) { r = { ok: false, error: svcErrorText(err) } }
+  if (r.ok && !existed) return { ok: false, error: '没有这个客户端（可能已经撤销过了）' }
+  // 撤销后立刻取消这个客户端还挂在手机上的指令（否则手机可能继续执行已撤销客户端的命令）
+  let cancelled = 0
+  try { cancelled = Number(linkFacade.cancelClient(cid)) || 0 } catch {}
+  // 限流桶里还留着这个客户端的分桶计数：撤销后一并清掉，别让未来的同名 id 撞上旧桶
+  try { if (_mcpHub && typeof _mcpHub.forget === 'function') _mcpHub.forget(cid) } catch {}
+  try { mcpAuditGet().record({ event: 'client_revoked', client: cid, cancelled: cancelled }) } catch {}
+  return Object.assign({ cancelled: cancelled }, r, r.ok ? mcpStatusPayload() : {})
+})
+
+ipcMain.handle('mcp:roots-add', async (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const parent = (settingsWin && !settingsWin.isDestroyed()) ? settingsWin : undefined
+  try {
+    const r = await dialog.showOpenDialog(parent, { title: '选择允许外部 Agent 打开的目录', properties: ['openDirectory', 'multiSelections', 'createDirectory'] })
+    if (!r || r.canceled || !Array.isArray(r.filePaths) || !r.filePaths.length) return Object.assign(mcpStatusPayload(), { cancelled: true })
+    const cur = (orbState.mcp && Array.isArray(orbState.mcp.roots)) ? orbState.mcp.roots.slice() : []
+    const next = Array.from(new Set(cur.concat(r.filePaths.map(String))))
+    orbState.mcp = Object.assign({ enabled: false, port: MCP_DEFAULT_PORT }, orbState.mcp || {}, { roots: next })
+    saveState()
+    return mcpStatusPayload()
+  } catch (err) { return { ok: false, error: svcErrorText(err) } }
+})
+
+ipcMain.handle('mcp:roots-remove', (e, p) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const target = String(p || '')
+  const cur = (orbState.mcp && Array.isArray(orbState.mcp.roots)) ? orbState.mcp.roots.slice() : []
+  orbState.mcp = Object.assign({ enabled: false, port: MCP_DEFAULT_PORT }, orbState.mcp || {}, { roots: cur.filter((x) => x !== target) })
+  saveState()
+  return mcpStatusPayload()
+})
+
+ipcMain.handle('mcp:roots-reset', (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  orbState.mcp = Object.assign({ enabled: false, port: MCP_DEFAULT_PORT }, orbState.mcp || {}, { roots: [] })
+  saveState()
+  return mcpStatusPayload()
+})
+
+ipcMain.handle('mcp:open-handouts', async (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const dir = handoutsDir()
+  try { stateFs.mkdirSync(dir, { recursive: true, mode: 0o700 }) } catch {}
+  const err = await openDesktopFile(dir)
+  return err ? { ok: false, error: err } : { ok: true, path: dir }
+})
+
+ipcMain.handle('mcp:audit-list', (e, limit) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const n = Math.min(200, Math.max(1, Number(limit) || 20))
+  try { return { ok: true, events: mcpAuditGet().list(n) } } catch (err) { return { ok: false, error: svcErrorText(err) } }
+})
+
+ipcMain.handle('mcp:audit-export', async (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const parent = (settingsWin && !settingsWin.isDestroyed()) ? settingsWin : undefined
+  let text = ''
+  try { text = String(mcpAuditGet().export() || '') } catch (err) { return { ok: false, error: svcErrorText(err) } }
+  const d = new Date()
+  const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0') + '-' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0')
+  let def = path.join(app.getPath('userData'), 'ling-mcp-audit-' + stamp + '.jsonl')
+  try { def = path.join(app.getPath('downloads'), 'ling-mcp-audit-' + stamp + '.jsonl') } catch {}
+  try {
+    const r = await dialog.showSaveDialog(parent, { title: '导出 MCP 调用审计', defaultPath: def, filters: [{ name: 'JSON Lines', extensions: ['jsonl'] }] })
+    if (!r || r.canceled || !r.filePath) return { ok: false, cancelled: true }
+    stateFs.writeFileSync(r.filePath, text, { mode: 0o600 })
+    return { ok: true, path: r.filePath, bytes: Buffer.byteLength(text) }
+  } catch (err) { return { ok: false, error: svcErrorText(err) } }
+})
+
+ipcMain.handle('mcp:audit-copy', (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  try { const t = String(mcpAuditGet().export() || ''); clipboard.writeText(t); return { ok: true, bytes: Buffer.byteLength(t) } }
+  catch (err) { return { ok: false, error: svcErrorText(err) } }
+})
+
+/** 回滚：只撤销「带这个客户端来源、且用户没改过」的写入。先本机二次确认，措辞写清不会误删。 */
+ipcMain.handle('mcp:rollback', async (e, clientId) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const cid = String(clientId || '')
+  if (!cid) return { ok: false, error: '缺少客户端 id' }
+  let client = null
+  try { client = mcpAuthGet().list().find((c) => c && c.id === cid) || null } catch {}
+  const label = client ? (client.name || cid) : cid
+  const parent = (settingsWin && !settingsWin.isDestroyed()) ? settingsWin : null
+  if (!parent) return { ok: false, error: '没有可用的确认窗口' }
+  let allowed = false
+  try {
+    const r = await dialog.showMessageBox(parent, {
+      type: 'warning',
+      title: '撤销外部客户端的写入',
+      message: '撤销「' + label + '」通过 MCP 写进来的内容？',
+      detail: '只撤销带该客户端来源、并且之后你没改过的条目（知识卡 / 记忆 / 讲义）。\n你手动编辑过的条目、自己新建的条目都不会被删。\n手动开启的提醒不会自动取消。',
+      buttons: ['取消', '确认撤销'],
+      defaultId: 0, cancelId: 0, noLink: true
+    })
+    allowed = !!(r && r.response === 1)
+  } catch (err) { modeLog('回滚确认失败（按取消处理）：' + svcErrorText(err)) }
+  if (!allowed) return { ok: false, cancelled: true }
+  try {
+    const r = await mcpToolsGet().rollback(cid)
+    pushKcardMenuBadge()
+    try { mcpAuditGet().record({ event: 'rollback', client: cid, result: r || null }) } catch {}
+    // tools 自己的 ok 才是真实结论（没有可撤销的写入时 ok=false），别用外层 true 盖掉
+    return Object.assign({ ok: true }, r || {})
+  } catch (err) { return { ok: false, error: svcErrorText(err) } }
+})
+
+/* ---- 手机常连（持久配对） ---- */
+ipcMain.handle('link:status', (e) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  try { return Object.assign({ ok: true, enabled: !!(orbState.link && orbState.link.enabled) }, linkStatusSafe()) }
+  catch (err) { return { ok: false, error: svcErrorText(err) } }
+})
+
+ipcMain.handle('link:set-enabled', async (e, on) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const want = on === true
+  orbState.link = Object.assign({ enabled: false, port: LINK_DEFAULT_PORT }, orbState.link || {}, { enabled: want })
+  if (want) {
+    const r = await linkStart()
+    if (!r.ok) {
+      orbState.link.enabled = false
+      saveState()
+      return Object.assign({ ok: false, error: r.error, enabled: false }, linkStatusSafe())
+    }
+  } else await linkStop()
+  saveState()
+  return Object.assign({ ok: true, enabled: want }, linkStatusSafe())
+})
+
+ipcMain.handle('link:set-port', async (e, p) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const next = portOk(p)
+  if (!next) return { ok: false, error: '端口要在 1024–65535 之间' }
+  const prevPort = linkPort()
+  if (next === prevPort) return Object.assign({ ok: true }, linkStatusSafe())
+  const wasRunning = linkStatusSafe().running
+  if (wasRunning) { await linkStop(); _link = null }
+  orbState.link = Object.assign({ enabled: false }, orbState.link || {}, { port: next })
+  saveState()
+  if (!wasRunning) return Object.assign({ ok: true }, linkStatusSafe())
+  const r = await linkStart()
+  if (r.ok) return Object.assign({ ok: true }, linkStatusSafe())
+  await linkStop(); _link = null
+  orbState.link.port = prevPort
+  saveState()
+  const back = await linkStart()
+  return Object.assign({ ok: false }, linkStatusSafe(), {
+    error: '端口 ' + next + ' 用不了（' + r.error + '），已改回 ' + prevPort + (back.ok ? '' : '；原端口也没起来：' + back.error)
+  })
+})
+
+ipcMain.handle('link:pair-create', (e, o) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  if (!linkStatusSafe().running) return { ok: false, error: '手机常连还没开启 —— 先点「开启」再配对' }
+  try {
+    const r = lingLinkGet().createPair({ name: String((o && o.name) || '').trim().slice(0, 24) })
+    if (!r || !r.id || !Array.isArray(r.uris) || !r.uris.length) return { ok: false, error: '配对生成失败（没有可用的本机地址）' }
+    // uris 只在这次回给设置页画二维码 / 复制，绝不写审计、也不留在任何状态里
+    return { ok: true, pair: { id: String(r.id), name: String(r.name || ''), uris: r.uris.map(String) }, status: linkStatusSafe() }
+  } catch (err) { return { ok: false, error: svcErrorText(err) } }
+})
+
+ipcMain.handle('link:pair-revoke', (e, id) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const pid = String(id || '')
+  if (!pid) return { ok: false, error: '缺少配对 id' }
+  try {
+    const r = lingLinkGet().revoke(pid)
+    // 落盘失败时 Link 返回 {ok:false}，配对**仍然有效** —— 必须如实报错，不能提示「已撤销」
+    if (!r || r.ok !== true) {
+      // 只透传 Link 自己的文案（它已写明「配对仍然有效」这类真实状态），不替换成固定句式
+      const why = String((r && r.error) || '撤销失败（Link 没有给出原因）')
+      try { mcpAuditGet().record({ event: 'pair_revoke_failed', pair: pid, error: why }) } catch {}
+      return { ok: false, error: why, status: linkStatusSafe() }
+    }
+    try { mcpAuditGet().record({ event: 'pair_revoked', pair: pid }) } catch {}
+    return { ok: true, status: linkStatusSafe() }
+  } catch (err) { return { ok: false, error: svcErrorText(err), status: linkStatusSafe() } }
+})
 
 async function runTranslate(text, fresh) {
   if (isTranslating) return
@@ -1585,7 +2453,10 @@ function resetOrb() {
   if (!orbWin || orbWin.isDestroyed()) return
   const { x, y } = orbDefaultPos()
   orbWin.setBounds({ x, y, width: ORB_WIN, height: ORB_WIN })
-  showHint()
+  orbToFront()
+  // 新手卡开着就跟着球一起挪；没开且从没看过引导才补弹（老用户复位不再被引导卡打扰）
+  if (hintWin && !hintWin.isDestroyed()) placeHint(hintWin.getBounds().height)
+  else if (!orbState.hintShown) showHint()
   saveState()
 }
 
@@ -1625,7 +2496,7 @@ function askBodyWith(model, userTurn, noThinking) {
 function askBody(model, q, noThinking) {
   const msgs = [{ role: 'user', content: [ { type: 'text', text: sysPrompt() } ].concat(imgParts(lastB64s)) }]
   for (const t of conv) msgs.push({ role: t.role, content: t.content })
-  // v1.75：STYLE 已随 PERSONA 进每条模式的系统提示（sysPrompt），这里不再重复贴，避免同一份「讲法」出现两遍
+  // v1.77：识别提示词已不含人格 / 讲法，追问这里只需不带关键词清单，不再重复贴风格
   msgs.push({ role: 'user', content: '只回答这一次的追问，不要重复之前的解析，也不要复述题干。' + (keywordsOn() ? '这次不用再列关键词清单。' : '') + '\n追问：' + q })
   return Object.assign({ model, stream: true, max_tokens: answerBudget(3072), messages: msgs }, noThinking ? thinkingOff(apiCfg()) : thinkingOf(apiCfg()))   // v1.42：追问也听「思考强度」设置
 }
@@ -1635,8 +2506,9 @@ function askBody(model, q, noThinking) {
  * remember：是否记进历史 + 触发自动扫描的 60 秒暂停（追问不算新一轮识别）。 */
 async function streamChat(bodyFor, { stripNoQ = false, remember = true } = {}) {
   const cfg = apiCfg()
-  if (!cfg.baseUrl || !cfg.model) throw new Error('还没配置 AI 接口：右键小球 → 设置，填接口地址、模型和 API Key')
+  // aigw-omni 兜底是本地网关专属逻辑，自定义接口不做模型切换
   const models = [cfg.model]
+  if (cfg.baseUrl === API_DEFAULTS.baseUrl && cfg.model !== 'aigw-omni') models.push('aigw-omni')
   let lastErr = null
   // v1.43：同一模型可以让它试两遍 —— 第二遍显式关思考。
   // 起因：用户遇到「思考了好几次，然后报『模型 deepseek-flash 未返回内容』」——
@@ -1966,30 +2838,119 @@ function openPrivacyPane() {
 
 let hintWin = null
 let hintTimer = null
-// v1.46：提示文案换成三档点击说明（单击看历史 · 双击识别 · 三击自动扫描），跟着变宽，
-// 左边放不下翻到小球右侧时的间距也要跟着一起调。
-const HINT_W = 356
-function showHint() {
-  if (!orbWin || orbWin.isDestroyed()) return
-  const b = orbWin.getBounds()
-  const wa = screen.getPrimaryDisplay().workArea
-  let hx = b.x - HINT_W - 16, hy = b.y + 20
-  if (hx < wa.x) hx = b.x + b.width + 12
-  if (hintWin && !hintWin.isDestroyed()) { clearTimeout(hintTimer); hintWin.close(); hintWin = null }
-  hintWin = new BrowserWindow({ show: false,
-    width: HINT_W, height: 52, x: hx, y: hy, frame: false, transparent: true, hasShadow: false,
-    resizable: false, movable: true, alwaysOnTop: true, skipTaskbar: true, title: APP_NAME + ' 提示',
-    focusable: false,
-    webPreferences: { sandbox: true }
-  })
-  hintWin.setAlwaysOnTop(true, 'screen-saver', 3)
-  allSpaces(hintWin)
-  hintWin.setIgnoreMouseEvents(true)
-  hintWin.loadFile(path.join(__dirname, 'hint.html'))
-  revealOnReady(hintWin, false)
-  hintTimer = setTimeout(() => { fadeClose(hintWin); hintWin = null }, 12000)
+// 从新手卡点「配置接口」进设置：保存 / 取消回球旁继续（只限本次进程，已看过的老用户不会被重新弹）
+let hintResumeOnSettingsClose = false
+/* v1.61.1：首次引导 = 真的能点的新手卡（复用 hint.html）
+ *  - 贴着小球显示；球在左半边 → 卡片在右、箭头朝左；球在右半边 → 卡片在左、箭头朝右
+ *  - 位置按**球所在显示器**的 workArea 夹取，拖动 / 换屏都跟着走
+ *  - 首次（hintShown=false）显示；只有真正显示成功才把 hintShown 落盘
+ *  - 不再有 12 秒自动消失的计时器，也不再鼠标穿透
+ */
+const HINT_W = 340
+const HINT_GAP = 12
+const HINT_PAD = 8
+const HINT_DEFAULT_H = 260
+function isHintSender(e) {
+  return !!(e && e.sender && hintWin && !hintWin.isDestroyed() && e.sender === hintWin.webContents)
 }
-function hideHint() { if (hintWin && !hintWin.isDestroyed()) { clearTimeout(hintTimer); fadeClose(hintWin); hintWin = null } }
+function placeHint(height) {
+  if (!orbWin || orbWin.isDestroyed() || !hintWin || hintWin.isDestroyed()) return
+  const b = orbWin.getBounds()
+  const wa = (screen.getDisplayMatching(b) || screen.getPrimaryDisplay()).workArea
+  const H = Math.max(120, Math.min(560, Math.round(Number(height) || HINT_DEFAULT_H)))
+  const need = HINT_W + HINT_GAP
+  const rightSpace = (wa.x + wa.width) - (b.x + b.width)
+  const leftSpace = b.x - wa.x
+  // 优先放在球右边（左中默认位就是这种情况）；右边放不下再翻到左边；两边都放不下取更宽的一侧
+  let side
+  if (rightSpace >= need) side = 'right'
+  else if (leftSpace >= need) side = 'left'
+  else side = rightSpace >= leftSpace ? 'right' : 'left'
+  let x = side === 'right' ? b.x + b.width + HINT_GAP : b.x - HINT_W - HINT_GAP
+  x = Math.min(Math.max(x, wa.x + HINT_PAD), wa.x + wa.width - HINT_W - HINT_PAD)
+  let y = Math.round(b.y + b.height / 2 - H / 2)
+  y = Math.min(Math.max(y, wa.y + HINT_PAD), wa.y + wa.height - H - HINT_PAD)
+  const nb = { x: Math.round(x), y, width: HINT_W, height: H }
+  const cur = hintWin.getBounds()
+  if (cur.x !== nb.x || cur.y !== nb.y || cur.width !== nb.width || cur.height !== nb.height) hintWin.setBounds(nb)
+  // 拖动时 orb:move 很密，方向没变就别反复发 IPC
+  if (hintWin.__side !== side) { hintWin.__side = side; try { hintWin.webContents.send('hint:side', side) } catch {} }
+}
+// 只在卡片真的显示出来之后才记「已看过」—— 建窗失败 / 页面没渲染就退出的话，下次还该再引导
+function markHintShown() {
+  if (orbState.hintShown) return
+  orbState.hintShown = true
+  saveState()
+  modeLog('首次新手卡已显示 → hintShown=true')
+}
+function showHint() {
+  if (hintTimer) { clearTimeout(hintTimer); hintTimer = null }
+  if (!orbWin || orbWin.isDestroyed()) return
+  if (hintWin && !hintWin.isDestroyed()) { placeHint(hintWin.getBounds().height); return }
+  hintWin = new BrowserWindow({ show: false,
+    width: HINT_W, height: HINT_DEFAULT_H, x: 0, y: 0, frame: false, transparent: true, hasShadow: false,
+    resizable: false, movable: false, alwaysOnTop: true, skipTaskbar: true, title: APP_NAME + ' 新手引导',
+    fullscreenable: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false }
+  })
+  topMost(hintWin, LAYER_POPUP)
+  hideFromMissionControl(hintWin)
+  const hw = hintWin
+  hw.on('closed', () => {
+    if (hintWin !== hw) return
+    hintWin = null
+    hintResumeOnSettingsClose = false
+    if (hintTimer) { clearTimeout(hintTimer); hintTimer = null }
+  })
+  // 建窗时那次 send 还在 loadFile 之前，渲染层收不到 —— 加载完成后再补一次方向
+  hw.webContents.on('did-finish-load', () => {
+    if (hintWin !== hw || hw.isDestroyed()) return
+    hw.__side = null
+    placeHint(hw.getBounds().height)
+  })
+  placeHint(HINT_DEFAULT_H)
+  hw.loadFile(path.join(__dirname, 'hint.html'))
+}
+function hideHint(instant) {
+  if (hintTimer) { clearTimeout(hintTimer); hintTimer = null }
+  hintResumeOnSettingsClose = false
+  const w = hintWin
+  hintWin = null
+  if (!w || w.isDestroyed()) return
+  // 「试一次识别」要立刻截屏：淡出 (110ms) 可能被截进去，这里直接销毁（没有需要跑的卸载逻辑）
+  if (instant) { try { w.destroy() } catch {} }
+  else fadeClose(w)
+}
+/* 新手卡 IPC：只认 hintWin 自己的 webContents（和设置卡同一套 sender 校验）。
+ * 卡片自己量完高度再报上来，主进程按真实高度贴球摆位；首帧就绪后再显示并落盘 hintShown。 */
+ipcMain.on('hint:resize', (e, h) => {
+  if (!isHintSender(e)) return
+  const H = Math.max(120, Math.min(560, Math.round(Number(h) || HINT_DEFAULT_H)))
+  placeHint(H)
+  if (!hintWin.__revealed) {
+    hintWin.__revealed = true
+    revealWin(hintWin, false)
+    markHintShown()
+  }
+})
+ipcMain.on('hint:action', (e, action) => {
+  if (!isHintSender(e)) return
+  const a = String(action || '')
+  if (a === 'settings' || a === 'try') {
+    const ready = a === 'try' && apiReady()
+    hideHint(ready)
+    if (!ready) {
+      // 还没配接口：先开设置，存 / 取消后回到球旁继续这张卡（本次进程内）
+      hintResumeOnSettingsClose = true
+      showSettings()
+      return
+    }
+    questionPauseUntil = 0
+    solve()   // 成功与否都走现有流程：没权限就是面板里的真实权限提示，不在这里假装成功
+    return
+  }
+  if (a === 'dismiss') hideHint()
+})
 
 let autoScanTimer = null
 let autoScanning = false
@@ -2099,25 +3060,44 @@ function showSettings() {
     // v1.48：等页面第一次报高度（settings:get 回来之后）再亮相，免得在眼前 480→516 跳一下
     revealAfterFirstResize(stw, true, 250)
   })
-  settingsWin.on('closed', () => { if (settingsWin === stw) settingsWin = null })
+  settingsWin.on('closed', () => {
+    if (settingsWin === stw) settingsWin = null
+    // v1.63：设置卡一关，在飞的 AI 设置搜索立刻取消（不留在后台跑）
+    try { settingsSearchCancel(stw.webContents.id) } catch {}
+    // v1.61：设置卡一关就真停 —— 不能留一个没人看得见的开放端口。
+    // 只在没有新设置卡接手时 stop，避免旧窗口延迟关闭时误停新窗口刚开的同步。
+    if (!settingsWin) lanSyncStop()
+  })
 }
-function closeSettings() { fadeClose(settingsWin); settingsWin = null }
+function closeSettings() {
+  lanSyncStop()
+  fadeClose(settingsWin)
+  settingsWin = null
+  /* v1.61.1：新手卡 →「配置接口」→ 设置。保存和取消都算这一轮结束，
+   * 回到小球旁边继续那张卡（仅本进程；hintShown 已落盘，下次启动不会再弹）。 */
+  if (hintResumeOnSettingsClose) { hintResumeOnSettingsClose = false; showHint() }
+}
 
 ipcMain.handle('settings:get', () => {
   const cfg = apiCfg()
-  return { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model,
-    scanIntervalMs, defaults: API_DEFAULTS, firstRun: !orbState.apiOnboarded, appearance: appearanceOf(), profiles: orbState.apiProfiles || [], activeProfile: orbState.activeProfile || null,
+  // v1.59 内测版用着内置接口时：地址和 Key 框留空（内置 Key 不往界面上送），只显示模型名
+  const builtin = usingBuiltinApi()   // 恒 false：开源构建没有内置接口
+  return { baseUrl: builtin ? '' : cfg.baseUrl, apiKey: builtin ? '' : cfg.apiKey, model: cfg.model, usingBuiltin: builtin, builtinLabel: '',
+    scanIntervalMs, defaults: API_DEFAULTS, firstRun: !orbState.apiOnboarded, appearance: appearanceOf(), profiles: orbState.apiProfiles || [], activeProfile: orbState.activeProfile || null, internal: false,
     hotkey: hotkeyLabel, hotkeyRaw: hotkeyRaw, hotkeyDefault: accelLabel(DEFAULT_TRANSLATE_HOTKEY), hotkeyDefaultRaw: DEFAULT_TRANSLATE_HOTKEY,
     thinkingEffort: thinkEffort(), thinkingOptions: [{ id: 'off', label: '关' }, { id: 'low', label: '低' }, { id: 'high', label: '高' }, { id: 'max', label: '最高' }],
     examDetail: examDetail(), examDetailOptions: EXAM_DETAILS.map((id) => ({ id, label: EXAM_DETAIL_LABEL[id] })), novice: !!orbState.novice,
     // v1.58
     transEngine: TRANS_ENGINES.includes(orbState.transEngine) ? orbState.transEngine : defaultEngine(), baidu: orbState.baidu || { appId: '', apiKey: '', secret: '', model: 'llm' },
-    deepl: { apiKey: (orbState.deepl && orbState.deepl.apiKey) || '' }, appName: APP_NAME, version: app.getVersion(),
+    // v1.59：只回传自己填的 DeepL Key；内置的只告诉「有」，不回传
+    deepl: { apiKey: (orbState.deepl && orbState.deepl.apiKey) || '' }, deeplBuiltIn: false, channel: CHANNEL_LABEL, appName: APP_NAME, version: app.getVersion(), aiBuiltIn: false,
     useCache: orbState.useCache !== false, saveHistory: orbState.saveHistory !== false, cacheInfo: cacheInfo(),
     customModes: customModes(), mode: currentMode,
     keywords: keywordsOn(), theme: TH.normId(orbState.theme), panelSide: orbState.panelSide || 'left',
-    // 更新源只由主进程给；默认空（本构建不提供维护者更新服务器），前端不硬编码、不联网
-    updateSource: U.manifestUrl() }
+    // v1.76：专注守护 / 陪伴（点一下就存的部分保存字段；陪伴默认开、AI 短句默认关）
+    focusDurationMin: focusDurationMin(), focusAwaySec: focusAwaySec(), companionOn: orbState.companionOn !== false, companionFreq: companionFreq(), companionAi: !!orbState.companionAi,
+    // v1.60：默认更新源显示在设置页 —— 地址只由主进程给，前端不硬编码，也不因此联网
+    updateChannel: 'public', updateSource: U.manifestUrl() }
 })
 function cacheInfo() { return { solve: solveCache().count(), translate: transCache().count(), kb: Math.ceil((solveCache().bytes() + transCache().bytes()) / 1024), history: histStore().read().length } }
 ipcMain.handle('settings:clearcache', () => { solveCache().clear(); transCache().clear(); return cacheInfo() })
@@ -2138,6 +3118,14 @@ ipcMain.on('settings:save', (_e, o) => {
     }
     if (st.examDetail && EXAM_DETAILS.includes(String(st.examDetail))) setExamDetail(String(st.examDetail))
     if (typeof st.novice === 'boolean') setNovice(st.novice)
+    // v1.76：专注守护 / 陪伴（同思考强度一样点一下就存；陪伴开关 / 频率 / AI 短句变化立即重排下一次）
+    let companionTouched = false
+    if (Number.isFinite(Math.round(Number(st.focusDurationMin)))) orbState.focusDurationMin = Math.min(240, Math.max(1, Math.round(Number(st.focusDurationMin))))
+    if (Number.isFinite(Math.round(Number(st.focusAwaySec)))) orbState.focusAwaySec = Math.min(300, Math.max(5, Math.round(Number(st.focusAwaySec))))
+    if (typeof st.companionOn === 'boolean') { orbState.companionOn = st.companionOn; companionTouched = true }
+    if (COMPANION_FREQS.includes(String(st.companionFreq))) { orbState.companionFreq = String(st.companionFreq); companionTouched = true }
+    if (typeof st.companionAi === 'boolean') { orbState.companionAi = st.companionAi; companionTouched = true }
+    if (companionTouched) applyCompanionSettings()
     // v1.58：翻译引擎 / 百度凭证 / 缓存 / 历史（点一下就存，和思考强度一样是「部分保存」）
     if (TRANS_ENGINES.includes(st.transEngine)) orbState.transEngine = st.transEngine
     if (st.deepl && typeof st.deepl === 'object') orbState.deepl = { apiKey: String(st.deepl.apiKey || '').trim() }
@@ -2185,6 +3173,159 @@ ipcMain.on('settings:save', (_e, o) => {
   if (!(o && o.keepOpen)) closeSettings()
 })
 ipcMain.on('settings:cancel', () => { if (!orbState.apiOnboarded) { orbState.apiOnboarded = true; saveState() } closeSettings() })
+
+/* ---------------- v1.63：设置搜索的 AI 语义匹配（只认设置窗口） ----------------
+ * 边界（对齐 Android 2.6.1，桌面独立线）：
+ *   - 只有当前 settingsWin 的 webContents 能调用；其他 renderer 一律「没有权限」。
+ *   - 上行只有 query（限长）+ requestId；发给模型的是 query + settings-search.js 里固定的目录标题 / 路径 / ID，
+ *     不带任何设置值、Key、历史、屏幕内容。
+ *   - 每窗口同一时刻只有最新一条在飞：新请求先取消旧请求。取消 / 关窗 / 失焦都由渲染端调 cancel，
+ *     主进程在窗口关闭时再兜一次。
+ *   - 独立 AbortController，超时覆盖到读完 body；不复用 streamChat（它会写历史 / 改答案面板），
+ *     不换模型、不自动重试。模型只准回白名单 id，parseIds 之后再返回。
+ *   - 错误只给可读短句；日志只记状态码 / 固定错误类别，不记上游原始返回体与异常文本（可能回显 Key / 内网地址）。 */
+const SS = require('./settings-search')   // 目录 / 本机匹配 / parseIds 的单一来源（主进程与页面共用）
+const SETTINGS_SEARCH_TIMEOUT_MS = 20000
+const MAX_SETTINGS_SEARCH_QUERY = 120   // 与 settings-search.js 的 limits.query 一致
+const settingsSearchActive = new Map()   // webContents.id -> { requestId, ac }
+
+const SETTINGS_SEARCH_ERR = {
+  net: '连不上接口（地址不对 / 需要代理 / 服务没起来）',
+  timeout: '接口 20 秒内没回完（已停止这次匹配）',
+  cancelled: '已取消',
+  denied: '接口拒绝了这次请求（请在「配置接口」里检查 Key 和模型）',
+  rate: '接口限流或额度用完了，稍后再试',
+  http: '接口返回了错误（请在「配置接口」里检查 Key 和模型）',
+  bad: '模型没按格式给出结果，建议换个说法再试',
+  empty: '模型没找到相关设置，建议换个说法再试',
+  nokey: '还没有配置接口：先在「配置接口」里填好地址和 Key',
+  badreq: '搜索词太长或请求重复，请修改后再试',
+  unknown: '未知错误'
+}
+function settingsSearchErrText(code) {
+  return SETTINGS_SEARCH_ERR[code] || SETTINGS_SEARCH_ERR.unknown
+}
+
+function settingsSearchPrompt(query) {
+  const lines = SS.catalogForPrompt(true).map((e) => e.id + '\t' + e.title + '\t' + e.path + '\t' + e.aliases)
+  return [
+    '你在帮用户在他自己的软件「Ling」的桌面设置页里找设置项。',
+    '下面是设置页里真实存在的全部条目：ID、标题、分组路径、用户可能的口头说法（制表符分隔）。只能从这些 ID 里选。',
+    lines.join('\n'),
+    '',
+    '用户搜索：' + query,
+    '',
+    '要求：只能从上面的 ID 里挑最相关的 1~8 个，按相关度从高到低。',
+    '只输出一行，ID 之间用逗号分隔，不要解释、不要编号、不要 markdown；',
+    '确实没有相关的就输出 NONE。'
+  ].join('\n')
+}
+
+function settingsSearchCancel(wcId) {
+  const a = settingsSearchActive.get(wcId)
+  if (!a) return
+  settingsSearchActive.delete(wcId)
+  try { a.ac.abort() } catch {}
+}
+/* 每窗口「最新单飞」的登记：外层先占一条 pending（{ requestId, ac: parent }），
+ * 进入真正请求后换成实际请求（{ requestId, ac, parent }）。收尾只清自己那条，不误删后来的请求。 */
+function settingsSearchTrack(wcId, requestId, ac, parent) {
+  settingsSearchActive.set(wcId, { requestId, ac, parent })
+}
+function settingsSearchRelease(wcId, requestId) {
+  const cur = settingsSearchActive.get(wcId)
+  // 只清自己那条：新请求已经占位时不能把它的登记删掉
+  if (cur && cur.requestId === requestId) settingsSearchActive.delete(wcId)
+}
+
+async function settingsSearchRun(wcId, query, requestId, parentAbort) {
+  const cfg = apiCfg()
+  // 和「试一次识别」同一套判断：正式版既没填地址、也没内置接口 → 明确提示先配置，不悄悄打默认网关
+  if (!apiReady() && !usingBuiltinApi()) {
+    // 没有请求在飞，登记必须清掉，否则这个窗口后续的搜索 / 取消都会认到一条死记录
+    settingsSearchRelease(wcId, requestId)
+    return { ok: false, error: settingsSearchErrText('nokey') }
+  }
+  const ac = new AbortController()
+  const onParent = () => { try { ac.abort() } catch {} }
+  if (parentAbort) parentAbort.addEventListener('abort', onParent)
+  const timedOut = { hit: false }
+  const to = setTimeout(() => { timedOut.hit = true; try { ac.abort() } catch {} }, SETTINGS_SEARCH_TIMEOUT_MS)
+  settingsSearchTrack(wcId, requestId, ac, parentAbort)
+  try {
+    const body = Object.assign({
+      model: cfg.model, stream: false, max_tokens: 200, temperature: 0,
+      messages: [{ role: 'user', content: settingsSearchPrompt(query) }]
+    }, thinkingOff(cfg))
+    const res = await fetch(cfg.baseUrl + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey },
+      body: JSON.stringify(body), signal: ac.signal
+    })
+    if (!res.ok) {
+      await res.text().catch(() => '')
+      modeLog('设置搜索：接口 ' + res.status)
+      return { ok: false, error: settingsSearchErrText(res.status === 401 || res.status === 403 ? 'denied' : res.status === 429 ? 'rate' : res.status === 400 || res.status === 404 ? 'denied' : 'http') }
+    }
+    // 超时覆盖读 body：定时器一直活到 body 读完 / 出错，服务端只发头不发体也会被掐断
+    const raw = await res.text()
+    if (timedOut.hit) return { ok: false, error: settingsSearchErrText('timeout') }
+    let content = ''
+    try {
+      const j = JSON.parse(raw)
+      content = String((j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '')
+    } catch { content = '' }
+    if (!content.trim()) return { ok: false, error: settingsSearchErrText('bad') }
+    const ids = SS.parseIds(content)
+    if (!ids.length) {
+      // NONE = 模型明确说没有相关设置，是正常结果而不是失败
+      if (/^\s*none\s*$/i.test(content)) {
+        modeLog('设置搜索：NONE')
+        return { ok: true, ids: [] }
+      }
+      modeLog('设置搜索：零个有效 ID')
+      return { ok: false, error: settingsSearchErrText('bad') }
+    }
+    modeLog('设置搜索：命中 ' + ids.length + ' 条（' + ids.join(',') + '）')
+    return { ok: true, ids }
+  } catch (err) {
+    if (timedOut.hit) return { ok: false, error: settingsSearchErrText('timeout') }
+    if (ac.signal.aborted) return { ok: false, cancelled: true, error: settingsSearchErrText('cancelled') }
+    const t = String((err && err.message) || '')
+    const code = /fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|network|getaddrinfo/i.test(t) ? 'net' : 'unknown'
+    modeLog('设置搜索：异常 · ' + code)   // 只记固定类别，不落上游原文
+    return { ok: false, error: settingsSearchErrText(code) }
+  } finally {
+    clearTimeout(to)
+    if (parentAbort) parentAbort.removeEventListener('abort', onParent)
+    settingsSearchRelease(wcId, requestId)
+  }
+}
+
+ipcMain.handle('settings:search', async (e, o) => {
+  if (!isSettingsSender(e)) return { ok: false, error: '没有权限' }
+  const src = o && typeof o === 'object' ? o : {}
+  const query = typeof src.query === 'string' ? src.query.replace(/\s+/g, ' ').trim() : ''
+  const requestId = typeof src.requestId === 'string' ? src.requestId.slice(0, 80) : ''
+  if (!query || !requestId || query.length > MAX_SETTINGS_SEARCH_QUERY) return { ok: false, error: settingsSearchErrText('badreq') }
+  const wcId = e.sender.id
+  // 每窗口最新单飞：新请求到来先把上一条掐掉（渲染端迟到的回包按 requestId 自行丢弃）
+  settingsSearchCancel(wcId)
+  const parent = new AbortController()
+  settingsSearchTrack(wcId, requestId, parent, null)
+  const r = await settingsSearchRun(wcId, query, requestId, parent.signal)
+  if (!isSettingsSender(e)) return { ok: false, cancelled: true, error: settingsSearchErrText('cancelled') }
+  return r
+})
+ipcMain.on('settings:search-cancel', (e, requestId) => {
+  if (!isSettingsSender(e)) return
+  const wcId = e.sender.id
+  const a = settingsSearchActive.get(wcId)
+  const id = typeof requestId === 'string' ? requestId : ''
+  // 单向取消：只取消正在飞的那一条，别的 requestId 不做任何事
+  if (a && (!id || a.requestId === id)) settingsSearchCancel(wcId)
+})
+
 ipcMain.on('settings:resize', (_e, h) => {
   if (settingsWin && !settingsWin.isDestroyed()) {
     const b = settingsWin.getBounds()
@@ -2211,11 +3352,12 @@ ipcMain.on('settings:delprofile', (_e, name) => {
  *   4) 「检测连接」发一条最小请求，明确告诉你连得上吗、快不快、**这个模型能不能看图**
  *      —— 灵珠全靠截图识别，选了不支持图片的模型以前只能在识别时报错。
  */
-/* 检测连接用的探针图：**用 probe.png（128×128），不要用 1×1**。
- * 实测：1×1 的 PNG 会被网关直接退回「图片输入格式/解析错误」(1210)，于是检测会误报「不支持图片」。
- * probe.png 是本项目用纯几何图形生成的原创图像，随源码打包，不依赖任何外部素材。 */
+/* 检测连接用的探针图：**用 block.png（128×128），不要用 1×1**。
+ * 实测：1×1 的 PNG 被网关直接退回「图片输入格式/解析错误」(1210)，于是检测会误报「不支持图片」——
+ * 而 block.png 各家都认（实测 glm-5.3-flash / deepseek-v4-flash 都能看图并描述出来），
+ * 而且它本来就在 asar 里（第 11 个打包文件），不用额外塞 base64 常量。 */
 function probeImageB64() {
-  try { return require('fs').readFileSync(path.join(__dirname, 'probe.png')).toString('base64') } catch { return '' }
+  try { return require('fs').readFileSync(path.join(__dirname, 'block.png')).toString('base64') } catch { return '' }
 }
 function menuProfiles() {
   const act = orbState.activeProfile
@@ -2255,14 +3397,15 @@ function cfgFrom(o) {
   const c = apiCfg()
   const s = o || {}
   const pick = (v, d) => (typeof v === 'string' && v.trim()) ? v.trim() : d
-  return { baseUrl: pick(s.baseUrl, c.baseUrl).replace(/\/+$/, ''), apiKey: pick(s.apiKey, c.apiKey), model: pick(s.model, c.model) }
+  // v1.59：内测版填了自己的地址却没填 Key 时，不能拿内置 Key 去补（会发到别人的服务器上）
+  const ownUrl = typeof s.baseUrl === 'string' && s.baseUrl.trim()
+  return { baseUrl: pick(s.baseUrl, c.baseUrl).replace(/\/+$/, ''), apiKey: pick(s.apiKey, (ownUrl && usingBuiltinApi()) ? '' : c.apiKey), model: pick(s.model, c.model) }
 }
 ipcMain.on('settings:switchprofile', (_e, name) => { activateProfile(String(name || '')) })
 // v1.38：设置卡里录一个新热键（'__default__' = 恢复默认 ⌘/）
 ipcMain.handle('settings:sethotkey', (_e, acc) => setTranslateHotkey(acc))
 ipcMain.handle('settings:fetchmodels', async (_e, o) => {
   const cfg = cfgFrom(o)
-  if (!cfg.baseUrl) return { ok: false, ms: 0, url: '', error: '还没填接口地址：先在设置里填 Base URL 和 API Key' }
   const url = cfg.baseUrl.replace(/\/+$/, '') + '/models'
   const t0 = Date.now()
   try {
@@ -2291,7 +3434,6 @@ ipcMain.handle('settings:fetchmodels', async (_e, o) => {
 ipcMain.handle('settings:test', async (_e, o) => {
   const cfg = cfgFrom(o)
   const t0 = Date.now()
-  if (!cfg.baseUrl) return { ok: false, ms: 0, model: cfg.model, baseUrl: '', vision: false, error: '还没填接口地址：先在设置里填 Base URL 和 API Key' }
   const body = Object.assign({
     model: cfg.model, stream: false, max_tokens: 24,
     messages: [{ role: 'user', content: [
@@ -2368,12 +3510,12 @@ ipcMain.on('orb:click', () => {
   answerDismissed = false
   const w = placeAnswer()
   // v1.48：新建的面板由 ready-to-show 淡入；这里 show() 会让它在内容画好前就冒出来
-  if (w && !w.isDestroyed() && w.isVisible()) topMost(w)
+  if (w && !w.isDestroyed() && w.isVisible()) { topMost(w); orbToFront() }   // 复用已开面板时 topMost 会把球压下去，再抬回来
   sendToWin(w, 'answer:open-history', true)
   armPanelIdle()   // 看历史也算「在用面板」，别 10 分钟后被回收
 })
 ipcMain.on('orb:doubleclick', () => {
-  hideHint()
+  hideHint(true)   // 马上要截屏：新手卡不能淡出着被截进去
   questionPauseUntil = 0
   modeLog('双击小球 → 立即识别')
   solve()   // v1.73：busy 由 solve() 统一发；若此刻有自动扫描在跑，solve 会把这次手动请求排进「单一待办」，不再静默丢掉
@@ -2393,6 +3535,8 @@ ipcMain.on('orb:move', (_e, dx, dy) => {
   const p = clampOrbPos(b.x + mx, b.y + my)
   if (p.x === b.x && p.y === b.y) return                  // 没动就别 setBounds（透明窗每次都要重合成）
   orbWin.setBounds({ x: p.x, y: p.y, width: b.width, height: b.height })
+  if (hintWin && !hintWin.isDestroyed()) placeHint(hintWin.getBounds().height)   // 新手卡跟着球走（含换屏）
+  if (bubbleWin && !bubbleWin.isDestroyed() && bubbleWin.isVisible()) placeBubble(bubbleWin.__bubbleH)   // v1.76：球旁气泡也跟着球走
   if (moveSaveTimer) clearTimeout(moveSaveTimer)
   moveSaveTimer = setTimeout(saveState, 600)
 })
@@ -2404,8 +3548,28 @@ function rememberAnswer(text, tag) {
 }
 ipcMain.handle('history:get', () => {
   const l = histStore().read()
-  if (!l.length) return history
-  return l.map((e) => ({ t: e.t, text: e.kind === 'translate' ? '**翻译**（' + (e.label || '') + '）\n\n' + e.src + '\n\n→ ' + e.text : e.text }))
+  if (!l.length) return history.map((e) => ({ t: e.t, star: !!e.star, text: e.text }))
+  // v1.61：把 t / star 一并给面板 —— 面板用 t 切收藏，star 决定 ☆ / ★
+  return l.map((e) => ({ t: e.t, star: !!e.star, text: e.kind === 'translate' ? '**翻译**（' + (e.label || '') + '）\n\n' + e.src + '\n\n→ ' + e.text : e.text }))
+})
+/** v1.61：收藏 / 取消收藏一条历史（身份用时间戳 t）。收藏条目不受 200 条裁剪。 */
+ipcMain.handle('history:star', (_e, t, star) => {
+  const id = Number(t)
+  if (!Number.isFinite(id) || id <= 0) return { ok: false, error: '没有这条历史' }
+  try { X.runWriteGuard() } catch (err) { return { ok: false, error: lanErrorText(err) } }
+  const list = histStore().read()
+  let found = false
+  const next = list.map((item) => {
+    if (item.t !== id) return item
+    found = true
+    const copy = Object.assign({}, item)
+    if (star) copy.star = true
+    else delete copy.star
+    return copy
+  })
+  if (!found) return { ok: false, error: '没有这条历史' }
+  if (!histWriteAtomic(next)) return { ok: false, error: '写入失败' }
+  return { ok: true, t: id, star: !!star }
 })
 ipcMain.on('answer:retry', () => { modeLog('点「重新识别」→ 不用缓存'); solve(false, true) })
 ipcMain.handle('get:panelTitle', () => orbState.panelTitle || 'AI 屏幕解析')
@@ -2471,7 +3635,6 @@ function wordPrompt(w) {
 }
 async function wordAsk(w, prompt, maxTokens) {
   const cfg = apiCfg()
-  if (!cfg.baseUrl || !cfg.model) return { ok: false, error: '还没配置 AI 接口：右键小球 → 设置' }
   const ac = new AbortController()
   const to = setTimeout(() => ac.abort(), 15000)
   try {
@@ -2540,7 +3703,7 @@ ipcMain.on('trans:resize', (_e, h) => {
 })
 
 /* ---- 弹出菜单 IPC ---- */
-ipcMain.on('orb:menu', () => showMenu())
+ipcMain.on('orb:menu', () => { hideHint(); showMenu() })
 /* 光晕留白区穿透：鼠标不在球体上时，窗口其余部分不挡后面的应用 */
 ipcMain.on('orb:mouse-through', (_e, on) => {
   if (!orbWin || orbWin.isDestroyed()) return
@@ -2551,7 +3714,7 @@ ipcMain.on('orb:mouse-through', (_e, on) => {
 ipcMain.on('menu:close', () => closeMenu())
 ipcMain.on('orb:dim-state', (_e, on) => { dimEnabled = !!on })
 ipcMain.handle('menu:info', () => { let kd = 0; try { kd = kcardStore().dueCount(kcardNow()) } catch {}   // [KCard] 复习角标
-  return ({ hotkey: hotkeyLabel, copy: !!translateOnCopy, scan: !!autoScanning, dim: !!dimEnabled, mode: currentMode, modes: allModeIds().map((id) => ({ id, label: modeInfo(id).label, hint: modeInfo(id).hint })), lang: transLang, langLabel: langInfo(transLang).label, intervalLabel: fmtInterval(scanIntervalMs), detailLabel: EXAM_DETAIL_LABEL[examDetail()], novice: !!orbState.novice, profiles: menuProfiles(), currentLabel: currentApiLabel(), kcardDue: kd, kcardCount: (() => { try { return kcardStore().count() } catch { return 0 } })() }) })
+  return ({ hotkey: hotkeyLabel, copy: !!translateOnCopy, scan: !!autoScanning, dim: !!dimEnabled, focus: focusMenuItem(), mode: currentMode, modes: allModeIds().map((id) => ({ id, label: modeInfo(id).label, hint: modeInfo(id).hint })), lang: transLang, langLabel: langInfo(transLang).label, intervalLabel: fmtInterval(scanIntervalMs), detailLabel: EXAM_DETAIL_LABEL[examDetail()], novice: !!orbState.novice, profiles: menuProfiles(), currentLabel: currentApiLabel(), kcardDue: kd, kcardCount: (() => { try { return kcardStore().count() } catch { return 0 } })() }) })
 ipcMain.on('menu:ready', (_e, h) => presentMenu(h))
 ipcMain.on('menu:resize', (_e, h) => {
   if (!menuWin || menuWin.isDestroyed() || !menuWin.isVisible()) return   // v1.48：隐藏时的高度由 menu:ready 带过来，摆位一起做
@@ -2593,7 +3756,7 @@ ipcMain.on('menu:action', (_e, action) => {
     case 'novice': setNovice(!orbState.novice); break
     case 'api': showSettings(); break
     case 'review': showKcardWin(); break   // [KCard] 复习知识卡
-    // v1.37：菜单里直接切 API 档案 —— 档案名可能含 ':'，所以按前缀切掉，不能再 split
+    case 'focus': toggleFocusGuard(); break   // v1.76：专注守护 —— 进行中点一下结束，没在守护就抓前台应用开始
     case 'profile': activateProfile(String(action || '').slice('profile:'.length)); break
     case 'dim': dimEnabled = !dimEnabled; if (orbWin && !orbWin.isDestroyed()) orbWin.webContents.send('orb:dim-toggle'); break
     case 'reset': resetOrb(); break
@@ -2700,14 +3863,16 @@ function kcardAddFromTranscript(raw, deck) {
 }
 ipcMain.handle('kcard:add', (_e, raw, deck) => {
   const r = kcardAddFromTranscript(raw, deck)
-  modeLog('知识卡存卡：' + (r.ok ? '成功 id=' + r.id + ' front=' + r.front.slice(0, 20) : '失败 ' + r.reason))
+  modeLog('知识卡存卡：' + (r.ok ? '成功 id=' + r.id + ' front=' + r.front.slice(0, 20)
+    : '失败 ' + r.reason + (r.reason === 'guard' && _lanRecoverError ? '（' + _lanRecoverError.message + '）' : '')))
   // 存完把到期数推给菜单，菜单上的角标立刻跟上
   pushKcardMenuBadge()
   // 面板上闪一行结果（面板只有 answer:notice 这一条提示通道）
   const tip = r.ok ? '✓ 已存进知识卡 · 之后按 FSRS 安排复习'
     : r.reason === 'dup' ? '这张已经存过了'
       : r.reason === 'full' ? '卡库满了（上限 ' + K.MAX + ' 张）'
-        : '这一轮抽不出可存的内容'
+        : r.reason === 'guard' ? '同步恢复失败，数据未写入'
+          : '这一轮抽不出可存的内容'
   pushNotice(tip)
   return r
 })
@@ -2840,15 +4005,15 @@ function pushKcardMenuBadge() {
   try { menuWin.webContents.send('menu:update', { kcardDue: due }) } catch {}
 }
 
-/* ---------------- 桌面更新通道（开源构建：默认无源） ----------------
- * 设置页版本那一行能「检查更新」和「下载最新版」。契约：
- *   - 默认**没有更新源**：本构建不指向任何维护者服务器。只有使用者显式设置 LING_UPDATE_URL 才启用；
+/* ---------------- v1.60：桌面内置更新通道（内测 / 公测） ----------------
+ * 用户要求「都内置更新通道」：设置页版本那一行能「检查更新」和「下载最新版」。契约：
+ *   - 源按渠道：公测 desktop-manifest.json / 内测 desktop-manifest-internal.json（CNB raw，public 仓库，不含密钥）；
  *   - 版本比较只在 update.js 里做：三段数值严格更大才算「新版本」，相等就是「已是最新版」，绝不虚构 new；
  *   - 只要本平台有资产且通道版本不低于本机，就允许下载：同版本重新下载当前通道最新版，更高版本升级；
  *     通道版本更低时明确提示「本机版本高于通道」并禁用下载（绝不诱导用「下载最新版」把用户拉回旧版本）；
  *   - 渲染进程拿不到任意 URL / 路径：只发「检查」「下载」两个无参调用，下载的目标由主进程用上次 check 通过的资产决定；
  *   - 只接受 http(s) + 64 位 sha256；平台资产缺失 = 明确「暂不支持当前平台」；
- *   - 下载走 http(s) stream 直接落盘（不整包进内存），跟随最多 4 次重定向，
+ *   - 下载走 http(s) stream 直接落盘（不整包进内存），跟随最多 4 次重定向（CNB raw 大 zip 常 302 到存储 URL），
  *     边下边算 sha256，校验的是真正落盘的最终字节；校验过才改名成最终 zip 并 showItemInFolder；
  *     失败只删自己的 .part，不动用户其它文件，也绝不打开未校验的 zip；同一时刻只允许一个下载，避免并发写同一个 .part。
  * 路径放在 userData/updates —— 不影响原 state.json 设置。
@@ -2856,6 +4021,7 @@ function pushKcardMenuBadge() {
 let updateLastCheck = null    // 上次 check 通过、且本平台有资产的 manifest 结果（下载只认它）
 let updateDownloading = false // 同一时刻只允许一个下载
 function updatesDir() { return path.join(app.getPath('userData'), 'updates') }
+function updateChannel() { return 'public' }
 
 /** 取 manifest 文本：Node https/http，带大小上限与超时（JSON 本就小，上限只是兜底，避免异常源撑爆内存）。 */
 function fetchManifest(url, redirects) {
@@ -2864,7 +4030,7 @@ function fetchManifest(url, redirects) {
     try { u = new URL(url) } catch { return reject(new Error('源地址无效')) }
     if (u.protocol !== 'https:' && u.protocol !== 'http:') return reject(new Error('源必须是 http(s)'))
     const mod = u.protocol === 'https:' ? https : http
-    // UA 必须固定 ASCII：Node 设 header 时非 ASCII 会抛 Invalid character in header content
+    // UA 必须固定 ASCII：APP_NAME 内测名「Ling 内测」含 CJK，Node 设 header 会抛 Invalid character in header content
     const req = mod.get(u, { headers: { 'User-Agent': 'Ling/' + app.getVersion(), Accept: 'application/json' } }, (res) => {
       const code = res.statusCode || 0
       if (code >= 300 && code < 400 && res.headers.location) {
@@ -2890,11 +4056,11 @@ function fetchManifest(url, redirects) {
 
 ipcMain.handle('update:check', async () => {
   updateLastCheck = null   // 先清上一次的结果：这次检查失败 / manifest 非法时，下载绝不能拿上次缓存的资产
+  const channel = updateChannel()
   const url = U.manifestUrl()
   const currentVersion = app.getVersion()
   const platformKey = U.platformKey(process.platform, process.arch)
-  const base = { sourceUrl: url, currentVersion, platformKey }
-  if (!url) return Object.assign({}, base, { ok: false, status: 'unavailable', error: '本构建未配置更新源（维护者未提供更新服务器）' })
+  const base = { channel, sourceUrl: url, currentVersion, platformKey }
   try {
     const text = await fetchManifest(url, 0)
     let obj
@@ -2902,16 +4068,17 @@ ipcMain.handle('update:check', async () => {
     const v = U.validateManifest(obj)
     if (!v.ok) return Object.assign({}, base, { ok: false, status: 'error', error: v.error })
     const manifest = v.manifest
-    const asset = U.pickAsset(manifest, process.platform, process.arch)
-    // 本平台有资产、且通道版本不低于本机才允许下载：同版本可重新下载当前通道最新版，更高则升级；
-    // 通道更低（cmp === -1）绝不下载（明确提示，绝不诱导回退），此时也不留 updateLastCheck。
-    const cmp = U.compareVersions(manifest.version, currentVersion)
-    const canDownload = !!asset && (cmp === 1 || cmp === 0)
+    // 平台资产缺失 / 通道版本更低都不允许下载：Windows 在清单省略 win32-x64 时得到
+    // 「当前平台暂无安装包」，绝不会退回去下旧 win 包。
+    const plan = U.downloadPlan(manifest, process.platform, process.arch, currentVersion)
+    const asset = plan.asset
+    const canDownload = plan.canDownload
     updateLastCheck = canDownload ? { version: manifest.version, notes: manifest.notes, key: asset.key, url: asset.url, sha256: asset.sha256 } : null
     return Object.assign({}, base, {
       ok: true, status: U.statusFor(manifest.version, currentVersion),
       latestVersion: manifest.version, notes: manifest.notes,
-      assetAvailable: !!asset, unsupported: !asset, canDownload
+      assetAvailable: !!asset, unsupported: !asset, canDownload: canDownload,
+      message: plan.message
     })
   } catch (e) {
     return Object.assign({}, base, { ok: false, status: 'error', error: (e && e.message) || String(e) })
@@ -3016,6 +4183,270 @@ ipcMain.handle('update:download', async () => {
   }
 })
 
+/* ================= v1.76：专注守护 + 陪伴（接线层） =================
+ * 状态机 / 排程在 focusguard-main.js 与 companion-main.js；这一段只补它们看不到的东西：
+ *   · 球旁气泡窗口（showBubble 单例：内容替换 + 重置 TTL；focusable:false 绝不抢前台应用的焦点）
+ *   · 前台应用探测（两步 lsappinfo；spawnAsync 不回传 stdout，所以这里是多收了 stdout 的兄弟实现）
+ *   · 陪伴 AI 短句（复用 wordAsk 的接口配置 / 超时；失败给 null，由模块回退内置句）
+ *   · 小球守护环（orb:guard，值没变不重发）+ 菜单那一行的状态
+ * 模块缺失 / 调用出错只记日志停用对应功能，不影响识别 / 翻译 / 转写。 */
+
+/** 专注守护模块的安全调用包装（模块没加载 / 出错都返回 undefined，不让主进程跟着挂） */
+function fgCall(name, ...args) {
+  if (!focusGuard || typeof focusGuard[name] !== 'function') return undefined
+  try { return focusGuard[name].apply(focusGuard, args) } catch (e) { modeLog('专注守护 ' + name + ' 出错：' + ((e && e.message) || e)); return undefined }
+}
+/** 陪伴模块的同款包装 */
+function cpCall(name, ...args) {
+  if (!companion || typeof companion[name] !== 'function') return undefined
+  try { return companion[name].apply(companion, args) } catch (e) { modeLog('陪伴 ' + name + ' 出错：' + ((e && e.message) || e)); return undefined }
+}
+
+/* spawnAsync 只留 stderr（截图那套不需要 stdout），lsappinfo 的结果在 stdout ——
+ * 这里补一个同样异步、同样带超时、同样永不 reject 的版本，只多收 stdout。 */
+function spawnOut(cmd, args, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (code, out, err) => { if (!done) { done = true; resolve({ code, out, err }) } }
+    let child
+    try { child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }) } catch (e) { return finish(-1, '', errText(e)) }
+    let out = '', err = ''
+    if (child.stdout) child.stdout.on('data', (b) => { if (out.length < 4000) out += String(b).slice(0, 4000) })
+    if (child.stderr) child.stderr.on('data', (b) => { if (err.length < 400) err += String(b).slice(0, 400) })
+    const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch {} ; finish(-1, out, 'timeout') }, timeoutMs)
+    child.on('error', (e) => { clearTimeout(timer); finish(-1, out, errText(e)) })
+    child.on('close', (code) => { clearTimeout(timer); finish(code, out, err) })
+  })
+}
+
+/* 前台应用：`lsappinfo front` 拿 ASN，再 `info -only bundleid,name` 拿包名和显示名。
+ * 任何一步失败都回 null —— focusguard-main 把 null / 自己都当「不算分心」，不会误报。 */
+const FRONTMOST_TIMEOUT_MS = 1500
+async function frontAppInfo() {
+  if (process.platform !== 'darwin') return null
+  const front = await spawnOut('lsappinfo', ['front'], FRONTMOST_TIMEOUT_MS)
+  const asn = String((front && front.out) || '').trim().split(/\r?\n/)[0].trim()
+  if (!front || front.code !== 0 || !/^ASN:/i.test(asn)) return null
+  const info = await spawnOut('lsappinfo', ['info', '-only', 'bundleid,name', '-app', asn], FRONTMOST_TIMEOUT_MS)
+  if (!info || info.code !== 0) return null
+  const txt = String(info.out || '')
+  const bid = /"CFBundleIdentifier"\s*=\s*"([^"]*)"/.exec(txt)
+  const nm = /"LSDisplayName"\s*=\s*"([^"]*)"/.exec(txt)
+  const bundleId = bid ? bid[1].trim() : ''
+  return bundleId ? { bundleId: bundleId, appName: nm ? nm[1].trim() : '' } : null
+}
+async function runFrontmost() {
+  const a = await frontAppInfo()
+  return (a && a.bundleId) || null
+}
+
+/* 自己的 bundleId：小球 / 设置卡被点成前台时，专注守护不该把这算成分心。
+ * 从可执行文件旁边的 Info.plist 读（打包后 / 开发态都成立），读不到回 appId 兜底。 */
+let selfBundleIdCache = null
+function selfBundleId() {
+  if (selfBundleIdCache != null) return selfBundleIdCache
+  let id = ''
+  try {
+    const plist = path.join(path.dirname(path.dirname(app.getPath('exe'))), 'Info.plist')
+    const xml = stateFs.readFileSync(plist, 'utf8')
+    const m = /<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/.exec(xml)
+    if (m && m[1]) id = m[1].trim()
+  } catch {}
+  if (!id) id = app.isPackaged ? 'com.ling.opensource' : 'com.github.Electron'
+  selfBundleIdCache = id
+  modeLog('专注守护：自己的 bundleId = ' + id)
+  return id
+}
+
+/* 陪伴 AI 短句：只要一句 <=20 字的中文短句；失败 / 没配接口都给 null，
+ * 模块里还有 14 秒竞速和长度兜底，这里不再叠加超时。 */
+async function companionAiLine() {
+  if (!apiReady()) return null
+  try {
+    const r = await wordAsk('', '你是桌面上的小助手，安静地陪用户用电脑。只输出一句不超过 20 个字的中文短句：可以是鼓励、一句小知识、或一个 Ling 的功能提示（划词翻译 / 知识卡 / 追问都行）。不要引号、不要表情符号、不要解释、不要重复用户名。', 120)
+    return (r && r.ok) ? String(r.text || '') : null
+  } catch { return null }
+}
+
+/* 小球守护环：模块每 2 秒报一次状态 —— 值没变不重发（这就是防抖），存态给 menu 用。
+ * on 从有到无（或反过来）= 会话起止，菜单开着就顺手刷那一行。 */
+let orbGuardState = { on: false, distract: false }
+function pushOrbGuard(payload) {
+  const p = { on: !!(payload && payload.on), distract: !!(payload && payload.distract) }
+  if (p.on === orbGuardState.on && p.distract === orbGuardState.distract) return
+  const wasOn = orbGuardState.on
+  orbGuardState = p
+  sendToWin(orbWin, 'orb:guard', p)
+  if (p.on !== wasOn) pushFocusMenuUpdate()
+}
+
+/* ---- 球旁气泡（单例窗口） ---- */
+const BUBBLE_W = 320
+const BUBBLE_GAP = 12
+const BUBBLE_PAD = 8
+const BUBBLE_DEFAULT_H = 64
+const BUBBLE_MAX_H = 240
+const BUBBLE_TTL_DEFAULT = 4200
+let bubbleWin = null
+let bubbleTTL = null
+function isBubbleSender(e) {
+  return !!(e && e.sender && bubbleWin && !bubbleWin.isDestroyed() && e.sender === bubbleWin.webContents)
+}
+/* 贴球摆位，夹取规则同 placeHint：右边放不下翻左边，两边都放不下取更宽的一侧 */
+function placeBubble(height) {
+  if (!orbWin || orbWin.isDestroyed() || !bubbleWin || bubbleWin.isDestroyed()) return
+  const b = orbWin.getBounds()
+  const wa = (screen.getDisplayMatching(b) || screen.getPrimaryDisplay()).workArea
+  const H = Math.max(36, Math.min(BUBBLE_MAX_H, Math.round(Number(height) || BUBBLE_DEFAULT_H)))
+  const need = BUBBLE_W + BUBBLE_GAP
+  const rightSpace = (wa.x + wa.width) - (b.x + b.width)
+  const leftSpace = b.x - wa.x
+  let side
+  if (rightSpace >= need) side = 'right'
+  else if (leftSpace >= need) side = 'left'
+  else side = rightSpace >= leftSpace ? 'right' : 'left'
+  let x = side === 'right' ? b.x + b.width + BUBBLE_GAP : b.x - BUBBLE_W - BUBBLE_GAP
+  x = Math.min(Math.max(x, wa.x + BUBBLE_PAD), wa.x + wa.width - BUBBLE_W - BUBBLE_PAD)
+  let y = Math.round(b.y + b.height / 2 - H / 2)
+  y = Math.min(Math.max(y, wa.y + BUBBLE_PAD), wa.y + wa.height - H - BUBBLE_PAD)
+  const nb = { x: Math.round(x), y, width: BUBBLE_W, height: H }
+  const cur = bubbleWin.getBounds()
+  if (cur.x !== nb.x || cur.y !== nb.y || cur.width !== nb.width || cur.height !== nb.height) bubbleWin.setBounds(nb)
+}
+function ensureBubbleWin() {
+  if (bubbleWin && !bubbleWin.isDestroyed()) return bubbleWin
+  const w = bubbleWin = new BrowserWindow({
+    width: BUBBLE_W, height: BUBBLE_DEFAULT_H, x: 0, y: 0,
+    frame: false, transparent: true, hasShadow: false, resizable: false, movable: false,
+    alwaysOnTop: true, skipTaskbar: true, focusable: false, show: false,
+    title: APP_NAME + ' 提示', fullscreenable: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false }
+  })
+  w.__bubbleH = BUBBLE_DEFAULT_H
+  topMost(w, LAYER_POPUP)
+  hideFromMissionControl(w)
+  w.webContents.on('did-finish-load', () => { if (bubbleWin === w) winReady(w) })
+  w.on('closed', () => {
+    if (bubbleWin !== w) return
+    bubbleWin = null
+    clearTimeout(bubbleTTL)
+    bubbleTTL = null
+  })
+  w.loadFile(path.join(__dirname, 'bubble.html'))
+  revealAfterFirstResize(w, false, 320)   // 首帧内容画好（第一次 bubble:resize）再显示；320ms 兜底，免得空壳气泡闪一下
+  return w
+}
+/* 模块唯一的可见出口：showBubble({kind,text,ttl})。
+ * 单例复用 —— 已开着就只替换内容、重置 TTL；正在淡出就取消淡出淡回来。 */
+function showBubble(src) {
+  const b = src || {}
+  const text = String(b.text == null ? '' : b.text).trim().slice(0, 240)
+  if (!text) return
+  if (!orbWin || orbWin.isDestroyed()) return   // 没有球就没有「球旁」，别在屏幕中间留孤零零的气泡
+  const w = ensureBubbleWin()
+  if (!w || w.isDestroyed()) return
+  const ttl = Math.min(60000, Math.max(1200, Math.round(Number(b.ttl) || BUBBLE_TTL_DEFAULT)))
+  sendToWin(w, 'bubble:show', { kind: String(b.kind || 'focus-info'), text })
+  placeBubble(w.__bubbleH)
+  if (w.isVisible() && !w.__closing) {
+    if (w.getOpacity() < 1) w.setOpacity(1)   // 上一次淡出中途被复用：直接亮回来
+  } else if (readyWins.has(w)) {
+    cancelClose(w)
+    revealWin(w, false)   // showInactive + 淡入，不抢前台应用的键盘焦点
+  }
+  // 第一次建窗（页面还没就绪）不在这里显示：等首帧 bubble:resize 由 revealAfterFirstResize 接管
+  clearTimeout(bubbleTTL)
+  bubbleTTL = setTimeout(() => { bubbleTTL = null; if (bubbleWin && !bubbleWin.isDestroyed()) fadeClose(bubbleWin, true) }, ttl)
+}
+ipcMain.on('bubble:resize', (e, h) => {
+  if (!isBubbleSender(e)) return
+  const H = Math.max(36, Math.min(BUBBLE_MAX_H, Math.round(Number(h) || BUBBLE_DEFAULT_H)))
+  bubbleWin.__bubbleH = H
+  placeBubble(H)
+  firstResizeDone(bubbleWin)   // 首帧内容已画好 → 立刻显示（revealAfterFirstResize 在等这个）
+})
+ipcMain.on('bubble:close', (e) => {
+  if (!isBubbleSender(e)) return
+  clearTimeout(bubbleTTL)
+  bubbleTTL = null
+  if (bubbleWin && !bubbleWin.isDestroyed()) fadeClose(bubbleWin, true)
+})
+
+/* ---- 菜单那一行：进行中「剩 x 分·点按结束」，等目标「等待中·点按取消」，没在守护「x 分·守护前台应用」 ---- */
+function focusMenuItem() {
+  const st = fgCall('status') || {}
+  if (st.active) return { active: true, waiting: false, label: '剩 ' + Math.max(0, Math.ceil((Number(st.remainingMs) || 0) / 60000)) + ' 分·点按结束' + (st.paused ? '（暂停）' : '') }
+  if (focusStartWaiting) return { active: false, waiting: true, label: '等待目标应用·点按取消' }
+  return { active: false, waiting: false, label: focusDurationMin() + ' 分·守护前台应用' }
+}
+function pushFocusMenuUpdate() {
+  if (!menuWin || menuWin.isDestroyed() || !menuWin.isVisible()) return
+  try { menuWin.webContents.send('menu:update', { focus: focusMenuItem() }) } catch {}
+}
+/* 菜单「专注守护」：进行中 → 结束；等待中 → 取消；没在守护 → 等用户点回真正的应用再开始。
+ * 菜单窗口一关，macOS 可能把焦点还给上一个应用，也可能（accessory 应用）暂时留在 Ling 自己 ——
+ * 单发抓一次太脆：这里每 500ms 抓一次前台，最多 20 秒，第一个「非 Ling」的前台就是守护目标；
+ * 2 秒还没等到就弹一句引导（点一下你要专注的那个应用），超时如实报「没等到」，不开假会话。 */
+let focusStartTimer = null
+let focusStartWaiting = false
+function stopFocusStartWait(byUser) {
+  if (focusStartTimer) { clearTimeout(focusStartTimer); focusStartTimer = null }
+  const was = focusStartWaiting
+  focusStartWaiting = false
+  if (was && byUser) modeLog('专注守护：开始前又点了一次，已取消等待')
+  return was
+}
+function toggleFocusGuard() {
+  const st = fgCall('status') || {}
+  if (st.active) {
+    stopFocusStartWait(false)
+    fgCall('stop', 'user')
+    modeLog('专注守护：菜单里手动结束（还剩 ' + Math.ceil((Number(st.remainingMs) || 0) / 60000) + ' 分）')
+    pushFocusMenuUpdate()
+    return
+  }
+  if (focusStartWaiting) { stopFocusStartWait(true); pushFocusMenuUpdate(); return }
+  focusStartWaiting = true
+  pushFocusMenuUpdate()
+  const t0 = Date.now()
+  let guided = false
+  const step = async () => {
+    if (!focusStartWaiting) return
+    let front = null
+    try { front = await frontAppInfo() } catch { front = null }
+    if (!focusStartWaiting) return            // 等待期间被取消 / 被结束
+    const waited = Date.now() - t0
+    if (front && front.bundleId && front.bundleId !== selfBundleId()) {
+      focusStartWaiting = false
+      focusStartTimer = null
+      const r = fgCall('start', { minutes: focusDurationMin(), bundleId: front.bundleId, appName: front.appName || '', awaySec: focusAwaySec() })
+      if (!r || r.ok === false) showBubble({ kind: 'focus-info', text: '专注守护没开起来：' + ((r && r.error) || '未知原因'), ttl: 6000 })
+      else modeLog('专注守护开始：' + (front.appName || front.bundleId) + ' ' + focusDurationMin() + ' 分钟（分心阈值 ' + focusAwaySec() + ' 秒）')
+      pushFocusMenuUpdate()
+      return
+    }
+    if (!guided && waited >= 2000) {
+      guided = true
+      showBubble({ kind: 'focus-info', text: '点一下你要专注的那个应用，守护就从它开始（最长等 20 秒）。', ttl: 6000 })
+    }
+    if (waited >= 20000) {
+      focusStartWaiting = false
+      focusStartTimer = null
+      showBubble({ kind: 'focus-info', text: '没等到你切到要专注的应用 —— 先点一下那个 App，再从菜单点「专注守护」。', ttl: 6000 })
+      pushFocusMenuUpdate()
+      return
+    }
+    focusStartTimer = setTimeout(step, 500)
+  }
+  focusStartTimer = setTimeout(step, 1200)    // 首拍先等菜单窗口收掉
+}
+
+/* 陪伴设置变了（设置卡里点一下）就立刻重排下一次 —— 关 = 停表清计时器 */
+function applyCompanionSettings() {
+  const r = cpCall('applySettings', { on: orbState.companionOn !== false, freq: companionFreq(), ai: !!orbState.companionAi })
+  if (r && r.ok && r.changed) modeLog('陪伴设置已生效：' + (orbState.companionOn !== false ? '开 ' + companionFreq() : '关') + (orbState.companionAi ? ' +AI' : ''))
+}
+
 app.commandLine.appendSwitch('enable-features', 'MacLoopbackAudioForScreenShare,MacSckSystemAudioLoopbackOverride')
 
 // v1.29：小球是 alwaysOnTop 的 accessory 窗口，一旦被 Chromium 判成「被遮挡/后台」，
@@ -3029,6 +4460,8 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.whenReady().then(() => {
   bootLog('D whenReady 触发')
   if (app.dock) app.dock.hide()
+  // v1.61.2：任何业务写盘 / 建窗之前先挂惰性恢复守卫（历史 + 知识卡共用）。
+  installLanWriteGuards()
   loadState()
   currentMode = allModeIds().includes(orbState.mode) ? orbState.mode : 'general'
   transLang = LANGS.some((l) => l.id === orbState.transLang) ? orbState.transLang : DEFAULT_TRANS_LANG
@@ -3045,12 +4478,13 @@ app.whenReady().then(() => {
   armKcardDueCheck()   // [KCard] 知识卡到期检查：启动查一次 + 每小时一次，没到期不发通知
   bootLog('H 启动流程结束')
   if (!orbState.hintShown) {
-    setTimeout(showHint, 900)
-    orbState.hintShown = true
-    setTimeout(saveState, 12000)
+    // v1.61.1：首次启动只排这一个延时；卡片真正显示出来后由 hint:resize 里的 markHintShown 落盘。
+    // 注意这里不再预设 hintShown=true —— 建窗失败 / 页面没起来时下次还得继续引导。
+    hintTimer = setTimeout(() => { hintTimer = null; showHint() }, 900)
+  } else if (!orbState.apiOnboarded) {
+    // 已经看过引导 / 老用户，且没配接口才自动弹设置。新手卡还开着时绝不叠一个设置在它上面。
+    setTimeout(showSettings, 1800)
   }
-  // v1.31：新手引导 —— 第一次使用弹设置卡（DeepSeek 链接 + 说明），取消也算看过
-  if (!orbState.apiOnboarded) setTimeout(showSettings, 1800)
   // v1.25：不再自动续扫。以前只要上次开着，崩溃拉起/重启后就继续每 20 秒识别一次 ——
   // 忘了关就变成「幽灵自动扫描」，而且看起来像凭空弹面板。现在一律从关开始。
   if (orbState.autoScan) { orbState.autoScan = false; saveState(); modeLog('启动时清掉上次遗留的自动扫描开关（v1.25 起不再自动续扫）') }
@@ -3059,9 +4493,108 @@ app.whenReady().then(() => {
   if (process.env.AUTO_TRIGGER === '1') {
     setTimeout(() => { if (orbWin && !orbWin.isDestroyed()) { orbWin.webContents.send('orb:busy'); orbWin.webContents.executeJavaScript("(() => { const el = document.getElementById('block'); el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true})); el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true})) })()") } }, 1500)
   }
+  /* v1.64：MCP / 手机常连按上次落盘的选择起。默认关（新装 state.json 里没有这两项 → 全关）。
+   * 起失败只记日志 / 落回「关」，绝不偷偷换端口；设置页打开时能看到真实错误。 */
+  armServiceAutostart()
+  /* v1.75：实时转写 —— 在 ready 之后初始化（safeStorage 要用系统钥匙串）。
+   * 交给它的只有窗口工具 / 日志 / sender 判定；协议、凭据、会话状态都在 voice-main.js，
+   * 渲染器拿到的永远是 hasKey 布尔，不是 Key。 */
+  try {
+    voiceMain.init({
+      app: app,
+      path: __dirname,
+      ipcMain: ipcMain,
+      BrowserWindow: BrowserWindow,
+      screen: screen,
+      desktopCapturer: desktopCapturer,   // 系统音频：语音窗口的 getDisplayMedia 由 voice-main.js 挑回环源
+      shell: shell,
+      safeStorage: safeStorage,
+      systemPreferences: systemPreferences,
+      APP_NAME: APP_NAME,
+      layer: LAYER_POPUP,
+      modeLog: modeLog,
+      hideFromMissionControl: hideFromMissionControl,
+      revealWin: revealWin,
+      fadeClose: fadeClose,
+      showSettings: showSettings,
+      isSettingsSender: isSettingsSender,
+      orbBounds: () => (orbWin && !orbWin.isDestroyed() ? orbWin.getBounds() : null),
+      /* v1.78 语音对话：把**用户已配置的**对话接口交给 voice-main.js 的对话编排。
+       * 这里只给「能不能用 / 用哪套配置 / 共享讲法」三件事：地址与 Key 留在主进程，
+       * 渲染器永远拿不到。没有配置时不注入假配置 —— 对话按钮会如实显示不可用。
+       * thinkingOf 跟随用户「思考强度」既有设置（对话首句延迟受它影响）。 */
+      chat: {
+        ready: () => apiReady(),
+        cfg: () => Object.assign({}, apiCfg(), thinkingOf(apiCfg())),
+        style: () => P.STYLE
+      }
+    })
+  } catch (e) {
+    bootLog('X 实时转写初始化失败 ' + (e && (e.stack || e.message) || e))
+    modeLog('实时转写初始化失败：' + ((e && e.message) || e))
+  }
+  /* v1.76：专注守护 + 陪伴 —— 也是只接线（窗口 / 前台探测 / 气泡 / AI 短句 / 初始设置）。
+   * 陪伴的初始设置来自 state.json（companionOn / companionFreq / companionAi，默认 开 / med / 关）；
+   * LING_COMPANION_NEXT_MS 是给自检用的：设了就把下一次展示压到这个毫秒数。
+   * fgCall / cpCall 自己兜模块缺失与异常（只停那一个功能），这里不用再包一层。 */
+  fgCall('init', {
+    modeLog: modeLog,
+    runFrontmost: runFrontmost,
+    selfBundleId: selfBundleId(),
+    orbGuard: pushOrbGuard,
+    showBubble: showBubble
+  })
+  cpCall('init', {
+    modeLog: modeLog,
+    showBubble: showBubble,
+    aiLine: companionAiLine,
+    envNextOverride: Number(process.env.LING_COMPANION_NEXT_MS) || null,
+    initial: { on: orbState.companionOn !== false, freq: companionFreq(), ai: !!orbState.companionAi }
+  })
 })
 
-app.on('before-quit', saveState)
-app.on('will-quit', () => { try { globalShortcut.unregisterAll() } catch {} })
+function armServiceAutostart() {
+  if (orbState.mcp && orbState.mcp.enabled) {
+    mcpHubStart().then((r) => {
+      if (r.ok) return
+      // 起不来就把开关落回关 —— 否则界面上写着「开」但没有任何监听
+      orbState.mcp.enabled = false
+      saveState()
+      modeLog('启动时自动开 MCP 失败，已回到关闭：' + r.error)
+    }).catch(() => {})
+  }
+  if (orbState.link && orbState.link.enabled) {
+    linkStart().then((r) => {
+      if (r.ok) return
+      orbState.link.enabled = false
+      saveState()
+      modeLog('启动时自动开手机常连失败，已回到关闭：' + r.error)
+    }).catch(() => {})
+  }
+}
+
+// v1.61.1：退出时把新手卡的延时和「设置关闭后回卡」标记一起清掉，别让旧进程状态留到下一次
+app.on('before-quit', () => {
+  if (hintTimer) { clearTimeout(hintTimer); hintTimer = null }
+  hintResumeOnSettingsClose = false
+  saveState()
+})
+// 退出也要真停：先发起 stop（before-quit），再在 will-quit 等这些 socket 都关完才真正退出。
+// v1.64：局域网同步 / MCP / 手机常连三条线各自独立，谁开过就停谁；没开过的不会因此建实例。
+app.on('before-quit', () => { lanSyncStop(); mcpHubStop(); linkStop(); voiceMain.shutdown() })
+// v1.76：专注守护 / 陪伴也要真停 —— 清掉轮询与展示计时器，不残留后台定时器
+app.on('before-quit', () => { fgCall('shutdown'); cpCall('shutdown') })
+let servicesQuitDone = false
+app.on('will-quit', (ev) => {
+  try { globalShortcut.unregisterAll() } catch {}
+  if (servicesQuitDone) return
+  const pending = []
+  if (_lanSync) pending.push(lanSyncStop())
+  if (_mcpHub) pending.push(mcpHubStop())
+  if (_link) pending.push(linkStop())
+  if (!pending.length) { servicesQuitDone = true; return }
+  ev.preventDefault()
+  Promise.allSettled(pending).then(() => { servicesQuitDone = true; app.quit() })
+})
 app.on('window-all-closed', () => {})
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) placeOrb() })

@@ -468,7 +468,7 @@ class CustomizeActivity : Activity() {
 
     /** 破坏性操作一律先确认（「恢复默认」会真删掉用户写的人格 / 提示词） */
     private fun confirm(title: String, msg: String, onYes: () -> Unit) {
-        android.app.AlertDialog.Builder(this).setTitle(title).setMessage(msg)
+        ThemeDialogs.builder(this).setTitle(title).setMessage(msg)
             .setPositiveButton("确定") { _, _ -> onYes() }
             .setNegativeButton("算了", null).show()
     }

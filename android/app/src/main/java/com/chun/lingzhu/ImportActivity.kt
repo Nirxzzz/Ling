@@ -147,6 +147,8 @@ class ImportActivity : Activity() {
     private lateinit var resultsBox: LinearLayout
     private lateinit var rowsHost: LinearLayout
     private lateinit var importBtn: Button
+    /** 本地结构化的结果说明（章节 / 知识点 / 建议卡数，以及摘录核对结果） */
+    private lateinit var structureInfo: TextView
 
     private var shownSourceRev = -1
     private var rowsBuilt = false
@@ -158,7 +160,7 @@ class ImportActivity : Activity() {
         super.onCreate(savedInstanceState)
         DocumentText.init(applicationContext)
         title = "导入知识卡"
-        Ui.theme = prefs.theme()
+        Ui.applyTheme(prefs)
         // 旋转回来接着用同一个保留态；否则新起一个（进程被杀后就是全新的，不自动发任何请求）。
         val carried = carriedSession()
         session = carried ?: ImportSession()
@@ -274,6 +276,27 @@ class ImportActivity : Activity() {
             setOnClickListener { commit() }
         }
         resultsBox.addView(importBtn)
+
+        // —— 资料结构化（纯本地规则，不花接口钱）——
+        // 为什么放在「生成」之后还有一条独立的路：AI 出题要联网、要花钱、要等；
+        // 这条只用本地规则把资料切成章节 + 知识点 + 建议卡，离线也能走，而且每一条都带原文摘录可核对。
+        // 两条路的产物最终都汇进同一个 rows，走现有的预览 / 勾选 / 编辑 / 落库流程 —— 不另开一套导入逻辑。
+        sectionTitle("或：不联网，按本地规则拆分资料")
+        structureInfo = TextView(this).apply { textSize = 12.5f; alpha = 0.75f; setPadding(0, dp(2), 0, dp(6)) }
+        root.addView(structureInfo)
+        root.addView(Button(this).apply {
+            text = "结构化这段资料（本地规则）"
+            setOnClickListener { onStructure() }
+        })
+
+        // 模块被关掉时整个入口不画：留一个点了就弹「已关闭」的按钮只是噪音。
+        // 开关在 registry 一处判（[Features.isEnabled]），这里不自己读 Prefs。
+        if (Features.isEnabled(this, "graph")) {
+            root.addView(Button(this).apply {
+                text = "查看知识图谱"
+                setOnClickListener { openGraph() }
+            })
+        }
 
         root.addView(Button(this).apply { text = "返回"; setOnClickListener { finish() } })
     }
@@ -542,6 +565,82 @@ class ImportActivity : Activity() {
         toast("已取消生成")
     }
 
+    // ---------------- 本地结构化（不调模型）----------------
+
+    /**
+     * 纯文本结构化：本地规则切章节 / 抽知识点 / 出建议卡，**不发任何请求**。
+     *
+     * 为什么单独一个入口而不是直接顶替「AI 生成」：两者是互补的。
+     * AI 出题质量高但要联网付费；本地规则离线零成本，代价是只能认出标题 / 编号 / 定义句这类结构化资料。
+     * 所以把它放在「生成」之外、产物汇入同一个 rows —— 用户想用哪个用哪个，也能两边各抽一轮再一起勾选。
+     *
+     * 抽取不到东西时**明确说没抽到**，不静默返回空列表让用户以为按钮坏了。
+     */
+    private fun onStructure() {
+        val text = session.sourceText.trim()
+        if (text.isEmpty()) { toast("先选文件或粘贴要拆分的原文"); return }
+        val s = session
+        // 冻结这一轮的原文与来源名：和 AI 那轮同一套口径，落库署名不会串
+        s.genSource = text
+        s.genFileName = s.fileName?.takeIf { it.isNotBlank() } ?: "粘贴文本"
+        val name = s.genFileName ?: "粘贴文本"
+        val result = MaterialIngest.ingest(text, name)
+
+        if (result.isEmpty) {
+            structureInfo.text = "没抽到知识点：" + result.summary + "（资料没有标题 / 编号 / 定义句时，用上面的 AI 生成更合适）"
+            toast("这段资料里没找到可结构化的内容", long = true)
+            return
+        }
+
+        // 与 AI 那轮同样的落点：清掉上一轮结果，把建议卡装进 rows（默认全勾）
+        s.rows.clear()
+        s.error = null
+        for (c in result.cards) {
+            // 摘录只读：卡片 origin 里已经带了「文件名 · 原文摘录」，这里摘掉署名作为行内摘录展示
+            val excerpt = c.origin.removePrefix(name + " · ")
+            s.rows.add(Row(c.deck, c.front, c.back, excerpt, true))
+        }
+        s.phase = if (s.rows.isEmpty()) PHASE_FAILED else PHASE_RESULTS
+        if (s.rows.isEmpty()) s.error = "结构拆出来了，但没形成可导入的卡片 —— 换一段更完整的资料试试。"
+
+        // 可核对性写进界面：告诉用户有多少条摘录真的能在原文里定位到，而不是只报个总数
+        val hit = result.points.count { text.contains(it.origin) }
+        structureInfo.text = result.summary + " · 摘录可在原文核对 " + hit + "/" + result.points.size +
+            "\n本机规则拆分，没有联网、没有消耗接口。下面可以逐张核对 / 编辑 / 勾选。"
+        buildResults()
+        draw()
+    }
+    /**
+     * 打开知识图谱。
+     *
+     * 图上的节点来自 [MaterialIngest] 的 points：同一段原文，用户在导入页看到的「知识点清单」和图谱里
+     * 的节点是同一份数据，不是两套抽取 —— 否则两边数字对不上，用户没法信任任何一个。
+     *
+     * 还没结构化过的资料这里现拆一次（纯本地、毫秒级、不花钱），顺便在按钮上方给出「抽到了几个知识点」，
+     * 让用户在跳转前就知道图谱里会不会是空的。
+     */
+    private fun openGraph() {
+        // 模块被关掉时这里直接拒：入口已经藏了（见 buildChrome 里那一行），但旧任务栈、
+        // 旋转恢复都可能还留着一个已经建好的按钮，点下去不该打开一个用户明说不要的页面。
+        // 检查放在最前面 —— 关掉的模块连「结构化」那一次本地拆分都不该白跑。
+        if (!Features.isEnabled(this, "graph")) {
+            toast("知识图谱已在「模块管理」里关掉 —— 设置 → 模块管理 可以重新打开", long = true)
+            return
+        }
+        val text = session.sourceText
+        val points = MaterialIngest.ingest(text, session.fileName.orEmpty()).points
+        if (points.isEmpty()) {
+            toast("先点上面的「结构化这段资料」，或换一份带标题 / 定义句的资料", long = true)
+            return
+        }
+        // 走 [Features.open] 而不是 startActivity：开关只在 registry 那一处判，
+        // 它还会吞掉 ActivityNotFoundException 返回 false（图谱页没注册时不再带崩导入页），
+        // 这里只负责把那句人话显示出来。导卡才是主流程，图谱只是可选的查看入口。
+        // 图谱页自己从知识卡库建图（[GraphActivity] 里 graph = KnowledgeGraph.build(cards)），
+        // 这里不传节点：传一份"预览用"的节点会让图和库里真实的卡对不上 ——
+        // 用户在图上点一个节点、跳到复习却找不到那张卡，比不给他看更糟。
+        if (!Features.open(this, "graph")) toast("图谱功能准备中：暂时打不开", long = true)
+    }
     // ---------------- 确认落库 ----------------
 
     private fun commit() {
@@ -588,7 +687,7 @@ class ImportActivity : Activity() {
     private fun promptEnable(res: KnowledgeCard.ImportResult) {
         val decks = res.decks.filter { it.isNotBlank() }.sorted()
         if (decks.isEmpty()) return
-        AlertDialog.Builder(this)
+        ThemeDialogs.builder(this)
             .setTitle("开启知识卡弹出复习？")
             .setMessage(
                 "以上牌组已保存：${decks.joinToString("、")}。\n\n" +

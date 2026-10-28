@@ -3,19 +3,19 @@ package com.chun.lingzhu
 import org.junit.Assert.*
 import org.junit.Test
 
-/** v1.66 首次配置引导：步骤没做完不能往后、可以往回；老用户不拦 */
+/** v1.66 首次配置引导：步骤没做完不能往后、可以往回；内测内置接口跳过；老用户不拦 */
 class OnboardingTest {
-    private val none = Onboarding.State(overlay = false, apiReady = false, a11ySupported = true, a11yOn = false, notifications = false, battery = false)
+    private val none = Onboarding.State(overlay = false, apiReady = false, presetApi = false, a11ySupported = true, a11yOn = false, notifications = false, battery = false)
     private val all = none.copy(overlay = true, apiReady = true, a11yOn = true, notifications = true, battery = true)
 
-    @Test fun everyInstallHasApiStep() {
+    @Test fun publicHasApiStepInternalPresetSkipsIt() {
         val pub = Onboarding.steps(none)
         assertEquals(Onboarding.Step.WELCOME, pub.first())
         assertEquals(Onboarding.Step.FINISH, pub.last())
         assertTrue(Onboarding.Step.API in pub)
-        // 接口没填时这一步本身没完成
-        assertFalse(Onboarding.done(Onboarding.Step.API, none))
-        assertTrue(Onboarding.done(Onboarding.Step.API, none.copy(apiReady = true)))
+        assertFalse(Onboarding.Step.API in Onboarding.steps(none.copy(presetApi = true)))
+        // 内置接口时 API 这一步本身也算完成
+        assertTrue(Onboarding.done(Onboarding.Step.API, none.copy(presetApi = true)))
     }
 
     @Test fun cannotAdvancePastUnfinishedStep() {
@@ -72,7 +72,7 @@ class OnboardingTest {
         assertTrue("全新安装", Onboarding.shouldShow(false, false, emptySet()))
         assertTrue("与配置无关的键不算老用户", Onboarding.shouldShow(false, false, setOf("updateLastCheck")))
         assertFalse("老用户配置过接口", Onboarding.shouldShow(false, false, setOf("baseUrl")))
-        assertFalse("老用户只启动过小球", Onboarding.shouldShow(false, false, setOf("orbWanted", "orbX")))
+        assertFalse("内测老用户只启动过小球", Onboarding.shouldShow(false, false, setOf("orbWanted", "orbX")))
         assertTrue("引导走到一半（已经填了接口）再回来，接着走", Onboarding.shouldShow(false, true, setOf("baseUrl")))
         assertFalse("走完了", Onboarding.shouldShow(true, true, emptySet()))
     }

@@ -47,7 +47,12 @@ class ThemeTest {
         assertEquals(0x1C1C1E, t.surface and 0xFFFFFF)
         assertEquals(4, t.orbStops.size)
         assertEquals(0x80123456.toInt(), Theme.argb(0x80, 0x123456))
-        assertEquals(0x808080, Theme.mix(0x000000, 0xFFFFFF, 0.5f))
+        // alpha 必须一起插值：只拼 RGB 会得到 0x00808080 —— 十六进制看着正常、画到屏幕上却是全透明。
+        // v2.5 底栏未选中那三格整格消失就是这个（旧断言写的正是 0x808080，把 bug 固化成了"期望"）。
+        assertEquals(0xFF808080.toInt(), Theme.mix(0xFF000000.toInt(), 0xFFFFFFFF.toInt(), 0.5f))
+        assertEquals(0xFF shl 24, Theme.mix(0xFF000000.toInt(), 0xFFFFFFFF.toInt(), 0.5f) and 0xFF000000.toInt())
+        // 半透明两端 → 中间也不透明以外地保留 alpha，不能变成 0
+        assertEquals(0xC0, (Theme.mix(0xC0000000.toInt(), 0xC0FFFFFF.toInt(), 0.5f) ushr 24) and 0xFF)
     }
 
     // 默认「护眼」行为一字不改：薄荷绿 → 粉渐变、小球薄荷 → 粉；没选过 / 未知 id 都落它

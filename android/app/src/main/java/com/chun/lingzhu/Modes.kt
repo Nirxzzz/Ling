@@ -6,6 +6,9 @@ import org.json.JSONObject
 /**
  * 模式（v1.58）：通用、做题两个内置（v1.65 加过「通识」，v1.66 删了） + 任意多个自定义模式（各有名字、提示词、面板不透明度）。
  * 模式 id：内置就是 "general" / "exam"；自定义是 "custom:<id>"。
+ * 另有「单词翻译」[Prompts.MODE_WORD] —— 它**不是**可选的内置模式（[BUILTIN] / [all] 里都没有，
+ * 设置页与面板抽屉不会列出来），只有双击小球那一路把这一轮强制成它。这里只保证它是个**合法 id**：
+ * 存进去了就读得出来（[normalize] 认、[label] 给「单词翻译」），不会被悄悄改回「通用」。
  * 存在 prefs 的 customModes（JSON 数组）；v1.54~1.57 只有一个「自定义」+ customPrompt，第一次读时迁移成 c1。
  * 纯 Kotlin + org.json，方便单元测试。
  */
@@ -54,10 +57,14 @@ object Modes {
 
     fun customId(mode: String): String? = if (mode.startsWith(PREFIX)) mode.removePrefix(PREFIX) else null
 
-    /** 存的模式 id → 合法的模式 id（旧的 "custom" 指向第一个自定义；自定义被删了、或是 v1.66 删掉的通识，都回到通用） */
+    /**
+     * 存的模式 id → 合法的模式 id（旧的 "custom" 指向第一个自定义；自定义被删了、或是 v1.66 删掉的通识，都回到通用）。
+     * `word` 认作合法 id（见类注释）—— 它在 [BUILTIN] 之外，所以这里单列一条，不能靠 `in BUILTIN` 兜住。
+     */
     fun normalize(raw: String?, list: List<Custom>): String = when {
         raw == LEGACY_LEARN -> Prompts.MODE_GENERAL
         raw == Prompts.MODE_CUSTOM -> list.firstOrNull()?.let { PREFIX + it.id } ?: Prompts.MODE_GENERAL
+        raw == Prompts.MODE_WORD -> Prompts.MODE_WORD
         raw != null && raw in BUILTIN -> raw
         raw != null && customId(raw)?.let { id -> list.any { it.id == id } } == true -> raw
         else -> Prompts.MODE_GENERAL

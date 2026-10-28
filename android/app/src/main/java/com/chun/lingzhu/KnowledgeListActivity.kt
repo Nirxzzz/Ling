@@ -23,7 +23,7 @@ class KnowledgeListActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Ui.theme = Prefs(this).theme()
+        Ui.applyTheme(Prefs(this))
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val sv = ScrollView(this).apply { addView(root) }
 
@@ -121,7 +121,7 @@ class KnowledgeListActivity : Activity() {
             row.addView(Button(this).apply {
                 text = "删除"; tag = Brut.DANGER
                 setOnClickListener {
-                    android.app.AlertDialog.Builder(this@KnowledgeListActivity).setTitle("删除这张卡？")
+                    ThemeDialogs.builder(this@KnowledgeListActivity).setTitle("删除这张卡？")
                         .setMessage(c.front).setNegativeButton("取消", null)
                         .setPositiveButton("删除") { _, _ -> store.remove(c.id); render() }.show()
                 }
@@ -139,7 +139,7 @@ class KnowledgeListActivity : Activity() {
         val deck = field("牌组", card?.deck ?: "默认", true)
         val front = field("正面 · 问题（必填）", card?.front ?: "")
         val back = field("背面 · 答案（必填）", card?.back ?: "")
-        val dialog = android.app.AlertDialog.Builder(this).setTitle(if (card == null) "新建知识卡" else "编辑知识卡 · 保留进度")
+        val dialog = ThemeDialogs.builder(this).setTitle(if (card == null) "新建知识卡" else "编辑知识卡 · 保留进度")
             .setView(ScrollView(this).apply { addView(form) }).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
         dialog.setOnShowListener {
             dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {

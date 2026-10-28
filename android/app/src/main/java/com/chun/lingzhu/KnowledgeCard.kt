@@ -83,12 +83,12 @@ object KnowledgeCard {
                 .thenBy { if (it.isDue(now)) it.fsrs.due else -it.createdAt }
         )
 
-    /** 超上限拒新增：满了返回 null */
-    fun tryAdd(list: List<KCData>, t: KCData, max: Int = MAX): List<KCData>? {
+    /** 超上限拒新增：满了返回 null。id 从「现有最大 id / [idFloor]」之后分配，避免复用已删卡片的 id。 */
+    fun tryAdd(list: List<KCData>, t: KCData, max: Int = MAX, idFloor: Long = 0L): List<KCData>? {
         if (t.front.isBlank()) return list
         if (!dedup(list, t.deck, t.front)) return list
         if (list.size >= max) return null
-        val id = (list.maxOfOrNull { it.id } ?: 0L) + 1
+        val id = maxOf(list.maxOfOrNull { it.id } ?: 0L, idFloor) + 1
         return listOf(t.copy(id = id)) + list
     }
 
@@ -99,11 +99,12 @@ object KnowledgeCard {
      * 只把去重键收进 Set 少走一遍。**修掉旧 [Store.addAll] 的虚高**：旧实现拿到 `tryAdd` 返回的
      * 同一个列表（空白 / 重复都返回入参本身）也 `ok++`，于是「成功数」把没进库的也算进去了。
      * 这里按真实结果分桶：`added + duplicates + full == cards.size`。
+     * [idFloor] 是本机持久化的 id 水位，保证删除最大 id 后新增也不会复用旧 id。
      */
-    fun mergeBatch(list: List<KCData>, cards: List<KCData>, max: Int = MAX): Batch {
+    fun mergeBatch(list: List<KCData>, cards: List<KCData>, max: Int = MAX, idFloor: Long = 0L): Batch {
         val keys = HashSet<String>(list.size + cards.size)
         for (c in list) keys.add(dedupKey(c.deck, c.front))
-        var maxId = list.maxOfOrNull { it.id } ?: 0L
+        var maxId = maxOf(list.maxOfOrNull { it.id } ?: 0L, idFloor)
         var size = list.size
         var added = 0; var duplicates = 0; var full = 0
         val inserted = ArrayList<KCData>()
@@ -122,49 +123,180 @@ object KnowledgeCard {
     // ---------------- 存储 ----------------
 
     class Store(ctx: Context) {
-        private val file = File(ctx.applicationContext.filesDir, FILE)
+        private val app = ctx.applicationContext
+        private val file = File(app.filesDir, FILE)
         private val prefs = Prefs(ctx)
 
-        @Synchronized fun list(): List<KCData> = FileMemo.get(file) { s -> parse(s) }
-        @Synchronized fun add(front: String, back: String, source: Source, now: Long, deck: String = "默认"): Long {
-            val cur = FileMemo.get(file) { s -> parse(s) }
-            val added = tryAdd(cur, KCData(0, deck, front.trim(), back.trim(), source.code, now,
-                Fsrs.Card())) ?: return -1L
-            FileMemo.put(file, added) { l -> toJson(l) }
-            return added.firstOrNull { it.deck == deck && it.front == front.trim() }?.id ?: -1L
+        /**
+         * 本机单调 id 水位（私有 SharedPreferences）。只记一个 Long，避免为了找最大 id 去扫整个文件；
+         * 删除最大 id 后再新增不会复用，LAN 同步的 uid 绑定因此不会把新卡误认成旧卡的编辑。
+         */
+        private val seq = app.getSharedPreferences(SEQ_PREFS, Context.MODE_PRIVATE)
+
+        internal fun idFloor(): Long = seq.getLong(SEQ_KEY, 0L)
+
+        internal fun noteIdUsed(id: Long) {
+            if (id > 0L && id > seq.getLong(SEQ_KEY, 0L)) seq.edit().putLong(SEQ_KEY, id).apply()
         }
+
+        /**
+         * 带健康状态的读取。普通 UI 仍按旧口径（解析失败显示空 / 部分数据），
+         * 但 [FileMemo] 会把错误留到本进程结束，[LanSyncStore] 通过 [readForSync] 拒绝同步，
+         * 不会把「读不出来」当成空库发墓碑。文件不存在时是合法空库。
+         */
+        private fun current(): List<KCData> =
+            FileMemo.getChecked(file, { s -> parse(s) }, { s -> parseStrict(s) }).value ?: emptyList()
+
+        /**
+         * 读之前先重放上次没删掉的同步 journal（幂等；Store 首次读前恢复，避免旧缓存把新状态回写）。
+         * 所有读写都锁 FileMemo，和 LanSyncStore 的「观察 → 应用」共用同一把锁。
+         */
+        fun list(): List<KCData> = synchronized(FileMemo) {
+            LanSyncStore.recover(app)
+            val v = current()
+            noteIdUsed(v.maxOfOrNull { it.id } ?: 0L)
+            v
+        }
+        fun add(front: String, back: String, source: Source, now: Long, deck: String = "默认"): Long =
+            synchronized(FileMemo) {
+                LanSyncStore.recover(app)
+                val cur = current()
+                val added = tryAdd(
+                    cur,
+                    KCData(0, deck, front.trim(), back.trim(), source.code, now, Fsrs.Card()),
+                    idFloor = maxOf(idFloor(), cur.maxOfOrNull { it.id } ?: 0L),
+                ) ?: return@synchronized -1L
+                if (added !== cur) {
+                    noteIdUsed(added.first().id)
+                    FileMemo.put(file, added) { l -> toJson(l) }
+                }
+                added.firstOrNull { it.deck == deck && it.front == front.trim() }?.id ?: -1L
+            }
         /**
          * 批量导入（K4/apkg）：一次读一次写，避免逐张全量序列化（O(n²) → O(n)）。
          * 返回**实际新增**张数（旧实现把空白 / 重复也算进成功数，是虚高）。保留给既有调用方，内部走 [addBatch]。
          */
-        @Synchronized fun addAll(cards: List<KnowledgeCard.KCData>): Int = addBatch(cards).added
+        fun addAll(cards: List<KnowledgeCard.KCData>): Int = synchronized(FileMemo) { addBatch(cards).added }
 
         /**
          * 批量导入（K4/文档导入共用）：一次读一次写 O(n)，返回真实分桶结果（新增 / 重复 / 超限 + 真正入库的牌组）。
          * 没有任何新增时**不写盘**。
          */
-        @Synchronized fun addBatch(cards: List<KnowledgeCard.KCData>): KnowledgeCard.ImportResult {
-            if (cards.isEmpty()) return KnowledgeCard.ImportResult(0, 0, 0, emptySet())
-            val cur = FileMemo.get(file) { s -> parse(s) }
-            val batch = mergeBatch(cur, cards)
-            if (batch.result.added > 0) FileMemo.put(file, batch.list) { l -> toJson(l) }
-            return batch.result
+        fun addBatch(cards: List<KnowledgeCard.KCData>): KnowledgeCard.ImportResult = synchronized(FileMemo) {
+            if (cards.isEmpty()) return@synchronized KnowledgeCard.ImportResult(0, 0, 0, emptySet())
+            LanSyncStore.recover(app)
+            val cur = current()
+            val batch = mergeBatch(
+                cur,
+                cards,
+                idFloor = maxOf(idFloor(), cur.maxOfOrNull { it.id } ?: 0L),
+            )
+            if (batch.result.added > 0) {
+                noteIdUsed(batch.list.maxOfOrNull { it.id } ?: 0L)
+                FileMemo.put(file, batch.list) { l -> toJson(l) }
+            }
+            batch.result
         }
-        @Synchronized fun remove(id: Long) = FileMemo.put(file, list().filter { it.id != id }) { l -> toJson(l) }
+        fun remove(id: Long) = synchronized(FileMemo) {
+            FileMemo.put(file, list().filter { it.id != id }) { l -> toJson(l) }
+        }
         /** 编辑内容保留 ID、来源和复习进度；同牌组同题面不允许重复。 */
-        @Synchronized fun update(id: Long, deck: String, front: String, back: String): Boolean {
+        fun update(id: Long, deck: String, front: String, back: String): Boolean = synchronized(FileMemo) {
             val cur = list()
             if (front.isBlank() || cur.none { it.id == id } ||
-                cur.any { it.id != id && it.deck == deck && it.front.trim() == front.trim() }) return false
+                cur.any { it.id != id && it.deck == deck && it.front.trim() == front.trim() }) return@synchronized false
             FileMemo.put(file, cur.map { if (it.id == id) it.copy(deck = deck, front = front.trim(), back = back.trim()) else it }) { toJson(it) }
-            return true
+            true
         }
-        @Synchronized fun answer(id: Long, rating: Fsrs.Rating, now: Long) =
+        fun answer(id: Long, rating: Fsrs.Rating, now: Long) = synchronized(FileMemo) {
             FileMemo.put(file, list().map { if (it.id == id) it.copy(fsrs = Fsrs.review(it.fsrs, rating, now, prefs.studyPlan.params())) else it }) { l -> toJson(l) }
-        @Synchronized fun count() = list().size
-        @Synchronized fun dueCards(now: Long) = list().filter { !it.fsrs.isNew && it.isDue(now) }.map { it.fsrs }
+        }
+        fun count(): Int = synchronized(FileMemo) { list().size }
+        fun dueCards(now: Long): List<Fsrs.Card> = synchronized(FileMemo) {
+            list().filter { !it.fsrs.isNew && it.isDue(now) }.map { it.fsrs }
+        }
 
-        private fun parse(s: String?): List<KCData> {
+        /**
+         * 供 LanSyncStore 的同步事务使用：[FileMemo.put] 立即更新内存副本并进写队列（有序、不直接 writeText）。
+         * 调用方必须已经持有 `synchronized(FileMemo)`，并在事务末尾用 `FileMemo.flush()` 做落盘屏障。
+         */
+        internal fun replaceFromSync(list: List<KCData>) {
+            FileMemo.put(file, list) { l -> toJson(l) }
+        }
+
+        /**
+         * 供 LanSyncStore 的恢复路径使用：整表替换缓存并**同步**落盘（落盘后才返回，失败抛异常）。
+         * 调用方必须已经持有 `synchronized(FileMemo)`。
+         */
+        internal fun putFromSync(list: List<KCData>) {
+            FileMemo.putAndWait(file, list) { l -> toJson(l) }
+            // 权威恢复：整表已由 journal 覆盖，旧的加载失败不再适用。
+            FileMemo.clearLoadError(file)
+        }
+
+        /**
+         * 同步专用严格读取：返回健康状态而不是把坏文件当空库。调用方（LanSyncStore）必须先
+         * [LanSyncStore.recover] 并持有 `synchronized(FileMemo)`。
+         */
+        internal fun readForSync(): FileMemo.Loaded<List<KCData>> =
+            FileMemo.getChecked(file, { s -> parse(s) }, { s -> parseStrict(s) })
+
+        /**
+         * 结构严格解析：只用于判断文件是否可信，不做业务裁剪。任何元素不是对象、id 非正整数、
+         * front 缺失/空白、字段类型不对都抛错，让同步拒绝，而不是丢掉坏元素后发墓碑。
+         */
+        internal fun parseStrict(s: String?): List<KCData> {
+            if (s == null) return emptyList()        // 文件不存在 = 合法空库
+            if (s.isBlank()) throw IllegalArgumentException("knowledge.json 为空文件")
+            val a = JSONArray(s)
+            for (i in 0 until a.length()) {
+                val o = a.optJSONObject(i)
+                    ?: throw IllegalArgumentException("knowledge[$i] 不是对象")
+                val id = integral(o.opt("id"))
+                    ?: throw IllegalArgumentException("knowledge[$i].id 不是整数")
+                if (id <= 0L) throw IllegalArgumentException("knowledge[$i].id 非正数: $id")
+                val front = o.opt("front")
+                if (front !is String || front.isBlank()) {
+                    throw IllegalArgumentException("knowledge[$i].front 缺失或为空白")
+                }
+                val deck = o.opt("deck")
+                if (deck !is String || deck.isBlank()) {
+                    throw IllegalArgumentException("knowledge[$i].deck 缺失或为空白")
+                }
+                if (o.opt("back") !is String) throw IllegalArgumentException("knowledge[$i].back 缺失或类型错误")
+                val source = o.opt("source")
+                if (source !is String || Source.entries.none { it.code == source }) {
+                    throw IllegalArgumentException("knowledge[$i].source 缺失或未知: $source")
+                }
+                // origin 是后加字段，老文件可以没有；有就必须是字符串。
+                val origin = o.opt("origin")
+                if (origin != null && origin != JSONObject.NULL && origin !is String) {
+                    throw IllegalArgumentException("knowledge[$i].origin 不是字符串")
+                }
+                val created = o.opt("createdAt")
+                if (created == null || created == JSONObject.NULL) {
+                    throw IllegalArgumentException("knowledge[$i].createdAt 缺失")
+                }
+                val t = integral(created)
+                    ?: throw IllegalArgumentException("knowledge[$i].createdAt 不是整数")
+                if (t < 0L) throw IllegalArgumentException("knowledge[$i].createdAt 为负")
+                // 缺 fsrs 会被当成新卡，复习进度被静默清零；必须存在且是对象。
+                if (o.opt("fsrs") !is JSONObject) {
+                    throw IllegalArgumentException("knowledge[$i].fsrs 缺失或不是对象")
+                }
+            }
+            return parse(s)
+        }
+
+        private fun integral(v: Any?): Long? {
+            if (v !is Number) return null
+            val d = v.toDouble()
+            if (!d.isFinite()) return null
+            val l = v.toLong()
+            return if (l.toDouble() == d) l else null
+        }
+
+        internal fun parse(s: String?): List<KCData> {
             if (s.isNullOrBlank()) return emptyList()
             return try {
                 val a = JSONArray(s)
@@ -183,7 +315,7 @@ object KnowledgeCard {
                 }
             } catch (_: Exception) { emptyList() }
         }
-        private fun toJson(l: List<KCData>): String =
+        internal fun toJson(l: List<KCData>): String =
             JSONArray().apply { l.forEach { c ->
                 put(JSONObject().apply {
                     put("id", c.id); put("deck", c.deck); put("front", c.front); put("back", c.back)
@@ -191,5 +323,11 @@ object KnowledgeCard {
                     put("origin", c.origin)
                 })
             } }.toString()
+
+        private companion object {
+            /** 私有单调 id 水位：只存一个 Long，不扫 knowledge.json。 */
+            const val SEQ_PREFS = "ling-knowledge-seq"
+            const val SEQ_KEY = "maxId"
+        }
     }
 }

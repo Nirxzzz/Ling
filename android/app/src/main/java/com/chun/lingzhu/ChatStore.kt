@@ -22,9 +22,10 @@ object ChatStore {
     const val FILE = "chat.json"
     /** [MP] 人格化之后每个 pid 一份：chat-<pid>.json */
     fun file(pid: String) = "chat-${safeFile(pid)}.json"
-    /** 落盘上限：超了丢最老的。聊天不看历史检索，留 200 条够回看很久。 */
-    const val MAX = 200
-    /** 每次请求带最近多少条消息（用户定的 20）。超出的老消息不带 —— 接口本身不记上下文。 */
+    /**
+     * 每次请求带最近多少条消息（用户定的 20）。超出的老消息在**请求里**不带 —— 接口本身不记上下文；
+     * 但**本地记录一条都不删**：更早的那些由 [AgentContext] 压成摘要，跟着最近几轮一起发出去。
+     */
     const val WINDOW = 20
 
     /**
@@ -102,15 +103,17 @@ object ChatStore {
 
     // ---------------- 增删 ----------------
 
-    /** 追加到末尾；空正文（且没带图）不进；时间戳撞了往后挪（同毫秒连发两条很常见） */
-    fun add(list: List<Msg>, m: Msg, max: Int = MAX): List<Msg> {
+    /**
+     * 追加到末尾；空正文（且没带图）不进；时间戳撞了往后挪（同毫秒连发两条很常见）。
+     *
+     * **不裁剪**：本地会话就是完整记录，用户明确要求一条都不许丢（老版本这里按 MAX=200 砍头，已移除）。
+     * 请求那边变长的问题由 [AgentContext] 用摘要解决，落盘这一层只管追加。
+     */
+    fun add(list: List<Msg>, m: Msg): List<Msg> {
         if (m.content.isBlank() && m.img == null) return list
         val at = if (list.any { it.at == m.at }) ((list.maxOfOrNull { it.at } ?: 0L) + 1) else m.at
-        return trim(list + m.copy(at = at), max)
+        return list + m.copy(at = at)
     }
-
-    /** 超上限丢最老的（聊天按时间正序，尾部最新，所以从头部砍） */
-    fun trim(list: List<Msg>, max: Int): List<Msg> = if (list.size <= max) list else list.takeLast(max)
 
     fun clear(): List<Msg> = emptyList()
 
@@ -169,6 +172,10 @@ object ChatStore {
      *
      * [imgB64] 只对**这一刻真要发出去的那张图**返回 base64（由调用方按文件名判断）。
      * 默认恒空 → 纯文字会话的请求体和加图片功能之前**逐字一样**（前缀缓存不受影响）。
+     *
+     * [history] = 调用方已经备好的历史（[AgentContext] 压出来的「摘要 + 最近完整轮次」）：
+     * 给了就**原样用**，绝不再过滑窗 —— 否则那份精心保留的尾部会被 20 条的默认窗口二次裁掉。
+     * 默认 null → 行为和加这个参数之前逐字一致。
      */
     fun body(
         cfg: ApiConfig,
@@ -178,16 +185,21 @@ object ChatStore {
         system: String = systemPrompt(),
         suffix: String = "",
         imgB64: (Msg) -> String? = { null },
+        /** v2.2.1 联网搜索：开着时聊天改走流式 + tools（默认 false → 请求体和以前逐字一样） */
+        stream: Boolean = false,
+        withTools: Boolean = false,
+        history: List<Msg>? = null,
     ): String {
         val o = JSONObject()
             .put("model", cfg.model)
-            .put("stream", false)
+            .put("stream", stream)
             .put("max_tokens", maxTokens)
             .put("messages", JSONArray().put(JSONObject().put("role", "system").put("content", system)).apply {
-                for (m in recent(list, n)) put(messageOf(m, imgB64))
+                for (m in history ?: recent(list, n)) put(messageOf(m, imgB64))
                 if (suffix.isNotEmpty()) appendSuffix(this, suffix)
             })
         Bodies.thinking(cfg, false, o)
+        if (withTools) Bodies.tools(cfg, o)   // 开关关 / 没配全时 tools() 自己什么都不加
         return o.toString()
     }
 
@@ -419,6 +431,17 @@ object ChatStore {
             return out.last()
         }
 
-        @Synchronized fun clear() = FileMemo.clear(file, emptyList<Msg>())
+        /**
+         * 清空会话：记录删掉，[AgentContext] 的摘要 sidecar 一起删 —— 留着只会把「已经清掉的旧事」
+         * 又带进下一轮。人格被删时也走这里（[Personas.wipe]）。
+         *
+         * **和「核对 + 写摘要」共用 [AgentContext.LOCK]**：正在飞的那次压缩要么先完成、要么看到会话已变，
+         * 不可能出现「清空之后摘要又写回来」。
+         */
+        @Synchronized fun clear() = synchronized(AgentContext.LOCK) {
+            FileMemo.clear(file, emptyList<Msg>())
+            AgentContext.SummaryStore(File(dir, AgentContext.file(pid))).clear()
+            Unit
+        }
     }
 }

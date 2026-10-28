@@ -33,6 +33,8 @@
     <div class="mi" data-a="scan"><span class="t">自动扫描</span><span class="k" id="k-scan">关</span></div>
     <div class="mi static"><span class="t">扫描间隔</span><span class="step" data-a="interval-dec" title="缩短">−</span><span class="k" id="k-interval">20 秒</span><span class="step" data-a="interval-inc" title="加长">+</span></div>
     <div class="mi" data-a="dim"><span class="t">全屏避让(淡出)</span><span class="k" id="k-dim">开</span></div>
+    <!-- v1.76：专注守护 —— 进行中显示「剩 x 分·点按结束」（再点一下结束）；没在守护显示设定的时长，点一下抓前台应用开始 -->
+    <div class="mi" data-a="focus"><span class="t">专注守护</span><span class="k" id="k-focus">25 分·守护前台应用</span></div>
     <div class="sep"></div>
     <div class="lbl">API 档案<span class="hint">点一下切换</span></div>
     <div id="profiles"></div>
@@ -51,6 +53,13 @@
     if (!el) return
     el.textContent = on ? (onText || '开') : (offText || '关')
     el.classList.toggle('on', !!on)
+  }
+  // v1.76：专注守护那一行的 k 位（active 时高亮，提示再点一下就能结束）
+  function setFocus(f) {
+    const el = document.getElementById('k-focus')
+    if (!el || !f) return
+    el.textContent = f.label || ''
+    el.classList.toggle('on', !!f.active)
   }
   function fit() {
     const h = document.getElementById('menu').offsetHeight + 8
@@ -112,6 +121,8 @@
     chip(document.getElementById('k-copy'), i.copy)
     chip(document.getElementById('k-scan'), i.scan)
     chip(document.getElementById('k-dim'), i.dim)
+    // v1.76 专注守护状态（menu:info 的 focus 字段：{active,label}；menu:update 只带增量时同样走这里）
+    setFocus(i.focus)
     document.getElementById('k-lang').textContent = i.langLabel || '自动'
     const kint = document.getElementById('k-interval')
     if (kint) kint.textContent = i.intervalLabel || '20 秒'
@@ -169,6 +180,8 @@
     if (d.detailLabel) { const el = document.getElementById('k-detail'); if (el) el.textContent = d.detailLabel }
     if (d.hotkey) { const el = document.getElementById('k-hotkey'); if (el) { el.textContent = d.hotkey; fit() } }
     if (d.profiles) { renderProfiles(d.profiles, d.currentLabel); fit() }
+    // v1.76：专注守护会话起止时主进程推 focus 增量过来（开始 / 结束 / 手动停止）
+    if (d.focus) { setFocus(d.focus); fit() }
     // [KCard] v1.72 评完一张分，主进程推 kcardDue 过来改角标（只改角标，别整份重渲染）
     if (typeof d.kcardDue === 'number') {
       lastInfo.kcardDue = d.kcardDue

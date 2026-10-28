@@ -2,9 +2,10 @@ package com.chun.lingzhu
 
 /**
  * 翻译引擎顺序（v1.61，对齐电脑版 Ling）：纯规则，单元测试直接测。
- *  - auto：配了 AI 就 AI 优先，再 DeepL → 百度；前一个没配好就跳过、出错（额度用完 / Key 不对 / 连不上）就换下一个。
- *    ⚠️ [plan] 本身按 DeepL → 百度 → AI 排（保持既有语义、单测钉住了），「AI 优先」这层由调用方叠加（见 TranslateActivity.planFor）——
- *    所以 [AUTO] 的展示文案写 AI → DeepL → 百度（用户看到的实际首选顺序）。
+ *  - auto：**DeepL → 百度 → AI**。前一个没配好就跳过，出错（额度用完 / Key 不对 / 连不上）就换下一个。
+ *    v2.6.3 起 auto 取消「AI 优先」：配好 DeepL 就先拿 DeepL 给出的原文译文（机器直译保真、零 AI 成本），
+ *    需要解析时再由 AI 在**不改动这份译文**的前提下补语言点解析（见 [Prompts.translateEnrich]）。
+ *    AI 只在机器翻译都没配好 / 都失败时才自己整段翻译。展示顺序 [LABEL] 与 [plan] 完全一致，不再有第二套顺序。
  *  - deepl / baidu / ai：只用这一个，出错直接报错，不偷偷换。
  */
 object Translate {
@@ -13,7 +14,7 @@ object Translate {
     const val BAIDU = "baidu"
     const val AI = "ai"
     val ENGINES = listOf(AUTO, DEEPL, BAIDU, AI)
-    val LABEL = mapOf(AUTO to "自动：AI → DeepL → 百度", DEEPL to "DeepL", BAIDU to "百度翻译", AI to "AI 模型（上面的接口）")
+    val LABEL = mapOf(AUTO to "自动：DeepL → 百度 → AI", DEEPL to "DeepL", BAIDU to "百度翻译", AI to "AI 模型（上面的接口）")
     /** 面板上写「来源：xx」用的短名 */
     val SHORT = mapOf(DEEPL to "DeepL", BAIDU to "百度", AI to "AI")
 
@@ -37,9 +38,9 @@ object Translate {
     /**
      * 发请求**之前**的缓存查找：命中就零成本秒出，一个接口都不用调。
      *
-     * 只查 [plan] 里的引擎，按 [plan] 自己的顺序。调用方传进来的 [plan] 已经是「这一轮可接受的缓存范围」：
-     * AI 排最前（AI 优先）时只传 AI 那一档，显式钉了单个引擎时只传这个引擎，自动档没配 AI 时按配置顺序传。
-     * 不跨引擎借用 —— 用户钉了 DeepL 就不能拿百度存的译文冒充，AI 优先时也不能让机器直译把富结果降级。
+     * 只查 [plan] 里的引擎，按 [plan] 自己的顺序。调用方传进来的 [plan] 就是这一轮真正的引擎顺序
+     * （v2.6.3 起 auto = DeepL → 百度 → AI），所以 auto 下 AI 存过的富结果**不会**抢在 DeepL 前面命中；
+     * 显式钉了单个引擎时只传这个引擎。不跨引擎借用 —— 用户钉了 DeepL 就不能拿百度存的译文冒充。
      *
      * [force] = 用户显式点了「重新翻译」：跳过查找，一定真发请求。
      *

@@ -38,7 +38,7 @@ class PersonaIcon(ctx: Context, private val key: String, sizeDp: Float = 30f) : 
         val s = Math.min(width, height).toFloat()
         val pad = s * 0.14f
         box.set(pad, pad, width - pad, height - pad)
-        val v = s / 24f                      // 虚拟坐标 24×24，按尺寸缩放
+        val v = box.width() / 24f             // 虚拟坐标缩放到留白内的绘图区
         fun x(a: Float) = box.left + a * v
         fun y(a: Float) = box.top + a * v
         canvas.save()

@@ -35,7 +35,7 @@ class TodoActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
-        Ui.theme = prefs.theme()
+        Ui.applyTheme(prefs)
         id = intent?.getLongExtra(TodoReceiver.EXTRA_ID, 0L) ?: 0L
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -130,7 +130,7 @@ class TodoActivity : Activity() {
             textSize = 13.5f; setLineSpacing(0f, 1.3f)
         })
         root.addView(TextView(this).apply {
-            text = "标题：${t.text}\n时间：${Todo.fmtDue(Todo.dayStart(t.dueAt), Todo.dayStart(System.currentTimeMillis())) { hhmm(it) }}"
+            text = "标题：${t.text}\n时间：${Todo.fmtDue(t.dueAt, System.currentTimeMillis()) { hhmm(it) }}"
             textSize = 14f; typeface = android.graphics.Typeface.DEFAULT_BOLD; setPadding(0, dp(8f), 0, dp(4f))
         })
         root.addView(Button(this).apply {

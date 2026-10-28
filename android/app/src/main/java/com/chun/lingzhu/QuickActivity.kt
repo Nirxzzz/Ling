@@ -25,7 +25,7 @@ class QuickActivity : Activity() {
         fun intent(ctx: Context, what: String) = Intent(ctx, QuickActivity::class.java).setAction(Intent.ACTION_VIEW)
             .putExtra(EXTRA_DO, what).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
 
-        /** 桌面图标长按出来的四个快捷方式（包名由 applicationId 决定，静态 xml 写不了） */
+        /** 桌面图标长按出来的四个快捷方式（动态发布：内测 / 公测包名不同，静态 xml 写不了） */
         fun publishShortcuts(ctx: Context) {
             if (Build.VERSION.SDK_INT < 25) return
             try {

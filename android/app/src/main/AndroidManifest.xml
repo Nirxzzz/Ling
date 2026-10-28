@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- v1.78 修：判断「现在有没有网」要用 ConnectivityManager.activeNetwork / getNetworkCapabilities，
@@ -9,6 +10,13 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- v2.7.x 实时转写：三档声音来源都要 RECORD_AUDIO（运行时权限，只从「实时转写」页申请）——
+         麦克风档直接开麦；系统声音档用播放捕获（AudioPlaybackCapture），同样要一个 RECORD_AUDIO 的
+         AudioRecord，所以三档统一声明。采集跑在前台服务里，Android 14(34)+ 必须单独声明
+         FOREGROUND_SERVICE_MICROPHONE / FOREGROUND_SERVICE_MEDIA_PROJECTION，否则 startForeground 直接抛。
+         仍然不申请 CAPTURE_AUDIO_OUTPUT：那是系统级权限，普通应用拿了会被系统直接拒。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- v1.62 后台保活：只开无障碍截屏时也挂前台通知（Android 14 起要声明类型，用 specialUse）+ 可申请忽略电池优化 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -19,17 +27,45 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- 弹出面板/菜单时的轻微震动反馈（普通权限，装上即有） -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- v2.2.0 局域网同步扫码：只在用户点「扫描电脑上的二维码」时懒申请；拒绝后仍可粘贴配对串。
+         required=false：没有摄像头的设备也能安装、也能用粘贴方式同步。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- M3 待办：写系统日历前必弹确认卡，确认后才动 CalendarContract；撤销只删自己建的那条 -->
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <!-- v1.77 更新：下载完拉起系统安装器要用（普通权限，用户首次同意「安装未知应用」后即可） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- 手机常连（ling-link）要把「能直接打开的 app」列成别名名单，Android 11+ 先要能看到这些包。
+         只查带 MAIN/LAUNCHER 的应用，不申请 QUERY_ALL_PACKAGES：看不到的包自然进不了名单。
+
+         「专注守护」的专注应用多选列表也用这一条 queries 解析名字 / 图标 —— 它列的就是「能点开去学习
+         的应用」，语义上正是 MAIN/LAUNCHER。QUERY_ALL_PACKAGES 属敏感权限（Google Play 需逐条说明用途），
+         这里不加。 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+    <!-- 专注守护的「指定学习应用」模式要读当前前台是哪个包（UsageStats）。
+         这是特殊权限（Settings.ACTION_USAGE_ACCESS_SETTINGS 由用户自己勾选），装上不等于有；
+         没有授权时专注页如实显示「未授权」，不把用户冤枉成分心。 -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- 常连的配对信息（含链路密钥）是 Keystore 加密后的密文，仍然显式排除出备份与换机迁移；
+         老系统读 fullBackupContent，Android 12+ 读 dataExtractionRules，两份都指到同一组排除项。 -->
     <application
+        android:name=".LingApp"
         android:label="${appLabel}"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:usesCleartextTraffic="true"
+        android:fullBackupContent="@xml/link_backup_rules"
+        android:dataExtractionRules="@xml/link_data_extraction_rules"
         android:theme="@android:style/Theme.DeviceDefault.Light.DarkActionBar">
 
         <!-- 设置页（现在是二级入口：桌面图标落聊天页，这里只从聊天页顶栏 / 通知 / 快捷方式进来）。
@@ -40,7 +76,7 @@
             android:name=".MainActivity"
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
-            android:launchMode="singleTask" />
+            android:launchMode="singleTop" />
 
         <activity
             android:name=".CaptureActivity"
@@ -99,12 +135,55 @@
             </intent-filter>
         </activity>
 
+        <!-- 会话列表（仿微信聊天列表）：每个 Agent 一行，点进 ChatActivity。桌面图标仍是 ChatActivity
+             （launcher 组件名不变，老用户桌面图标不失效），冷启动那一下由 ChatActivity 转到这里。 -->
+        <!-- launchMode="singleTop"：底部栏切页用 FLAG_ACTIVITY_REORDER_TO_FRONT，
+             没有 singleTop 这条 flag 会被忽略 —— 实测每点一次就压一个新实例进栈，
+             切四次栈里有四份，切回来页面等于全新建，滚动位置和搜索词都丢。
+             加 singleTop 后同一页只会有一份，复用已有实例走 onNewIntent。 -->
+        <activity
+            android:name=".ChatListActivity"
+            android:exported="false"
+            android:label="${appLabel}"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
         <!-- v1.69 自定义中心：设置页「外观 → 自定义中心」+ 小球菜单「更多调节 → 自定义小珠…」 -->
         <activity
             android:name=".CustomizeActivity"
             android:exported="false"
             android:label="${appLabel} · 自定义中心"
             android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- v2.4 记事本自检：adb 广播触发，结果在 logcat。
+             **只在内测版导出。** 这个 receiver 会 deleteDatabase + 建表 + 灌数据，
+             是给自动化验证用的开发入口，不是给用户的功能。
+             公测版如果也导出，等于把「任意应用都能让它跑一遍数据库压测」摆在外面 ——
+             虽然只动 selftest.db 不碰用户笔记，但没有理由把调试入口留给正式包。
+             用 manifestPlaceholders 按 flavor 切（内测 true / 公测 false）。 -->
+        <receiver
+            android:name=".NoteSelfTestReceiver"
+            android:exported="${selftestExported}">
+            <intent-filter>
+                <action android:name="com.chun.lingzhu.NOTE_SELFTEST" />
+                <action android:name="com.chun.lingzhu.NOTE_QUICK" />
+            </intent-filter>
+        </receiver>
+
+        <!-- v2.4 C 档 模块管理：设置页「外观 → 模块管理」 -->
+        <activity
+            android:name=".ModulesActivity"
+            android:exported="false"
+            android:label="${appLabel} · 模块管理"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- v2.4 长按菜单排列：设置页「外观 → 长按小球的菜单」 -->
+        <activity
+            android:name=".OrbMenuActivity"
+            android:exported="false"
+            android:label="${appLabel} · 长按菜单"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
 
         <!-- v1.69 K2 知识卡列表：浏览 / 搜索 / 删除 -->
@@ -114,11 +193,92 @@
             android:label="${appLabel} · 知识卡"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
 
+        <!-- 局域网同步：只从设置页显式进入，配对串里有会话密钥，不对外暴露。
+             exported=false 同时挡住外部 App 拉起本页；同步只用前台一次 HTTP，无服务/无后台任务。 -->
+        <activity
+            android:name=".LanSyncActivity"
+            android:exported="false"
+            android:label="${appLabel} · 局域网同步"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- 手机常连（MCP）：配对串里有链路密钥，只从设置页显式进入，不对外暴露。
+             这一页和上面的「局域网同步」是两件事：那边是一次快照交换，这里是持久配对 + 后台常连。 -->
+        <activity
+            android:name=".LinkSettingsActivity"
+            android:exported="false"
+            android:label="${appLabel} · 手机常连"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- 实时转写（声音 → 文字）：只从设置页「AI 接口与翻译 › 语音转写」显式进入。
+             页面上有 API Key 的输入框：exported=false，别的 App 拉不起来；Key 只进 Keystore 密文、
+             不进 Intent / Bundle / 日志。主题给 NoActionBar，页面自己画标题。 -->
+        <activity
+            android:name=".voice.VoiceActivity"
+            android:exported="false"
+            android:label="${appLabel} · 实时转写"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- 语音对话（说话 → 回答 → 放出来）：只从设置页「AI 接口与翻译 › 语音对话」显式进入。
+             页面上有腾讯云的 AppId / SecretId / SecretKey 三个输入框：exported=false，别的 App 拉不起来；
+             三项一起加密进 Keystore，不进 Intent / Bundle / 日志。
+             它**不配套前台服务**：麦克风由这一页自己持有，页面一离开（返回 / 切走）就停 ——
+             所以不声明新的 foregroundServiceType，也不复用下面的 VoiceService，转写那条链路不受影响。 -->
+        <activity
+            android:name=".voice.LiveTalkActivity"
+            android:exported="false"
+            android:label="${appLabel} · 语音对话"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- 采集的前台服务：只由 VoiceActivity 在你按下「开始」时启动，不随开机、
+             不随上次会话恢复（START_NOT_STICKY）。三档声音来源共用这个服务：
+               · 麦克风档           → 前台类型 microphone
+               · 系统声音档（播放捕获）→ 前台类型 mediaProjection（播放捕获要一份 MediaProjection 授权）
+               · 混录               → 两者同时声明，运行时按当前档位 startForeground(type)
+             两种类型都必须在 manifest 声明，否则 Android 14(34)+ 的 startForeground 直接抛 SecurityException。
+             系统会据此在状态栏显示麦克风 / 投屏指示；通知常驻并带「停止转写」，用户在任何界面都能停。
+             和 OrbService / 录屏是两条独立链路：语音自己取一份投影、自己 stop，不碰小球的投影。 -->
+        <service
+            android:name=".voice.VoiceService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|mediaProjection" />
+
+        <!-- P0 笔记：卡片流 + 单条详情。数据层（Notes / NoteStore / NoteAttach）早就写好了，
+             却一直没有出口 —— 用户存了笔记却看不到，等于丢了。 -->
+        <activity
+            android:name=".NotesActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/BrutPage" />
+        <activity
+            android:name=".NoteDetailActivity"
+            android:exported="false"
+            android:theme="@style/BrutPage" />
+        <!-- 写一条 / 改一条：不需要悬浮窗权限，走普通 Activity -->
+        <activity
+            android:name=".NoteEditActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/BrutPage" />
+
         <!-- M3 待办：列表页 + 新建/编辑/日历确认卡页 -->
+        <!-- 复用分两半，缺一不可，且互相替代不了：
+              - TodoListActivity.intent() 里那两条 flag：REORDER_TO_FRONT 把「已经在栈里、可能正被
+                详情页 / 记期页盖着」的那一份提回前台；SINGLE_TOP 管栈顶直落不重建。
+                （调用方不是 Activity 时另补 NEW_TASK，那是「没任务栈可复用」的兜底，不是复用手段。）
+              - 这里的 launchMode="singleTop"：**只**管栈顶复用，兜住不带 flag 的裸 Intent。
+                光靠它做不到「被盖住的实例提回前台」—— 那是 REORDER 的活，别拿它冒充复用。
+             两条都在，从通知 / 聊天「＋」/ 设置入口反复点进来才只有一份实例、走 onNewIntent，
+             而不是每点一次压一份新页（「加一条」里没提交的字、滚动位置全丢）。 -->
         <activity
             android:name=".TodoListActivity"
             android:exported="false"
-            android:label="${appLabel} · 待办与随手记"
+            android:label="${appLabel} · 记事"
+            android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
         <activity
@@ -145,8 +305,18 @@
         <activity
             android:name=".StudyActivity"
             android:exported="false"
+            android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize"
             android:label="${appLabel} · 学习与复习"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+        <!-- v2.3.3 学习计划设置：从学习页拆出来的表单（限额 / 牌组 / 提醒 / 知识卡弹窗）。
+             adjustResize：这一页有 6 个输入框，键盘弹起时要顶上来，否则正在填的那格被挡住。
+             exported=false：只走应用内显式 Intent，不对外暴露。 -->
+        <activity
+            android:name=".StudyPlanActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:label="${appLabel} · 学习计划设置"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
 
         <!-- 文档导入生成知识卡（TXT/MD/DOC/DOCX/文本 PDF）：内部页，从学习页 / 设置进入。
@@ -156,6 +326,57 @@
             android:exported="false"
             android:label="${appLabel} · 导入知识卡"
             android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- v2.3.1 第 10 条 知识图谱：把知识卡按「同来源 / 共享关键词」连成图。
+             只从应用内进入（学习页 / 导入页的入口按钮），exported=false 不对外暴露：
+             图谱里是用户的全部学习内容，没有理由让别的 App 拉起这一页。 -->
+        <activity
+            android:name=".GraphActivity"
+            android:exported="false"
+            android:label="${appLabel} · 知识图谱"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- v2.3.1 第 15 条 AI 记忆辅助：从复习页 / 卡片详情跳进来，把一张卡变成四种助记。
+             只从应用内进入（exported=false）：卡面内容会被发到用户自己配置的接口，
+             没有理由让别的 App 拉起这一页、更没理由让它带着别人的卡面进来。 -->
+        <activity
+            android:name=".MemoryAidActivity"
+            android:exported="false"
+            android:label="${appLabel} · 记忆辅助"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- v2.7 Anki 牌组：导入 .apkg，按包里的原模板复习（WebView 渲染，不联网）。
+             只从功能入口进入（exported=false）：牌组是用户自己导入的本机数据，
+             没有理由让别的 App 拉起这一页。 -->
+        <activity
+            android:name=".AnkiActivity"
+            android:exported="false"
+            android:label="${appLabel} · Anki 牌组"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- v2.3.2 第 14 条 学习者数字孪生：只从学习页进入的内部页。
+             页面上的数都从本机记录算，但「Agent 反思」会把这几个统计数字发给用户自己配置的接口；
+             不发题目原文、不发卡片正面背面。exported=false：这是个人画像，没有理由对别的 App 开放。 -->
+        <activity
+            android:name=".TwinActivity"
+            android:exported="false"
+            android:label="${appLabel} · 学习画像"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- v2.3.2 专注报告：只从专注守护的通知 / 学习页进入的内部页。
+             内容是本机记录的"在不在学习"标签与时段，不上传任何屏幕内容，也不对外暴露 -->
+        <activity
+            android:name=".FocusReportActivity"
+            android:exported="false"
+            android:label="${appLabel} · 专注报告"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+        <!-- v2.3.1 学习数据面板：只从学习页进入的内部页，读复习流水 / 知识卡 / 成本台账画图，不对外暴露 -->
+        <activity
+            android:name=".LearningPanelActivity"
+            android:exported="false"
+            android:label="${appLabel} · 学习数据面板"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
 
         <!-- K3 知识卡复习：全屏复习页 + 每日期满提醒闹钟 -->
@@ -218,6 +439,14 @@
         <!-- v1.65 保活第四层：闹钟看门狗（inexact 15 分钟一次，只在 orbWanted 且小球没跑时拉起） -->
         <receiver android:name=".WatchdogReceiver" android:exported="false" />
 
+        <!-- v1.65 保活第六层：JobScheduler 周期巡检（BootReceiver 送不到时的兜底）。
+             不注册就会 IllegalArgumentException: No such service ComponentInfo{…/ReviveJob}，
+             OrbService 建球后的 schedule 整条失败；BIND_JOB_SERVICE 是系统绑定此服务的必要权限。 -->
+        <service
+            android:name=".ReviveJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <service
             android:name=".OrbService"
             android:exported="false"
@@ -225,6 +454,18 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Floating assistant bubble that stays on screen so the user can capture and explain the current screen at any time" />
+        </service>
+
+        <!-- 手机常连的前台服务：**只由用户在「手机常连」页按下开关才启动**（不随装机、配对、开机自启）。
+             Android 14+ 的前台类型必须是已声明的一种：这里用 specialUse（长轮询 + 本机工具执行，
+             不属于 mediaProjection / location 等任何标准类型），并按系统要求在 property 里说明用途。 -->
+        <service
+            android:name=".LinkService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Persistent paired-phone link: long-polls the user's own desktop over the local network and runs explicitly approved on-device tools (started only when the user turns it on)" />
         </service>
 
         <!-- 状态栏快捷开关：打游戏时隐藏 / 恢复小球（v1.58） -->

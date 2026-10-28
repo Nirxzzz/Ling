@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  手机常连（ling-link）的备份排除规则。
+
+  应用整体是 allowBackup=false（见 AndroidManifest），正常情况下不会有任何备份。
+  这两份规则是**第二道闸**：万一哪天 allowBackup 被改开、或某些 OEM 的换机迁移不看那个开关，
+  配对信息（含链路密钥）仍然不会被带走 —— 没有本机 Keystore 里的那把 AES 密钥，
+  密文带走了也解不开；这里干脆连密文都不放行。
+-->
+<full-backup-content>
+    <exclude domain="file" path="link/" />
+    <exclude domain="sharedpref" path="ling_link.xml" />
+    <exclude domain="sharedpref" path="link_apps.xml" />
+    <!-- 手机审计（LinkAudit 写在 filesDir 根下）：不含密钥，但里面有电脑的客户端名与调用时间，
+         换机迁移没有理由把它带走。 -->
+    <exclude domain="file" path="link-audit.jsonl" />
+    <exclude domain="file" path="link-audit.jsonl.tmp" />
+</full-backup-content>

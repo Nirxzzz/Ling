@@ -518,4 +518,81 @@ class AutoScanPolicyTest {
         assertEquals(AutoScanPolicy.FAIL_LIMIT, f.streak)
         assertEquals(AutoScanPolicy.FAIL_LIMIT, rounds)
     }
+
+    // ================= 9) 会话记页 / 下一轮截止（v1.91） =================
+    //
+    // 面板那行「第 N 页」只数**成功换页**：计时器 tick、失败 / 取消、同一画面、手动识别都不该把页数刷上去；
+    // 新画面命中缓存和真调接口一样算一页（调用方拿到提交结果就调 recognized，不区分来源）。
+
+    @Test fun pageCountsOnlySuccessfulChangedAutoRounds() {
+        var p = AutoScanPolicy.Pages()
+        // 手动双击 / 框选 / 图片：不是自动轮，成功也不算
+        p = p.recognized(autoRound = false, fp = "p1", ok = true)
+        assertEquals(0, p.pages)
+        // 自动轮但截屏失败 / 请求取消 / 空答案：不算
+        p = p.recognized(autoRound = true, fp = "p1", ok = false)
+        assertEquals(0, p.pages)
+        // 自动轮 + 新画面 + 成功：第 1 页
+        p = p.recognized(autoRound = true, fp = "p1", ok = true)
+        assertEquals(1, p.pages)
+    }
+
+    @Test fun sameScreenNeverCountsTwice() {
+        var p = AutoScanPolicy.Pages()
+        p = p.recognized(true, "p1", true)
+        // 同屏每拍都成功（含指纹预检跳过的轮、计时 tick 后的重复提交）→ 页数不能一直涨
+        repeat(20) { p = p.recognized(true, "p1", true) }
+        assertEquals(1, p.pages)
+        // 真翻页 → 第 2 页；翻回上一页相对上一张记过页的指纹仍是新画面 → 第 3 页
+        p = p.recognized(true, "p2", true)
+        assertEquals(2, p.pages)
+        p = p.recognized(true, "p1", true)
+        assertEquals(3, p.pages)
+    }
+
+    @Test fun unknownFingerprintNeverCounts() {
+        // 拿不到画面指纹 = 无法确认是不是新画面：宁可少记一页，也不能凭空白指纹乱加
+        var p = AutoScanPolicy.Pages()
+        p = p.recognized(true, null, true)
+        p = p.recognized(true, "", true)
+        assertEquals(0, p.pages)
+    }
+
+    @Test fun failedNewScreenDoesNotBurnThePage() {
+        // 新画面第一次失败不计数，也不占用 lastFp：同一画面重试成功时仍能补记这一页
+        var p = AutoScanPolicy.Pages()
+        p = p.recognized(true, "p1", false)
+        assertEquals(0, p.pages)
+        p = p.recognized(true, "p1", true)
+        assertEquals("失败过不挡住下一次成功", 1, p.pages)
+    }
+
+    @Test fun resetStartsNewSessionAtZeroAndAllowsSameScreenAgain() {
+        var p = AutoScanPolicy.Pages()
+        p = p.recognized(true, "p1", true)
+        p = p.recognized(true, "p2", true)
+        assertEquals(2, p.pages)
+        // 重新开一轮扫描（start）从 0 数；阅读暂停不走 reset，保留页数
+        p = p.reset()
+        assertEquals(0, p.pages)
+        // 新会话从同一画面开始也算第 1 页
+        p = p.recognized(true, "p2", true)
+        assertEquals(1, p.pages)
+    }
+
+    @Test fun remainingNeverGoesNegativeAtDeadlineEdge() {
+        // 截止时刻与当前时刻都用单调时钟；刚好到点 / 已过点 / 没有截止时刻都按 0（面板显示「马上」）
+        assertEquals(0L, AutoScanPolicy.remaining(1_000, 1_000))
+        assertEquals(0L, AutoScanPolicy.remaining(1_000, 1_001))
+        assertEquals(0L, AutoScanPolicy.remaining(1_000, 99_999))
+        assertEquals(0L, AutoScanPolicy.remaining(0, 5_000))
+        assertEquals(1L, AutoScanPolicy.remaining(1_001, 1_000))
+    }
+
+    @Test fun deadlineForNonPositiveIntervalIsNow() {
+        // 间隔配错（0 / 负数）不能排出「过去」或无限远的截止时刻
+        assertEquals(5_000L, AutoScanPolicy.deadline(5_000, 0))
+        assertEquals(5_000L, AutoScanPolicy.deadline(5_000, -2_000))
+        assertEquals(8_000L, AutoScanPolicy.deadline(5_000, 3_000))
+    }
 }

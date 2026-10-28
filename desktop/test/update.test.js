@@ -15,7 +15,7 @@ function goodManifest(extra) {
     version: '1.60.0',
     notes: '修了几个小毛病',
     assets: {
-      'darwin-arm64': { url: 'https://example.com/Ling-1.60.0-darwin-arm64.zip', sha256: HEX64 },
+      'darwin-arm64': { url: 'https://updates.example.com/x/Ling-1.60.0-darwin-arm64.zip', sha256: HEX64 },
       'win32-x64': { url: 'http://example.com/Ling-1.60.0-win32-x64.zip', sha256: HEX64 }
     }
   }, extra || {})
@@ -65,7 +65,7 @@ test('statusFor：相等 / 更小 / 无法比较都落 latest，不虚构 new', 
 /* ---------------- 地址 / sha 白名单 ---------------- */
 
 test('isHttpUrl：只放行 http(s) 绝对地址', () => {
-  assert.strictEqual(U.isHttpUrl('https://example.com/a.zip'), true)
+  assert.strictEqual(U.isHttpUrl('https://updates.example.com/a.zip'), true)
   assert.strictEqual(U.isHttpUrl('http://127.0.0.1/a.zip'), true)
   assert.strictEqual(U.isHttpUrl('ftp://x/a.zip'), false)
   assert.strictEqual(U.isHttpUrl('file:///etc/passwd'), false)
@@ -85,18 +85,18 @@ test('isSha256：恰好 64 位十六进制', () => {
   assert.strictEqual(U.isSha256(undefined), false)
 })
 
-test('manifestUrl：默认没有更新源，只有显式设置 LING_UPDATE_URL 才启用', () => {
-  const old = process.env.LING_UPDATE_URL
+test('manifestUrl：只认 LING_UPDATE_URL，未设置就是空源', () => {
+  const saved = process.env.LING_UPDATE_URL
   try {
     delete process.env.LING_UPDATE_URL
-    assert.strictEqual(U.manifestUrl(), '', '默认必须为空：不指向任何维护者服务器')
-    process.env.LING_UPDATE_URL = '  https://example.com/manifest.json  '
-    assert.strictEqual(U.manifestUrl(), 'https://example.com/manifest.json')
+    assert.strictEqual(U.manifestUrl(), '')
+    process.env.LING_UPDATE_URL = '  https://mine.example/manifest.json  '
+    assert.strictEqual(U.manifestUrl(), 'https://mine.example/manifest.json')
     process.env.LING_UPDATE_URL = ''
     assert.strictEqual(U.manifestUrl(), '')
   } finally {
-    if (old === undefined) delete process.env.LING_UPDATE_URL
-    else process.env.LING_UPDATE_URL = old
+    if (saved === undefined) delete process.env.LING_UPDATE_URL
+    else process.env.LING_UPDATE_URL = saved
   }
 })
 
@@ -191,4 +191,36 @@ test('assetFileName：去掉路径分隔等危险字符', () => {
   assert.strictEqual(U.assetFileName('1.60.0', 'darwin-arm64'), 'Ling-1.60.0-darwin-arm64.zip')
   assert.strictEqual(U.assetFileName('../1.60.0', 'win32-x64'), 'Ling-.._1.60.0-win32-x64.zip')
   assert.strictEqual(U.assetFileName('1.60.0', 'a/b'), 'Ling-1.60.0-a_b.zip')
+})
+
+/* ---------------- 无资产平台：明确文案、不可下载 ---------------- */
+
+test('Windows 无资产：明确文案、不可下载，绝不退回旧 win 包', () => {
+  // 本地 fixture：清单只发布 darwin-arm64（1.62.0 的真实发布形态）
+  const manifest = U.validateManifest({
+    version: '1.62.0',
+    notes: '',
+    assets: { 'darwin-arm64': { url: 'https://updates.example.com/x/Ling-1.62.0-mac-arm64.zip', sha256: HEX64 } }
+  }).manifest
+  const win = U.downloadPlan(manifest, 'win32', 'x64', '1.60.1')
+  assert.strictEqual(win.asset, null)
+  assert.strictEqual(win.canDownload, false)
+  assert.strictEqual(win.message, '当前平台暂无安装包')
+  assert.strictEqual(win.key, 'win32-x64')
+
+  // 即使清单里带了旧 win 包也不可能被这条路径用到：空 assets 同样是「暂无安装包」。
+  const newer = U.validateManifest({ version: '1.62.0', notes: '', assets: {} }).manifest
+  const win2 = U.downloadPlan(newer, 'win32', 'x64', '1.60.1')
+  assert.strictEqual(win2.canDownload, false)
+  assert.strictEqual(win2.message, U.NO_ASSET_TEXT)
+
+  // mac 有资产且通道不低于本机 → 可以下载
+  const mac = U.downloadPlan(manifest, 'darwin', 'arm64', '1.60.1')
+  assert.strictEqual(mac.key, 'darwin-arm64')
+  assert.strictEqual(mac.canDownload, true)
+  assert.strictEqual(mac.message, '')
+  // 本机更高（1.63.0）→ 不提供回退下载
+  const higher = U.downloadPlan(manifest, 'darwin', 'arm64', '1.63.0')
+  assert.strictEqual(higher.canDownload, false)
+  assert.ok(higher.message.indexOf('本机版本高于通道') === 0)
 })

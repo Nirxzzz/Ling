@@ -52,6 +52,11 @@ class ReviewActivity : Activity() {
     private lateinit var scroll: ScrollView
     private lateinit var prefs: Prefs
     private val store by lazy { KnowledgeCard.Store(this) }
+    /**
+     * v2.3.1 复习流水：每评一次分往 [ReviewLog] 记一行，学习数据面板的时长 / 复习量 / 连续天数全靠它。
+     * 没有这份流水，FSRS 只存了「下次什么时候复习」，回看不到「过去练了多少」。
+     */
+    private val logStore by lazy { ReviewLog.Store(this) }
 
     /** 进页面那一刻的到期快照。评分只是往后推 due，不会让这张卡再回到今天的队列里，所以快照不会失效。 */
     private var queue: List<KnowledgeCard.KCData> = emptyList()
@@ -71,7 +76,7 @@ class ReviewActivity : Activity() {
         prefs = Prefs(this)
         plan = prefs.studyPlan
         studyNew = intent.getBooleanExtra("studyNew", false)
-        Ui.theme = prefs.theme()
+        Ui.applyTheme(prefs)
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll = ScrollView(this).apply { addView(root) }
 
@@ -88,13 +93,14 @@ class ReviewActivity : Activity() {
         render()
     }
 
+    /** 本轮类型（学新 / 复习）。界面层只转发，判断逻辑在 companion 的 [half] 纯函数里。 */
+    private fun half(): StudyPlan.Half = half(studyNew)
+
     /** 排一次到期队列（今天该过的卡，按到期排前面） */
     private fun load() {
         val now = System.currentTimeMillis()
-        val limit = if (studyNew) plan.newLimit else plan.reviewLimit
-        queue = KnowledgeCard.dueFirst(store.list(), now).filter {
-            plan.acceptsCard(it.deck) && if (studyNew) it.fsrs.isNew else !it.fsrs.isNew && it.isDue(now)
-        }.take(limit)
+        val limit = plan.limitFor(StudyPlan.Kind.CARDS, half())
+        queue = pickCards(store.list(), now, limit, studyNew, plan)
         idx = 0
         flipped = false
     }
@@ -103,25 +109,30 @@ class ReviewActivity : Activity() {
      * v1.85：排一次「到期单词」队列（只在进页面时排一次）。
      *
      * 口径和词卡那边完全一致（见 [WordSrs.pickDue] 的说明）：**只认 [WordSrs] 里已经有记录、且被 FSRS 判到期的词**
-     * —— 不能按 [WordSrs.isDue] 那种「没记录也当到期」来算，否则红宝书几千个新词在 FSRS 眼里全是 New，
+     * —— 不能按 [WordSrs.isDue] 那种「没记录也当到期」来算，否则书页式词库几千个新词在 FSRS 眼里全是 New，
      * 这一页会变成每天几千张新词。
+     *
+     * v2.3.2：排队交给纯函数 [pickDueWords] / [pickNewWords]，条数用 [StudyPlan.limitFor] 给的
+     * **单词自己的配额**，不再从「总限额」里减知识卡数——那个减法就是本 bug 的根。
      */
     private fun loadWords() {
+        // v2.4：复习模式关掉了就**一张词都不排**，直接落到知识卡。
+        // 注意只清队列、不动 WordSrs —— 关开关是「先不复习」，不是「把记录删了」。
+        if (!prefs.wordReviewOn) {
+            wordQueue = emptyList()
+            wIdx = 0
+            flipped = false
+            return
+        }
         val now = System.currentTimeMillis()
         val srs = WordSrs.all(prefs)
-        val remaining = ((if (studyNew) plan.newLimit else plan.reviewLimit) - queue.size).coerceAtLeast(0)
-        val decks = prefs.deckList().filter { plan.acceptsWord(it.id) }
+        // v2.3.2 修抢占：单词不再拿「总限额 - 知识卡数」，而是有自己的配额（见 StudyPlan.limitFor）。
+        // 旧写法在「1 张到期卡 + 19 个新词、限额 100」时给单词 remaining = 99，词全塞进来、卡一张轮不到。
+        val limit = plan.limitFor(StudyPlan.Kind.WORDS, half())
         wordQueue = if (studyNew) {
-            decks.asSequence().flatMap { d -> Words.parseMemoized(d.text).asSequence().map { d to it } }
-                .filter { (d, card) -> Words.key(d.id, card) !in srs }
-                .take(remaining).map { (d, card) -> WordItem(Words.key(d.id, card), d.id, d.name, card.front, d.text) }.toList()
+            pickNewWords(prefs.deckList(), srs, limit, plan)
         } else {
-            WordSrs.dueKeys(srs, now).asSequence().filter { plan.acceptsWord(it.substringBefore('\u0000')) }
-                .sortedBy { srs[it]?.due ?: 0L }.take(remaining).map { key ->
-                    val deck = key.substringBefore('\u0000')
-                    val d = decks.firstOrNull { it.id == deck }
-                    WordItem(key, deck, d?.name ?: deck, key.substringAfter('\u0000'), d?.text ?: "")
-                }.toList()
+            pickDueWords(prefs.deckList(), srs, now, limit, plan)
         }
         wIdx = 0
         flipped = false
@@ -140,7 +151,7 @@ class ReviewActivity : Activity() {
             else -> renderDone()
         }
         Brut.style(root)
-        // v1.85：换卡 / 换段都回到顶部 —— 红宝书那种长背面一路滚到底，下一张会从半截开始（正面都看不见）
+        // v1.85：换卡 / 换段都回到顶部 —— 书页式词库那种长背面一路滚到底，下一张会从半截开始（正面都看不见）
         scroll.scrollTo(0, 0)
     }
 
@@ -193,6 +204,21 @@ class ReviewActivity : Activity() {
                 text = "显示答案"; tag = Brut.PRIMARY
                 setOnClickListener { flipped = true; render() }
             })
+            // v2.3.2 第 15 条：看着卡面想不起来时，顺手生成记忆辅助。
+            // 放在「显示答案」之后 —— 先自己回忆，实在想不起来再求助，这个顺序本身就是记忆法。
+            //
+            // 模块被关掉就整条不画（不是画出来再拒绝）：这一页每张卡都要重建，
+            // 留一个点了弹「已关闭」的按钮会挡住 90% 的人每天走的那条路。
+            // 开关只在 registry 一处判；[MemoryAidActivity.of] 的 deck/front/back 三样照旧带上 ——
+            // 记忆辅助页靠它们取缓存、取标题，少带一个就变成「这张卡没有正面」。
+            if (Features.isEnabled(this, "memory-aid")) {
+                root.addView(Button(this).apply {
+                    text = "记不住？生成记忆辅助"
+                    setOnClickListener {
+                        startActivity(MemoryAidActivity.of(this@ReviewActivity, cur.deck, cur.front, cur.back))
+                    }
+                })
+            }
         } else {
             root.addView(askLine())
             // 四档：2×2，手指按得中；括号里的 1/2/3/4 就是 FSRS 的 Rating 编码
@@ -279,7 +305,11 @@ class ReviewActivity : Activity() {
     /** 评分 → 写库（FSRS 排下次的 due）→ 下一张；队列走完就落到「今日复习完毕」 */
     private fun answer(r: Fsrs.Rating) {
         val cur = queue.getOrNull(idx) ?: return
-        store.answer(cur.id, r, System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        store.answer(cur.id, r, now)
+        // 先写 FSRS 再记流水：写库成功才说明这次评分真的发生了。
+        // 流水只用来统计，就算它写失败也不该让这次复习白评（Store.add 内部吞掉异常）。
+        logStore.add(now, ReviewLog.Kind.KNOWLEDGE, cur.id.toString(), r.code)
         flipped = false
         idx++
         render()
@@ -294,7 +324,11 @@ class ReviewActivity : Activity() {
      */
     private fun answerWord(g: SwipeJudge.Grade) {
         val cur = wordQueue.getOrNull(wIdx) ?: return
-        WordSrs.grade(prefs, cur.key, g, System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        WordSrs.grade(prefs, cur.key, g, now)
+        // 三档只映射成 Again / Hard / Good（没有 Easy），流水照抄这三档：
+        // 统计侧只看「≥ Good 算记住了」，与单词「认识 / 模糊 / 不认识」的措辞是对得上的。
+        WordSrs.rating(g)?.let { logStore.add(now, ReviewLog.Kind.WORD, cur.key, it.code) }
         flipped = false
         wIdx++
         render()
@@ -320,7 +354,7 @@ class ReviewActivity : Activity() {
     /**
      * v1.85 这条到期单词该显示什么（正面 / 背面），走的是和词卡同一条路：
      * 先按正面在词库里找原卡（[Words.parseMemoized]，有进程内缓存），背面非空就用 [Words.detail] 排版
-     * （红宝书那种书页背面原样保留、不截断）；只有单词没有背面（内置 5 级那种）才补一份预翻译译文。
+     * （书页式词库那种书页背面原样保留、不截断）；只有单词没有背面（内置 5 级那种）才补一份预翻译译文。
      * 词库被删 / 这个正面找不到时退回「只有单词」——照样能评分，评完就排下次。
      *
      * 到 render 时才现算：预翻译存在一份 JSON 里，每查一条都要整份解析一遍，提前给整队算好会白解析 N 次。
@@ -333,11 +367,13 @@ class ReviewActivity : Activity() {
     }
 
     /**
-     * v1.85 到期单词队列里的一项。
-     * [key] = [Words.key]（`词库id\u0000单词`）—— 评分要原样写回 [WordSrs]；
+     * v1.85 到期单词队列里的一项。v2.3.2 从 private 改成 internal：companion 里的纯函数
+     * [pickDueWords] / [pickNewWords] 拿它当返回类型，private 会让「public 函数暴露 private 类型」编译不过。
+     *
+     * [key] 是 [Words.key] 拼出来的「词库id + 分隔符 + 单词」，评分要原样写回 [WordSrs]；
      * [deckText] 是词库原文（[WordBank] 缓存里的同一个 String 引用），渲染时用它按正面找回原卡。
      */
-    private class WordItem(
+    internal class WordItem(
         val key: String,
         val deck: String,
         val deckName: String,
@@ -367,6 +403,57 @@ class ReviewActivity : Activity() {
 
         /** 背面取不到时的占位（词库删了 / 词库没勾选又没预翻译） */
         const val NO_BACK_HINT = "（没有释义 —— 这个词库可能已取消勾选）"
+
+        // ---------------- v2.3.2 配额与排队（纯函数，单测直接测） ----------------
+
+        /**
+         * 本轮是「学新的」还是「复习已学的」。界面那个 studyNew 开关的纯函数版，
+         * 好让 [pickCards] / [pickDueWords] 和 [StudyPlan.limitFor] 一起被测，而不用起 Activity。
+         */
+        fun half(studyNew: Boolean): StudyPlan.Half = if (studyNew) StudyPlan.Half.NEW else StudyPlan.Half.REVIEW
+
+        /**
+         * 知识卡队列：先按到期排（[KnowledgeCard.dueFirst]），再按「本轮学新还是复习」筛，最后截到 [limit]。
+         * 复习轮**排除 New 卡**——新卡走「开始学习」那一轮；混进来会让一次复习里突然冒出几十张没见过的卡。
+         */
+        fun pickCards(cards: List<KnowledgeCard.KCData>, now: Long, limit: Int, studyNew: Boolean, plan: StudyPlan): List<KnowledgeCard.KCData> =
+            KnowledgeCard.dueFirst(cards.filter { plan.acceptsCard(it.deck) }, now)
+                .filter { if (studyNew) it.fsrs.isNew else !it.fsrs.isNew && it.isDue(now) }
+                .take(limit.coerceAtLeast(0))
+
+        /**
+         * 到期单词队列：**只认 [WordSrs] 里已有记录、且被 FSRS 判到期**的词（口径见 loadWords）。
+         * [limit] 是单词自己的配额，和知识卡互不侵占——这正是本 bug 的修复点。
+         */
+        internal fun pickDueWords(decks: List<Words.Deck>, srs: Map<String, Fsrs.Card>, now: Long, limit: Int, plan: StudyPlan): List<WordItem> {
+            if (limit <= 0) return emptyList()
+            val byId = decks.associateBy { it.id }
+            return WordSrs.dueKeys(srs, now).asSequence()
+                .filter { plan.acceptsWord(deckKeyOf(it)) }
+                .sortedBy { srs[it]?.due ?: 0L }
+                .take(limit)
+                .map { key ->
+                    val deck = deckKeyOf(key)
+                    val d = byId[deck]
+                    WordItem(key, deck, d?.name ?: deck, key.substringAfter('\u0000'), d?.text ?: "")
+                }
+                .toList()
+        }
+
+        /** 新词队列：词库里还没有 FSRS 记录的词，按词库顺序取前 [limit] 个。 */
+        internal fun pickNewWords(decks: List<Words.Deck>, srs: Map<String, Fsrs.Card>, limit: Int, plan: StudyPlan): List<WordItem> {
+            if (limit <= 0) return emptyList()
+            return decks.asSequence()
+                .filter { plan.acceptsWord(it.id) }
+                .flatMap { d -> Words.parseMemoized(d.text).asSequence().map { d to it } }
+                .filter { (d, card) -> Words.key(d.id, card) !in srs }
+                .take(limit)
+                .map { (d, card) -> WordItem(Words.key(d.id, card), d.id, d.name, card.front, d.text) }
+                .toList()
+        }
+
+        /** 词卡键 = [Words.key]，格式 `牌组id\u0000单词`，牌组就是前缀。抽出来免得三处各写一遍。 */
+        fun deckKeyOf(key: String): String = key.substringBefore('\u0000')
     }
 }
 

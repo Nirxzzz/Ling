@@ -1,14 +1,10 @@
 {
   "name": "ling-desktop",
   "productName": "Ling",
-  "version": "1.60.2",
-  "description": "Ling：全局悬浮小球，截屏解析 / 划词翻译（Electron，macOS 与 Windows 共用源码）",
+  "version": "1.64.1",
+  "description": "全局悬浮小球：点击识别当前屏幕 / 划词翻译 → 半透明悬浮答案",
   "main": "main.js",
   "license": "MIT",
-  "author": "Ling contributors",
-  "engines": {
-    "node": ">=24.0.0"
-  },
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.js && node tool/smoke-main.js main.js",
@@ -24,11 +20,6 @@
     "appId": "com.ling.opensource",
     "productName": "Ling",
     "asar": true,
-    "directories": {
-      "output": "dist",
-      "buildResources": "build"
-    },
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "main.js",
       "extras.js",
@@ -51,9 +42,36 @@
       "ask.html",
       "translate.html",
       "review.html",
-      "settings.html",
-      "probe.png",
+      "block.png",
       "package.json",
+      "settings.html",
+      "qr.js",
+      "lan-merge.js",
+      "lan-store.js",
+      "lan-sync.js",
+      "settings-search.js",
+      "knowledge-search.js",
+      "mcp-hub.js",
+      "mcp-auth.js",
+      "mcp-audit.js",
+      "mcp-tools.js",
+      "mcp-review-prompt.js",
+      "ling-link.js",
+      "ling-mcp-bridge.js",
+      "voice-asr.js",
+      "voice-secrets.js",
+      "voice-main.js",
+      "voice-preload.js",
+      "voice-worklet.js",
+      "voice-dialogue.js",
+      "voice-prefs.js",
+      "tencent-speech.js",
+      "focusguard-main.js",
+      "companion-main.js",
+      "bubble.html",
+      "voice.html",
+      "THIRD_PARTY_NOTICES.txt",
+      "chat-stream.js",
       "LICENSE",
       "THIRD_PARTY_NOTICES.md"
     ],
@@ -73,6 +91,13 @@
         "en"
       ]
     },
+    "npmRebuild": false,
+    "icon": "build/icon.png",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "win": {
       "target": [
         {
@@ -81,10 +106,18 @@
             "x64"
           ]
         }
-      ],
-      "icon": "build/icon.ico"
-    },
-    "npmRebuild": false,
-    "icon": "build/icon.png"
+      ]
+    }
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/node": "2.1.2",
+    "@modelcontextprotocol/server": "2.4.0",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
+  },
+  "author": "Ling contributors",
+  "engines": {
+    "node": ">=24.0.0"
   }
 }

@@ -149,11 +149,136 @@ function cachePutList(list, k, v, now, max, ttl) {
   return [{ k, v, c: now, u: now }].concat(list.filter((x) => x.k !== k && now - x.c < (ttl || TTL_MS))).slice(0, max)
 }
 
+/* ---------------- 同步协作钩子 ----------------
+ * 局域网同步（lan-store）会在业务写盘前要求先恢复 pending journal，避免重启后
+ * 旧 journal 把后来做的编辑回滚掉。这里提供两个模块级钩子：
+ *   · setWriteGuard(fn)：JsonStore 每次写 / 清空前先跑 fn()（恢复失败就拒绝写）。
+ *   · strictRead(fn)：在这段同步代码里，JsonStore.read() 读失败直接抛，
+ *     不再静默返回 [] —— 同步绝不能把「读失败」当成「库空了」给对端发墓碑。
+ * 两者都带重入保护：恢复流程自己触发的写 / 读不会再递归调用钩子。
+ */
+let writeGuard = null
+let guardDepth = 0
+let strictReadDepth = 0
+
+function setWriteGuard(fn) {
+  writeGuard = typeof fn === 'function' ? fn : null
+}
+
+function runWriteGuard() {
+  if (typeof writeGuard !== 'function' || guardDepth > 0) return
+  guardDepth += 1
+  try { writeGuard() } finally { guardDepth -= 1 }
+}
+
+function strictRead(fn) {
+  strictReadDepth += 1
+  try { return fn() } finally { strictReadDepth -= 1 }
+}
+
+/** 按文件路径做一次严格读（main 的 histReadStrict 兼容入口）。 */
+function readStrict(file) {
+  return new JsonStore(file).readStrict()
+}
+
 class JsonStore {
-  constructor(file) { this.file = file }
-  read() { try { const j = JSON.parse(fs.readFileSync(this.file, 'utf8')); return Array.isArray(j) ? j : [] } catch { return [] } }
-  write(l) { try { fs.writeFileSync(this.file, JSON.stringify(l), { mode: 0o600 }) } catch {} }
-  clear() { try { fs.unlinkSync(this.file) } catch {} }
+  constructor(file) {
+    this.file = file
+    this.lastError = null
+    this.missing = false
+  }
+
+  /** 读一次盘，返回 { ok, missing, list, error }；不缓存、不吞错。 */
+  readResult() {
+    let raw = ''
+    try { raw = fs.readFileSync(this.file, 'utf8') } catch (err) {
+      // 文件确实不存在 = 合法空（用户清空 / 首次运行）；其余读失败都不是空库。
+      if (err && err.code === 'ENOENT') {
+        this.lastError = null
+        this.missing = true
+        return { ok: true, missing: true, list: [], error: null }
+      }
+      this.lastError = err
+      this.missing = false
+      return { ok: false, missing: false, list: [], error: err }
+    }
+    this.missing = false
+    if (!String(raw).trim()) {
+      const err = new Error('JsonStore: ' + this.file + ' 是空文件')
+      this.lastError = err
+      return { ok: false, missing: false, list: [], error: err }
+    }
+    let arr
+    try { arr = JSON.parse(raw) } catch (err) {
+      this.lastError = err
+      return { ok: false, missing: false, list: [], error: err }
+    }
+    if (!Array.isArray(arr)) {
+      const err = new Error('JsonStore: ' + this.file + ' 不是数组')
+      this.lastError = err
+      return { ok: false, missing: false, list: [], error: err }
+    }
+    this.lastError = null
+    return { ok: true, missing: false, list: arr, error: null }
+  }
+
+  /**
+   * 普通读法：失败返回空数组（界面兼容），但**不缓存**这个空结果；
+   * 在 strictRead() 包裹的同步路径里则直接抛，调用方必须阻断同步。
+   */
+  read() {
+    const r = this.readResult()
+    if (!r.ok) {
+      if (strictReadDepth > 0) throw r.error
+      return []
+    }
+    return r.list
+  }
+
+  /** 同步专用严格读法：只有 ENOENT 算合法空，其余都抛。 */
+  readStrict() {
+    const r = this.readResult()
+    if (!r.ok) throw r.error
+    return r.list
+  }
+
+  /** 只报告读状态，不缓存、不抛。 */
+  readStatus() {
+    const r = this.readResult()
+    return { ok: r.ok, missing: r.missing, count: r.list.length, error: r.error }
+  }
+
+  write(l) {
+    try { runWriteGuard() } catch (err) { this.lastError = err; return false }
+    try {
+      fs.writeFileSync(this.file, JSON.stringify(l), { mode: 0o600 })
+      this.lastError = null
+      this.missing = false
+      return true
+    } catch (err) {
+      this.lastError = err
+      return false
+    }
+  }
+
+  clear() {
+    try { runWriteGuard() } catch (err) { this.lastError = err; return false }
+    try {
+      fs.unlinkSync(this.file)
+      this.lastError = null
+      this.missing = true
+      return true
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        this.lastError = null
+        this.missing = true
+        return true
+      }
+      this.lastError = err
+      return false
+    }
+  }
+
   size() { try { return fs.statSync(this.file).size } catch { return 0 } }
 }
 
@@ -196,15 +321,82 @@ function fingerprint(bitmap, w, h, skipTop, masks) {
 
 /* ---------------- 历史记录（落盘） ---------------- */
 const HISTORY_MAX = 200
-/** 加到最前；和最新一条内容完全一样就不重复记（自动扫描画面没变时常见） */
+
+/** 历史行只保留已知字段；star 只有 true 才写出（旧行不会被强行补 star:false）。 */
+function historyToJson(e) {
+  const rawT = e && typeof e.t === 'number' ? e.t : Number(e && e.t)
+  const o = {
+    t: Number.isFinite(rawT) ? rawT : 0,
+    kind: String(e && e.kind != null ? e.kind : ''),
+    label: String(e && e.label != null ? e.label : ''),
+    text: String(e && e.text != null ? e.text : ''),
+    src: String(e && e.src != null ? e.src : '')
+  }
+  if (e && e.star === true) o.star = true
+  return o
+}
+
+function historyToJsonList(list) { return (list || []).map(historyToJson) }
+
+/** 解析 history.json；坏 JSON / 非数组 → 空；坏元素跳过。star 只认 true。 */
+function historyParse(json) {
+  if (json == null || json === '') return []
+  let arr = json
+  if (typeof json === 'string') {
+    const s = json.trim()
+    if (!s) return []
+    try { arr = JSON.parse(s) } catch { return [] }
+  }
+  if (!Array.isArray(arr)) return []
+  const out = []
+  for (const e of arr) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) continue
+    const t = typeof e.t === 'number' ? e.t : Number(e.t)
+    if (!Number.isFinite(t)) continue
+    const row = {
+      t: t,
+      kind: String(e.kind == null ? '' : e.kind),
+      label: String(e.label == null ? '' : e.label),
+      text: String(e.text == null ? '' : e.text),
+      src: String(e.src == null ? '' : e.src)
+    }
+    if (e.star === true) row.star = true
+    out.push(row)
+  }
+  return out
+}
+
+/**
+ * 裁剪历史：目标总数 max，但**收藏永远不删**。
+ * 先保全部 star，再用剩下的名额从新到旧保留普通行；star 超过 max 时总数可以超过 max。
+ */
+function historyTrim(list, max) {
+  const src = list || []
+  const limit = max == null ? HISTORY_MAX : max
+  let stars = 0
+  for (const e of src) if (e && e.star === true) stars += 1
+  let room = limit - stars
+  if (room < 0) room = 0
+  const out = []
+  for (const e of src) {
+    if (e && e.star === true) out.push(e)
+    else if (room > 0) { out.push(e); room -= 1 }
+  }
+  return out
+}
+
+/** 加到最前；和最新一条内容完全一样（且 star 状态相同）就不重复记。 */
 function historyAddList(list, e, max) {
   const f = list[0]
-  if (f && f.kind === e.kind && f.text === e.text && (f.src || '') === (e.src || '')) return list
-  return [e].concat(list).slice(0, max || HISTORY_MAX)
+  if (f && f.kind === e.kind && f.text === e.text && (f.src || '') === (e.src || '') &&
+    (f.star === true) === (e.star === true)) return list
+  return historyTrim([e].concat(list), max || HISTORY_MAX)
 }
 
 module.exports = {
   BAIDU_ENDPOINT, BAIDU_MODELS, BAIDU_CODE, baiduTarget, baiduBody, baiduParse, baiduTranslate, baiduConfigured, md5,
   DEEPL_CODE, deeplEndpoint, deeplTarget, deeplParse, deeplTranslate,
-  cacheKey, cacheGetList, cachePutList, Cache, JsonStore, ago, fingerprint, TTL_MS, HISTORY_MAX, historyAddList
+  cacheKey, cacheGetList, cachePutList, Cache, JsonStore, ago, fingerprint, TTL_MS, HISTORY_MAX,
+  setWriteGuard, runWriteGuard, strictRead, readStrict,
+  historyAddList, historyParse, historyToJson, historyToJsonList, historyTrim
 }

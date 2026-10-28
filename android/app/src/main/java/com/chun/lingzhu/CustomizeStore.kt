@@ -73,7 +73,7 @@ class CustomizeStore(private val prefs: Prefs) : Customize.Store {
     }
 
     /**
-     * 解析强度默认档的默认值：开源副本统一「标准」（见 Prefs.detail）。
+     * 解析强度默认档的默认值：内测版是「详细」、公测版是「标准」（见 Prefs.detail）。
      * 这里必须复刻一遍 —— [Customize.CATALOG] 里的 def 是纯静态的（不能引用 Prefs，那要 Context），
      * 而恢复默认要回到「这一版本来是什么样」，不能一刀切回标准。
      */

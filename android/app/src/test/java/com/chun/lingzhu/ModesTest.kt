@@ -34,6 +34,21 @@ class ModesTest {
         assertEquals("通用", Modes.label(Modes.normalize("learn", list), list))
     }
 
+    /**
+     * 单词翻译：双击三态里的第三档。它只保证是**合法模式 id**（存得住、有标签），
+     * 但**不进**可选列表 —— 设置页 / 面板抽屉不该凭空多出一个只能靠双击进入的项。
+     */
+    @Test fun wordModeIsValidButNotSelectable() {
+        assertEquals(Prompts.MODE_WORD, Modes.normalize(Prompts.MODE_WORD, list))
+        assertEquals(Prompts.MODE_WORD, Modes.normalize("word", emptyList()))   // 没有自定义模式也认得
+        assertEquals("单词翻译", Modes.label(Prompts.MODE_WORD, list))
+        assertFalse("不进可选列表", Modes.all(list).contains(Prompts.MODE_WORD))
+        assertFalse("不是内置模式", Modes.BUILTIN.contains(Prompts.MODE_WORD))
+        // 不认的 id 仍然回落到通用 —— 别因为加了 word 就把兜底放宽成「原样返回」
+        assertEquals(Prompts.MODE_GENERAL, Modes.normalize("words", list))
+        assertEquals(Prompts.MODE_GENERAL, Modes.normalize(null, list))
+    }
+
     @Test fun labelsAndNewIds() {
         assertEquals("错题本", Modes.label("custom:c1", list))
         assertEquals("做题", Modes.label("exam", list))

@@ -4,10 +4,9 @@ import android.content.Context
 
 /**
  * 内置词库（v1.74 起）：assets/wordbank/ 下每级一个 .txt。
- *  - junior / gaokao / cet4 / cet6 / ielts：**每行一个单词**，背面留空，释义靠预翻译或点「查」补。
- *
+ *  - junior / gaokao / cet4 / cet6 / ielts：**每行一个单词**，背面留空，释义靠预翻译或点「查」补；
  * 本开源副本只包含上述 5 个 Wiktionary 词频表（CC BY-SA 3.0，可商用、可再分发，需署名）。
- * 原发行版中的考研三级词库是受版权保护的第三方内容，已从开源副本中整体移除；
+ * 原发行版中的三级书页式词库是受版权保护的第三方内容，已从开源副本中整体移除；
  * 富文本词库解析器（[Words.parseRich]）仍保留，供用户自行导入合法来源的词库使用。
  * 来源与授权见 assets/wordbank/LICENSE.txt。
  *
@@ -25,7 +24,7 @@ object WordBank {
 
     data class Level(val id: String, val name: String, val file: String)
 
-    /** 分级列表；顺序即展示顺序 */
+    /** 分级列表；顺序即展示顺序（考研三级追加在末尾） */
     val LEVELS = listOf(
         Level("junior", "基础（初中向）", "junior.txt"),
         Level("gaokao", "高考", "gaokao.txt"),
@@ -40,12 +39,13 @@ object WordBank {
     fun deckId(l: Level) = DECK_PREFIX + l.id
 
     /**
-     * 新装默认勾选的词库：第一级（junior），它确实存在于本开源副本的 assets 中。
+     * 新装默认选中的分级 id（v2.6.x）：从**四级**起步。
      *
-     * 原发行版默认勾选考研三级；那些词库因版权原因未随本副本分发，默认项不能继续指向
-     * 不存在的资产。只改「键不存在时」的默认值：已经动过这个开关的用户保持原样。
+     * 词库 id 一律经 [deckId] 从 [LEVELS] 推导，不在这里写死 "wb_xxx" —— 改分级 id 时这一行自动跟着走。
+     * 只改「键不存在时」的默认值：已经选过词库（哪怕是空选）的用户保持原样，不会被悄悄改掉。
      */
-    val DEFAULT_ON: Set<String> = listOf(deckId(LEVELS.first())).toSet()
+    const val DEFAULT_LEVEL = "cet4"
+    val DEFAULT_ON: Set<String> = listOfNotNull(levelById(DEFAULT_LEVEL)).map { deckId(it) }.toSet()
 
     /** 去 BOM（有些编辑器会加 \uFEFF）；兼容 CRLF */
     fun stripBom(text: String) = text.removePrefix("\uFEFF").replace("\r\n", "\n")

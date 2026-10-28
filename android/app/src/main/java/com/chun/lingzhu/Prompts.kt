@@ -1,14 +1,17 @@
 package com.chun.lingzhu
 
 /**
- * 提示词：结构对齐桌面版 prompts.js（generalPrompt / examPrompt / NOVICE_STYLE / translatePrompt），
+ * 提示词：结构对齐桌面版 prompts.js（generalPrompt / examPrompt / translatePrompt），
  * 手机版在此基础上做了 v1.76 的做题质量修复（见下）。改这里时记得同步桌面版。
+ * v2.7.3：识图提示词收成最小任务 —— 不再拼人格 / 共用风格层 / 篇幅纪律（personaBlock 已删）。
+ * 做题模式仍保留完整做题要求与格式（LaTeX / 多题 / 看不清不猜 / 按档解析强度）。
+ * 聊天（ChatStore）与人格（Personas）仍用 [PERSONA]，翻译链仍用 [STYLE_SHARED]，两者正文一字未动。
  *
  * v1.76 做题质量修复（用户反馈「默认提示词差」）：
  *  - 正确完整优先：答案先行，再给**能核验**的解题步骤；不要求模型描写内心推理。
  *  - 按题型走：不硬套计算、不要求每道选择题都逐个排除选项、不硬塞「易错点」。
  *  - 篇幅按难度 / 题数调节：删掉「不超过 150 / 400 字」硬封顶（它会裁掉多题和证明），
- *    不是把上限放大，而是改成内容驱动（见 personaBlock 的篇幅纪律）。**只对「做题 / 遇到题目」**：
+ *    不是把上限放大，而是改成内容驱动。**只对「做题 / 遇到题目」**：
  *    自定义模式按用户自己写的要求，通用的「没题目」保持简短 —— 别拿做题型的内容长度去改这两类的既有口径。
  *  - 图里字/符号/图形看不清：不许猜一个当真（更要命的是给好几套虚构答案），说清缺哪项、只答可确定部分、请他补图（见 UNCLEAR_RULE）。
  *  - 保留契约不动：三段式标题「## 答案 / ## 解析 / ## 考点」、纯小白独立格式、多题 `### 第 N 题`、
@@ -37,13 +40,45 @@ package com.chun.lingzhu
  *    都可以另起一段。按语义、节奏和视觉可读性分段，积极换行、避免文字墙，但不要机械地一句一段」；
  *  - 不是换成「允许在标点处断行」，也不保留反向硬禁令；其余讲法约束一字未动；
  *  - 同步改动：[TRANSLATE_PROMPT_VERSION] 3 → 4（识别与翻译共用这一段，缓存键随之失效）。
+ *
+ * v2.6.3 翻译来源分明（auto 不再 AI 优先，见 [Translate.plan]）：
+ *  - [translate] / [translateEnrich] 都加「术语与延伸」段：专业术语按「一句定义 → 真正相关的背景 / 机制 → 边界」写；
+ *    医学 / 专业表述必须分清「定义 / 关联背景 / 不等于对某个人的诊断」（用户举的例子是「高尿钙」），不编临床数据；
+ *  - 「可以详，不是必须长」：讲清就收，不为了凑长写与原文无关的科普；
+ *  - [translateEnrich] 的正文固定以「## AI 解析」开头 —— 卡片上机器译文在上、AI 补的解释在下，来源一眼分得开；
+ *  - 同步改动：[TRANSLATE_PROMPT_VERSION] 4 → 5（结构变了，旧缓存不再命中）。
+ *
+ * v2.8 中英互译（用户要求「默认在现有完整解析之外追加中英互译」）：
+ *  - 目标语言是自动 / 中文 / 英文时（[wantsBilingual]），[translate] 与 [translateEnrich] 都要求在全部解析之后
+ *    追加一段 [BILINGUAL_HEAD]：英文一行、中文一行；
+ *  - 原文和所选引擎的译文本来就一英一中时，App 直接拿两边原话拼（[bilingualPair]），零成本、没配 AI 也有，
+ *    且**绝不改动**所选引擎给的译文；只有两者同语种时（如中文原文 + 「翻译成中文」）才让 AI 真翻出缺的那一门；
+ *  - 该有却没有时如实说明（[missingPairNote]），不拿同一句话冒充互译；那一轮也不写进缓存，下次还会重试；
+ *  - 缓存键版本 5 → 6：旧缓存里没有这一段，不能继续命中。
+ *
+ * 单词翻译（双击小球三态里的第三档，见 OrbMenu.TAPS）：
+ *  - 新常量 [MODE_WORD] / `MODE_LABEL["word"] = "单词翻译"`，正文见 [word]：先在图里认出用户关注的那**一个**词，
+ *    再按电脑版悬停小词典的口径出紧凑小卡（音标 / 词性 → 核心释义 → 原文 + 译文例句），默认中英互译；
+ *  - 它**不是**可选的内置模式：[MODES] / Modes.BUILTIN 都不含它（设置页与面板抽屉不多这一项），
+ *    只有双击那一路把这一轮强制成它；[Modes.normalize] 仍认它，不会把存进去的 word 改回通用；
+ *  - 篇幅纪律写在 [word] 自己身上（一张小卡），且不拼 [STYLE_SHARED]（那一层会把卡片撑成讲解）；
+ *  - 关键词清单行不拼（见 [wantsTerms]）—— 讲一个词还列 3~8 个关键词既跑题又撑长卡片，
+ *    补问的兜底条件也改用同一个判据，否则每查一个词都会白发一次请求；
+ *  - 词卡 / 剪贴板 / DeepL 那条链（[translate] / WordDict.kt）**一行未动**；不新增强制中英以外语言的策略。
  */
 object Prompts {
     const val MODE_GENERAL = "general"
     const val MODE_EXAM = "exam"
     const val MODE_CUSTOM = "custom"
+    /**
+     * 单词翻译：双击小球三态里的第三档（见 OrbMenu.TAPS），不是设置里可选的内置模式 ——
+     * 所以它**不**进 [MODES] / Modes.BUILTIN：设置页的「识别模式」与面板的模式抽屉不会多出一项，
+     * 只能由双击把这一轮强制成它（OrbService 里 forceMode，不写回 Prefs.mode）。
+     * Modes.normalize 照样认它：万一存进去了（手改配置 / 以后真开放），不会被悄悄改回「通用」。
+     */
+    const val MODE_WORD = "word"
     val MODES = listOf(MODE_GENERAL, MODE_EXAM, MODE_CUSTOM)
-    val MODE_LABEL = mapOf(MODE_GENERAL to "通用", MODE_EXAM to "做题", MODE_CUSTOM to "自定义")
+    val MODE_LABEL = mapOf(MODE_GENERAL to "通用", MODE_EXAM to "做题", MODE_CUSTOM to "自定义", MODE_WORD to "单词翻译")
 
     val DETAILS = listOf("brief", "standard", "detailed")
     val DETAIL_LABEL = mapOf("brief" to "简略", "standard" to "标准", "detailed" to "详细")
@@ -104,7 +139,7 @@ object Prompts {
      *  - 「不要每次结尾问还需要什么」—— 每句结尾推销下一步，像客服，陪伴感最大的杀手。
      *  - 「记得但少提」—— 不加这条，模型会反复复述「你在准备考研」，两轮就油腻。
      *  - 不写「像人」—— 干练靠句式约束就够了，硬塞人格表演只会翻车。
-     * 安卓先落地，桌面版 main.js 还没同步（personaBlock 不是双端必须同改的契约常量）。
+     * 只给聊天 / 人格回落用：识图提示词（v2.7.3 起）不再拼这一段。
      */
     const val PERSONA = "你是小Ling，住在用户手机里的悬浮球。你在替用户解决他正对着屏幕遇到的题目和疑问。\n" +
         "- 身份边界：这个应用叫 Ling，你是它里面的助手小Ling。用户问「Ling 是什么」时说应用，自称永远是小Ling。\n" +
@@ -122,14 +157,13 @@ object Prompts {
     /**
      * v1.89 表达风格（PERSONA 之外的共用风格层，移动端与桌面版共用同一份口径）：
      * 结论或大白话例子先行 → 再从**能核验**的事实 / 定义 / 假设 / 因果一步步展开机制 → 只留真正有用的进阶细节与边界。
-     * 换行按语义、节奏和视觉可读性走，积极换行但不机械地一句一段；不泄露内心推理、不编造引用。翻译和解析共用这一段。
+     * 换行按语义、节奏和视觉可读性走，积极换行但不机械地一句一段；不泄露内心推理、不编造引用。翻译用这一段。
      * 写法守一条纪律：全部写成模型能照做的祈使句，别写「要更有洞见一点」这种没法执行的形容词。
      *
      * v1.90 补入四条讲法约束（由浅入深 / 类比带边界 / 证据不足直说 / 第一性原理），只取**约束**，
      * 不含任何作者文风模仿、警告口吻或强制标题 / 字数 / 思考链：
      *  - 允许「不知道」并先找证据（证据不足就说缺哪一项，不编引用）—— **不是**要求每问都先道歉或免责；
-     *  - 新术语先一句大白话定义，再给有帮助且不误导的类比并点明类比边界；**不为每个词硬造例子**，
-     *    与 NOVICE_STYLE「全文最多一个比方」不冲突（本条是「真有帮助才给」，更严的档位限制照旧优先）；
+     *  - 新术语先一句大白话定义，再给有帮助且不误导的类比并点明类比边界；不为每个词硬造例子；
      *  - 讲法取向是用户指定的「由浅入深」，**不署名任何作者、不假称来自 GitHub 认证**；
      *  - 复用已有约束，不重复：能核验 / 分段按语义节奏 / 不输出思考过程本就在下面的条目里，这里只加新语义。
      *
@@ -154,36 +188,8 @@ object Prompts {
     const val CHARS_FOLLOWUP = 120
 
     /**
-     * 人格 + 篇幅纪律，拼成一整段插在模式提示词之后。
-     * 放最后（而不是最前）：约束离正文最近，不被长提示词冲淡。
-     *
-     * v1.76：篇幅改成内容驱动（不再给死数字）。
-     * v1.77：篇幅纪律**按模式收敛** —— 一条内容驱动文案套所有模式，会把「自定义」和「通用·没题目」
-     * 的篇幅口径一起改掉（那两类不该按做题型的内容长度走）：
-     *  - 做题（exam）/ 通用·有题目：按题数和难度决定详略（[MODE_EXAM] 与 [MODE_GENERAL]）；
-     *  - 自定义（custom）：按用户自己写的要求来 —— 不给他套内置篇幅（[MODE_CUSTOM]）；
-     *  - 通用·没题目：保持简短说清。
-     * brief / detailed 两档本就是「短 / 不设上限」，各模式同义，不分模式。
-     * v1.89：末尾再拼共用风格层 [STYLE_SHARED] —— 语气（PERSONA）/ 篇幅之外，「怎么组织语言」这一段与翻译共用同一份口径。
-     */
-    fun personaBlock(detail: String, mode: String = MODE_GENERAL): String {
-        val len = when (normDetail(detail)) {
-            "brief" -> "篇幅：能短则短、答完就收；但答案本身和关键依据不能省。"
-            "detailed" -> "篇幅：不设上限，该展开的步骤、证明和多道题都写完整。"
-            else -> when (mode) {
-                MODE_CUSTOM -> "篇幅：按用户上面提出的要求来，不多不少。"
-                MODE_GENERAL -> "篇幅：画面里有题目时按题目数量和难度来，一道题写透、多道题每道都写全；没有题目就保持简短说清。"
-                else -> "篇幅跟着内容走：一道题写透、多道题每道都写全，不注水，也不为压字数漏步骤或漏题。"
-            }
-        }
-        // v1.89：语气（PERSONA）→ 篇幅纪律 → 共用风格层（[STYLE_SHARED]，与翻译同一份口径）。
-        // STYLE_SHARED 放最后：它管的是「怎么组织语言」，约束离正文最近。
-        return PERSONA + "\n\n" + len + "\n\n" + STYLE_SHARED
-    }
-
-    /**
      * 记忆卡段（v1.67）：称呼 / 正在做 / 最近在看，进 system 而不是 messages（命中服务端前缀缓存）。
-     * 顺序在 personaBlock 之后、TERMS_RULE 之前：人物设定 → 语气 → 输出格式 → 记忆。
+     * 顺序在模式正文之后、directive 与 TERMS_RULE 之前：输出格式 → 记忆。
      * 空卡不拼 —— 老用户零变化。没有 token 上限可言，写盘时卡本身就限死在 2KB / 400 汉字内。
      */
     fun cardBlock(card: Card?): String {
@@ -248,36 +254,14 @@ object Prompts {
     }
 
     /**
-     * 纯小白（v1.52 重做，对齐桌面版 NOVICE_STYLE / noviceGeneralPrompt / noviceExamPrompt）：
-     * 不再是「原格式后面追加几条要求」—— 实测那样解析是一整段、比方生硬、考点又冒术语、简略档砍掉错项分析，
-     * 通用模式还被「不超过 150 字」卡死。现在是独立格式，解析强度只管深浅。
-     * v1.76：最后一条「看不清」由「我按 Y 理解」改成「不许猜、只答能确定的、请他补图」—— 猜一个当真最伤信任。
-     * v1.88：那条再加固 —— 实测小白档会一口气列好几套条件答案（「如果是……就是……」），这里直接点名禁掉。
+     * 通用模式（v2.7.3）：只留最小任务，不再贴人格 / 风格层 / 篇幅纪律。
+     * detail 收着但不改正文 —— 保留参数只为不改 callsite（Solver / 面板 / 测试同一入口）。
+     * 纯小白只多一句通俗要求，不另起一套风格块。
      */
-    val NOVICE_STYLE = "读者是完全没基础的初学者（纯小白）。写法要求：\n" +
-        "- 你是耐心的家教，跟初一学生说话：句子短（一句不超过 25 个字），一句只讲一件事；不要在一句话中间换行；\n" +
-        "- 不堆专业名词；非用不可时，第一次出现就在括号里用大白话解释；\n" +
-        "- 不说「显然」「易得」「同理」「不难看出」；算式一步都不省；\n" +
-        "- 比方只在真能帮助理解时才用，全文最多一个，要贴近日常（买东西、分东西、走路）；宁可不用，也不要生硬的比方；\n" +
-        "- 图里有看不清的字、符号或图形：不许猜、更不许把猜出来的当成真的往下算；先说清「哪一项看不清」，只讲能确定的部分；" +
-        "看不清的地方会影响答案时，就直接请他补一张更清楚的照片。**只给一个能确定的答案，不给好几套**：" +
-        "不许写「如果是……就是……，如果是……就是……」这种分好几种情况的答案，也不要说「可能是 A，也可能是 B」——" +
-        "拿不准就说这一项看不清、请他补图，别把猜出来的几种可能都摆出来当答案。"
-
-    fun noviceGeneral(detail: String): String {
-        val brief = normDetail(detail) == "brief"
-        return "你是一个屏幕解析助手。用户把当前手机屏幕截图发给你。\n\n" +
-            NOVICE_STYLE + "\n\n" +
-            "分两种情况输出：\n" +
-            "1. 画面里有题目或问题（作业题、考试题、报错、对话框里的提问），按这个格式：\n" +
-            "**答案：**（选择题写选项字母 + 内容；其他题写最终结果）\n\n" +
-            "**为什么：**\n1. …\n2. …\n（" + (if (brief) "最多 3 步" else "3~6 步") + "，每步一行，写「做什么 —— 为什么这么做」）\n\n" +
-            (if (brief) "" else "**其他选项错在哪：**（只有选择题才写，每个错项一行：「A 错：……」）\n\n") +
-            "**记住：**一句能背下来的话。\n\n" +
-            "2. 画面里没有题目：用大白话讲清楚 —— 这是什么界面、现在在干什么、画面上出现的专业词分别是什么意思（每个一行），最后一句告诉他下一步可以做什么。\n\n" +
-            "$MATH_RULE。\n" +
-            "用中文，直接输出，不要输出「[无题目]」这类标记。"
-    }
+    @Suppress("UNUSED_PARAMETER")
+    fun general(detail: String, novice: Boolean): String =
+        "这是当前手机屏幕截图。识别并说明画面内容。" +
+            (if (novice) "\n用大白话解释，遇到术语先说明含义。" else "")
 
     fun noviceExam(detail: String): String {
         val d = normDetail(detail)
@@ -291,13 +275,13 @@ object Prompts {
         secs.add("## 其他选项错在哪\n只有选择题才写这一段（不是选择题就连标题一起省掉）。每个错项一行：「A 错：……」，一句大白话。")
         secs.add("## 记住这句\n一句能背下来的规律，再加一句「最容易错在……」。")
         if (d == "detailed") secs.add("## 举一反三\n出一道同类的小题（只写题目和答案），再用一句话说这类题的通用做法。")
-        return "你是耐心的家教，在帮一个完全没基础的学生做题。用户把当前手机屏幕截图发给你，题目就在截图里。\n\n" +
-            NOVICE_STYLE + "\n\n" +
+        return "用户把当前手机屏幕截图发给你，题目就在截图里。\n" +
             "找到画面里的题目并解答，严格按下面的格式输出，标题原样照抄（含 ##），顺序不变：\n\n" +
             secs.joinToString("\n\n") + "\n\n" +
             "硬性要求：\n" +
             "- 不复述整道题干；\n" +
             "- 正确、完整优先：拿不准的就说清哪里不确定，不要编；\n" +
+            "- $UNCLEAR_RULE；\n" +
             "- $MATH_RULE；\n" +
             "- " + chainRule(d) + "；\n" +
             (if (d == "detailed") "- 中间计算不许省：算式里的每一步都要写出来，别只给结果；\n" else "") +
@@ -306,21 +290,14 @@ object Prompts {
             "- 同一道题的（1）（2）小问不算多道题：放在同一套格式里，「## 答案」和「## 一步步做」里分小问写。"
     }
 
-    fun general(detail: String, novice: Boolean): String = if (novice) noviceGeneral(detail) else
-        "你是一个屏幕解析助手。用户把当前手机屏幕截图发给你。请始终对画面做「整体解析」，分两种情况：\n" +
-            "1. 画面中有明确的题目或问题（作业题、考试题、报错、对话框里的提问）：先给答案（选择题给出正确选项和内容），再给能核验的依据；答案要准、要给全，拿不准就说清哪里不确定，不要编；有题目时篇幅按题目数量和难度来，一道题写透、多道题每道都答；\n" +
-            "2. 画面中没有题目：就直接解析画面本身 —— 这是什么场景/什么界面、正在做什么、画面里值得注意的关键信息（数字、文字、状态、进度、报错），最后用一句话给出可操作的建议；这一段保持简短。\n" +
-            "遇到题目时额外照做：\n" +
-            "- " + chainRule(detail) + "；\n" +
-            "- $SUBQ_RULE；\n" +
-            "- $UNCLEAR_RULE。\n" +
-            "$MATH_RULE。\n" +
-            "用中文，直接输出，不要输出「[无题目]」这类标记。"
-
+    /**
+     * 考试 / 做题模式（v2.7.3）：移除人设与寒暄套话，保留做题要求、三段式标题、多题标记、
+     * 按档解析强度、LaTeX、看不清不猜。novice 走独立的纯小白格式。
+     */
     fun exam(detail: String, novice: Boolean): String {
         if (novice) return noviceExam(detail)
         val r = DETAIL_RULES.getValue(normDetail(detail))
-        return "你是考试答题助手。用户把当前手机屏幕截图发给你，题目就在截图里。\n" +
+        return "用户把当前手机屏幕截图发给你，题目就在截图里。\n" +
             "把正确、完整放在第一位：答案要准、要给全给完，拿不准的宁可说清哪里不确定，也不要编。\n" +
             "找到画面里的题目并解答，输出必须严格用下面三段式，标题原样照抄（含 ##）：\n\n" +
             "## 答案\n" +
@@ -336,11 +313,38 @@ object Prompts {
             "- " + pitfallRule(detail) + "；\n" +
             "- $MATH_RULE；\n" +
             "- $UNCLEAR_RULE；\n" +
-            "- 篇幅跟着题目走，不受末尾语气约定「句子短」的限制：一道题写透，多道题每道都写全，别为压字数漏题或漏步骤；\n" +
+            "- 篇幅跟着题目走：一道题写透，多道题每道都写全，别为压字数漏题或漏步骤；\n" +
             "- 画面里确实没有题目时：第一行只输出「未发现题目」，另起一段用两三句话说明画面内容；\n" +
             "- 画面里有多道题时，每道题重复一次上面的三段式，并在「## 答案」前加一行 `### 第 N 题`（N 从 1 开始），每道题都要答、不要漏；\n" +
             "- 同一道题的（1）（2）小问不算多道题：放在同一套三段式里，「## 答案」和「## 解析」里按小问分开写。"
     }
+
+    /**
+     * 单词翻译（双击小球三态里的第三档，见 OrbMenu.TAPS）：
+     * 用户双击小球截屏时，画面里有他正盯着的一个词 —— 只要这个词的一张小卡，**不**把整屏当题目、
+     * 也**不**把画面里的长句整段翻译（那是「翻译刚复制的」/[translate] 与通用模式的活）。
+     *
+     * 口径对齐电脑版悬停小词典（main.js 的 wordPrompt，见 [WordDict.PROMPT_HEAD] 那份逐字契约），
+     * 但手机版给的是「图里认词」而不是「已知一个词」，所以多一条：先从画面里找出用户关注的那个词。
+     * 输出结构是用户定的三项（音标 / 词性 → 核心释义 → 原文 + 译文例句），不是做题的三段式，也不是段落翻译。
+     *
+     * 与 [translate] 的分工：那条链（词卡 / 剪贴板 / DeepL）**不动**；这里只是识图后在面板里出同款小卡。
+     * 不强制中英之外的语言：默认中英互译，原文不是中英文时按它最常用的中文意思给（沿用 [LANGS] 的 auto 口径）。
+     */
+    fun word(novice: Boolean = false): String =
+        "你是双语小词典。用户截了一张手机屏幕，画面里有他正在看的一个词或短语。\n" +
+            "先从画面里找出他关注的那一个词（他正指着 / 框着 / 悬停的那个词，或者是画面里唯一像生词的那个），只讲这一个词。" +
+            "不要把整块屏幕当成题目，也不要照抄或整段翻译画面里的长句。\n\n" +
+            "翻译方向：英文词 → 给中文释义；中文词 → 给英文说法（默认中英互译；别的语言的词按它最常用的中文意思给）。\n\n" +
+            "输出一张紧凑的小词典卡片，就是下面这几行，不加小标题、不加序号、不复述这些要求：\n" +
+            "- 第一行：这个词本身 + 音标（只有英文词、且读音有把握时才给，用 /.../ 包住；中文词或拿不准就不写）+ 词性缩写；\n" +
+            "- 接着一到三行核心释义，一行一条，最常用的在前；这个词在画面语境里明显取某一条时，点明是这一条；可以带一两个最短的常见搭配；\n" +
+            "- 最后一到两行例句：「原句 — 译文」。例句要自然常见，不要生造。\n\n" +
+            "看不清时：画面里找不到一个明确的词，或者那个词糊得认不出字母 → 只输出一句「画面里没看到能确认的单词」或" +
+            "「这个词看不清，请放大后重新截图」，然后停在这里；不许顺着模糊的轮廓猜一个词再替它编释义、音标或例句。\n\n" +
+            "纪律：释义、词性、音标、例句都必须是这个词真实常见的用法，拿不准的那一项就不写；不编词源、不编读音、不编例句出处；" +
+            "除上面几行外不写别的段落，不写寒暄，不复述屏幕上的其它内容。" +
+            (if (novice) "\n释义和例句都用最常用、最简单的说法，别为了解释一个词再引入一串生词。" else "")
 
     /** 自定义模式没填提示词时用这个；设置页「填入示例」也填它。v1.67：句式对齐新语气（结论先行、短句编号），别让用户照着旧示例写出寒暄腔 */
     const val CUSTOM_EXAMPLE = "先给结论：这是什么界面、这道题的答案是什么。\n" +
@@ -348,16 +352,14 @@ object Prompts {
         "没题目的话，列出画面里的关键信息（数字、文字、状态、报错），最后用一句话给出下一步建议。"
 
     /**
-     * 自定义模式（v1.54）：用户自己的解析要求放中间，外面只包两层「不管写什么都得有」的：
-     * 开头说明输入是手机截图，结尾带上公式写法要求（MATH_RULE）。语言不强制 —— 用户可能就想要英文。
-     * 纯小白开着就把 NOVICE_STYLE 也带上；解析强度不管（深浅由用户自己写）。
+     * 自定义模式（v2.7.3）：只有截图任务说明 + 用户自己写的要求（留空用 [CUSTOM_EXAMPLE]），
+     * 用户文本原样进、不改写；不再追加小白风格块、LaTeX 要求或语气纪律。
+     * novice 也收着但不追加任何内容 —— 保留参数只为不改 callsite。
      */
+    @Suppress("UNUSED_PARAMETER")
     fun custom(userPrompt: String, novice: Boolean): String =
-        "你是一个屏幕解析助手。用户把当前手机屏幕截图发给你，请按下面的要求解析截图：\n\n" +
-            userPrompt.trim().ifEmpty { CUSTOM_EXAMPLE } + "\n\n" +
-            (if (novice) NOVICE_STYLE + "\n\n" else "") +
-            "$MATH_RULE。\n" +
-            "直接输出，不要输出「[无题目]」这类标记。"
+        "这是当前手机屏幕截图。按下面的要求识别并说明画面内容：\n\n" +
+            userPrompt.trim().ifEmpty { CUSTOM_EXAMPLE }
 
     /** 名词清单行的固定前缀（面板靠它把清单拆成可点的词块） */
     const val TERMS_HEAD = "[可点击名词]"
@@ -389,25 +391,33 @@ object Prompts {
 
     /**
      * terms = 设置里「识别关键词」开着：在任何模式的提示词末尾带上 TERMS_RULE。
-     * v1.67：模式正文之后依次拼 personaBlock（语气 + 篇幅纪律）→ cardBlock（记忆卡，空卡不拼）→ TERMS_RULE。
-     * 顺序理由：人物设定 → 语气 → 输出格式 → 记忆，约束离正文最近，不被长提示词冲淡。
+     * v2.7.3：模式正文之后不再拼人格 / 风格 / 篇幅（personaBlock 已删），
+     * 依次只剩 cardBlock（记忆卡，空卡不拼）→ directive → TERMS_RULE。
      * v1.68 回答自由度：directive = 用户这一轮自己打的招呼（Freeform 解析出来的覆盖层）。
-     * 位置在 persona / card **之后** —— 它是「覆盖层」，得压过内部格式约定；但仍留在 TERMS_RULE 之前，
+     * 位置在 card **之后** —— 它是「覆盖层」，得压过内部格式约定；但仍留在 TERMS_RULE 之前，
      * 否则用户一句「别写清单」会把关键词行也砍掉，而面板靠它拆词块。
      */
     fun system(mode: String, detail: String, novice: Boolean, customPrompt: String = "", terms: Boolean = true, directive: String = ""): String {
         val base = when (mode) {
             MODE_EXAM -> exam(detail, novice)
             MODE_CUSTOM -> custom(customPrompt, novice)
+            MODE_WORD -> word(novice)
             else -> general(detail, novice)
         }
         val sb = StringBuilder(base)
-        sb.append("\n\n").append(personaBlock(detail, mode))
         cardBlock(card).takeIf { it.isNotEmpty() }?.let { sb.append("\n\n").append(it) }
         directive.trim().takeIf { it.isNotEmpty() }?.let { sb.append("\n\n").append(it) }
-        if (terms) sb.append("\n\n").append(TERMS_RULE)
+        if (wantsTerms(mode, terms)) sb.append("\n\n").append(TERMS_RULE)
         return sb.toString()
     }
+
+    /**
+     * 这一轮要不要关键词清单行。**唯一判据**：提示词末尾拼不拼 [TERMS_RULE] 和
+     * 「首轮没清单行 → 纯文本补问一次」的兜底条件必须同一份 —— 分开写就会像单词模式这样：
+     * 提示词永远不含清单行，兜底条件却恒真，每查一个词白发一次请求，还往卡片尾巴塞一行 `[可点击名词]`。
+     * 单词翻译例外：那张卡讲的只是画面里那**一个**词，另列 3~8 个关键词既跑题又把卡片撑长。
+     */
+    fun wantsTerms(mode: String, terms: Boolean): Boolean = terms && mode != MODE_WORD
 
     /**
      * v1.66 追问栏的两个开关（面板底部输入框旁边，位置固定）：打开后作用于接下来的每一次追问，两个可以同时开。
@@ -518,10 +528,179 @@ object Prompts {
     private fun directiveBlock(directive: String): String =
         if (directive.isBlank()) "" else "\n\n" + directive.trim()
 
+    /** 中英互译段的固定小标题：译文 / AI 解析之外再给一份中英对照（见 [bilingualPair]）。 */
+    const val BILINGUAL_HEAD = "## 中英互译"
+
+    /**
+     * 这段文字算中文还是英文（只给「中英互译」判方向用，不做完整语种识别）：
+     * 汉字占多数 → "zh"，拉丁字母占多数 → "en"，其它（日文假名、韩文、俄文、纯符号）→ ""。
+     * 判不出来就不硬凑对照 —— 宁可没有这一段，也不编一份假的另一种语言。
+     */
+    fun script(s: String): String {
+        var han = 0; var latin = 0; var other = 0
+        for (ch in s) {
+            when (Character.UnicodeScript.of(ch.code)) {
+                Character.UnicodeScript.HAN -> han++
+                Character.UnicodeScript.LATIN -> latin++
+                // 假名 / 谚文 / 西里尔：一眼就不是中英，别把「勉強」这类汉字写成中文
+                Character.UnicodeScript.HIRAGANA, Character.UnicodeScript.KATAKANA,
+                Character.UnicodeScript.HANGUL, Character.UnicodeScript.CYRILLIC -> other++
+                else -> Unit
+            }
+        }
+        if (other > 0) return ""
+        if (han == 0 && latin == 0) return ""
+        return if (han > 0 && han * 2 >= s.count { it.isLetter() }) "zh" else "en"
+    }
+
+    /**
+     * 中英互译段（纯函数）：原文和这份译文正好一中一英时，用**两边原样的文字**给出对照。
+     * 两边都是现成的（一边是原文、一边是所选引擎 / 模型的译文），所以这里一个字都不改、不新译、不编。
+     *
+     * 返回 null = 这一对不构成中英对照（同语种，或本来就不是中英文）—— 缺的那一半只能由模型真翻一次
+     * （见 [translateEnrich]），绝不在 App 里拿同一句话冒充互译。
+     */
+    fun bilingualPair(text: String, reference: String): String? {
+        val a = text.trim()
+        val b = reference.trim()
+        if (a.isEmpty() || b.isEmpty() || a == b) return null
+        val en = when {
+            script(a) == "en" && script(b) == "zh" -> a
+            script(a) == "zh" && script(b) == "en" -> b
+            else -> return null
+        }
+        val zh = if (en == a) b else a
+        return BILINGUAL_HEAD + "\n英文：" + en + "\n中文：" + zh
+    }
+
+    /**
+     * 第一段正文（到第一个空行为止）。AI 整段翻译时译文就在最前面 —— 模型漏写互译段时，
+     * 拿「原文 + 它自己给的第一段译文」拼对照，两份都是现成原话，不新译也不改译文。
+     */
+    fun firstBlock(text: String): String =
+        text.replace("\r\n", "\n").split(Regex("\n\\s*\n")).firstOrNull()?.trim().orEmpty()
+
+    /**
+     * 把模型给的互译段收成「## 中英互译」+ 英文 / 中文两行。
+     * 缺任何一条、或两条其实是同一句话、或语言对不上（英文那行没英文 / 中文那行没汉字）就返回 null ——
+     * 拿一句话顶两条的「互译」是假的，宁可如实说缺。
+     */
+    fun bilingualSection(body: String?): String? {
+        val b = body?.trim().orEmpty()
+        if (b.isEmpty()) return null
+        // 模型常给「- 英文：…」「**英文**：…」这类装饰；只认「英文 / 中文」这两个开头，其余行丢掉
+        val lines = b.split('\n').map { it.replace("**", "").trim().trimStart('-', '*', '+', '•', '·', '#', ' ').trim() }
+        fun pick(tag: String) = lines.firstOrNull { it.startsWith(tag) }
+            ?.removePrefix(tag)?.trimStart('：', ':', '，', ',', ' ')?.trim()?.ifEmpty { null }
+        val en = pick("英文") ?: return null
+        val zh = pick("中文") ?: return null
+        // 两行其实是同一句话（大小写 / 空格 / 标点不同也算）→ 这不是互译，是模型把一句抄了两遍
+        if (squash(en) == squash(zh)) return null
+        // 英文那行以拉丁字母为主、中文那行至少有一个汉字 —— 两行语言对不上就是假对照
+        if (script(en) != "en") return null
+        if (!zh.any { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.HAN }) return null
+        return BILINGUAL_HEAD + "\n英文：" + en + "\n中文：" + zh
+    }
+
+    /** 比「两句是不是同一句」用：去掉空白、大小写差异和常见中英标点，只留实义字符。 */
+    private fun squash(s: String): String =
+        s.lowercase().filter { it.isLetterOrDigit() }
+
+    /**
+     * 从模型输出里取出一段 `#` 标题小节（标题行到下一个任意级标题 / 结尾），返回去掉标题的正文。
+     * 没这一段就返回 null。取出来之后由调用方决定放哪儿（中英互译段要固定在最后，见 [withoutSection]）。
+     */
+    fun section(text: String, head: String): String? {
+        val lines = text.replace("\r\n", "\n").split('\n')
+        val at = lines.indexOfFirst { sameHead(it, head) }
+        if (at < 0) return null
+        return lines.subList(at + 1, sectionEnd(lines, at)).joinToString("\n").trim().ifEmpty { null }
+    }
+
+    /** 去掉模型自己写的那段 `# <head>` 小节（含标题行与段后多余空行）；没有就原样返回。 */
+    fun withoutSection(text: String, head: String): String {
+        val lines = text.replace("\r\n", "\n").split('\n').toMutableList()
+        val at = lines.indexOfFirst { sameHead(it, head) }
+        if (at < 0) return text
+        lines.subList(at, sectionEnd(lines, at)).clear()
+        return lines.joinToString("\n").trim()
+    }
+
+    /**
+     * 这段到哪一行为止（不含）：**任何**一级 Markdown 标题都是边界，不只 `## `。
+     * 只认 `## ` 时会一路吞掉后面的 `### 第 N 题` / `### 解析` —— 摘「中英互译」段就把真正的解析删了。
+     */
+    private fun sectionEnd(lines: List<String>, at: Int): Int {
+        var end = at + 1
+        while (end < lines.size && !isHeading(lines[end])) end++
+        return end
+    }
+
+    /** 这一行是不是 Markdown 标题行（`#` 开头，1~6 级都算；`**` 加粗包着的也算）。 */
+    private fun isHeading(line: String): Boolean = line.trim().replace("**", "").trimStart().startsWith("#")
+
+    /**
+     * 这一行是不是那一段的标题：必须是真标题行（`#` 开头），容忍模型加的 `**`、行尾冒号 / 句号
+     * （`## **中英互译**：`）。只放宽装饰，不放宽内容 —— 换个说法的标题不算，宁可当作没给。
+     *
+     * 要求 `#` 开头是刻意的：模型偶尔把「**中英互译**」当普通加粗行写在正文中间，那时摘段会一路吞到
+     * 下一个标题，把后面真正的解析删掉。这种行留在正文里照常显示，不当作可摘的段。
+     */
+    private fun sameHead(line: String, head: String): Boolean {
+        val t0 = line.trim()
+        if (!t0.startsWith("#")) return false
+        val t = t0.trimEnd('：', ':', '。').replace("**", "").trim().trimStart('#').trim()
+        return t == head.removePrefix("## ").trim()
+    }
+
+    /**
+     * 这一轮要不要「中英互译」段：目标语言是自动 / 中文 / 英文时才有意义。
+     * 用户把目标语言钉成日文 / 德文等（明确要别的语言），再追加中英对照是跑题 —— 不追加。
+     * 提示词层面用它（[translate] / [translateEnrich] 里还会再让模型对非中英原文自行省略）。
+     */
+    fun wantsBilingual(langId: String): Boolean = langId == "auto" || langId == "zh" || langId == "en"
+
+    /**
+     * 这一轮结果里**真的**该有中英互译段没有：方向对得上（[wantsBilingual]）且原文确实是中文或英文。
+     * 日文 / 韩文 / 俄文原文既没有中英对照可言，也不该因为「缺段」而不写缓存、白重试一轮。
+     */
+    fun needsPair(text: String, langId: String): Boolean =
+        wantsBilingual(langId) && script(text.trim()).let { it == "zh" || it == "en" }
+
+    /**
+     * 提示词里的「中英互译」要求。放在全部解析之后、单独一段 —— 用户要的是**现有完整解析之外再追加**，
+     * 不是用一句直译替掉解析。两种情形分开写清，模型才不会拿同一句话顶替另一种语言：
+     *  - 原文和译文正好一英一中：两边都用现成的原话照抄（不重译）；
+     *  - 原文和译文同一门语言（目标语言就是原文语言时）：真翻出缺的那一门。
+     */
+    private fun bilingualRule(): String =
+        "中英互译（默认追加，固定放在最末尾）：\n" +
+            "- 在所有解析之后另起一段，以「" + BILINGUAL_HEAD + "」这一行开头；段内只写「英文：…」「中文：…」各一行，两句话对齐，不解释、不加序号、不写别的段落；\n" +
+            "- 原文与译文正好一英一中时，直接用现成的原文和译文照抄，不要重译、不要润色；\n" +
+            "- 原文与译文同为一门语言时，补出缺的那门语言的真译文（中文原文给英文，英文原文给中文），不能把同一句话重复一遍充当互译；\n" +
+            "- 只给中英这两种语言：原文或译文不是中英文（日文、韩文、俄文等）时整段省略。\n\n"
+
+    /**
+     * 这一轮没有中英互译段时的诚实说明（绝不拿同一句话冒充对照，也不假装有）。
+     * [aiOn] 决定缺的那一半补不出来是「AI 没给」还是「没配 AI」，两种原因分开写。
+     * 原文不是中英文（日文 / 韩文 / 俄文等）时返回空串 —— 本来就没有中英对照可言，不写说明。
+     */
+    fun missingPairNote(text: String, aiOn: Boolean): String {
+        val s = script(text.trim())
+        if (s != "zh" && s != "en") return ""
+        val other = if (s == "en") "中文" else "英文"
+        return if (aiOn) "（这一轮没有中英互译：缺" + other + "那一半，AI 这一轮没给出）"
+        else "（这一轮没有中英互译：原文和译文同为" + (if (s == "en") "英文" else "中文") + "，未配置 AI，补不出" + other + "）"
+    }
+
     /**
      * v1.89 完整翻译：先判断原文粒度（单词 / 短语 / 句子 / 段落），按对应那一套输出，译文永远在最前。
      * 原文只有一种粒度就只写那一套，不硬加用不上的段落；没有固定字数上限，够把该讲的讲清即可。
      * 保留的契约：[lang] 规则（含「中英互译」）与结尾固定为「原文：\n…」（PromptsTest 锁着，别改成别的结尾）。
+     * v2.6.3：AI 自己整段翻译时（auto 里机器翻译都没配好 / 都失败）也可以讲透术语，但「可以详」不等于「必须长」——
+     * 医学词按「定义 / 相关背景 / 不等于个体诊断」分开写，不编临床数据。
+     * v2.8：目标语言是自动 / 中文 / 英文时，在全部解析之后**追加**一段 [BILINGUAL_HEAD] 中英对照（见 [bilingualRule]）——
+     * 用户要的是现有完整解析之外多一段，不是拿直译替掉解析。
      */
     fun translate(text: String, langId: String): String =
         "你是专业翻译，同时是语言学习助手。翻译方向：" + lang(langId).rule + "。\n\n" +
@@ -545,26 +724,58 @@ object Prompts {
             "- 先给完整译文；\n" +
             "- 再用「## 要点」写段落主旨和关键信息；\n" +
             "- 不要逐个词查词典，只挑真正影响理解的词或表达讲。\n\n" +
-            "通用纪律：译文放在最前面，不要加「译文：」这类前缀；所有义项、搭配、例句都必须是真实常见的用法，拿不准就不写；不编词源、读音和事实；不写和翻译无关的段落。" +
+            "术语与延伸（v2.6.3）：\n" +
+            "- 专业术语（医学、法律、技术等）可以比一般义项讲得更透：先一句定义，再给真正有助于理解的背景或机制，最后点明边界（什么情况下不适用）。只在真能帮上理解时才写，不为了显得完整而堆背景。\n" +
+            "- 医学 / 专业表述必须分清三件事：这个词的**定义**、它通常**关联的背景或机制**、以及**它不等于对某个人的诊断** —— 例如「高尿钙」只说明这个指标本身的含义，不能据此推断某人患病，也不能替代就医。\n" +
+            "- 这类详解是「可以详」，不是「必须长」：定义和关键依据讲清就收，不为了凑长展开，不写与原文无关的科普。\n\n" +
+            "通用纪律：译文放在最前面，不要加「译文：」这类前缀；所有义项、搭配、例句都必须是真实常见的用法，拿不准就不写；不编词源、读音、数据和事实（含临床数据、指南、剂量）；不写和翻译无关的段落。" +
+            (if (!wantsBilingual(langId)) "" else "\n\n" + bilingualRule()) +
             "\n\n原文：\n" + text
 
     /**
-     * v1.89 AI 解析（配合机器翻译用）：用户显式选了 DeepL / 百度，译文已经由所选引擎给出，
-     * 这里让 AI 在**不改动所选引擎译文**的前提下只补语言点解析 —— 重译会变成「偷偷换了引擎」，必须避免。
+     * v1.89 AI 解析（配合机器翻译用）：译文已经由 DeepL / 百度给出，
+     * 这里让 AI 在**不改动那份译文**的前提下只补解析 —— 重译会变成「偷偷换了引擎」，必须避免。
      * 结尾把参考译文和原文都给出来：原文是唯一依据，参考译文只是对齐基准。
+     *
+     * v2.6.3：开头固定输出「## AI 解析」小标题 —— 上面是机器译文、下面是 AI 补的解释，来源一眼分得开；
+     * 术语允许比义项讲得更透（定义 / 相关背景 / 不等于个体诊断），但「可以详」不等于「必须长」。
+     *
+     * v2.8：目标语言是中英味的方向、而**原文与参考译文同属一门语言**时（典型：中文原文 + 「翻译成中文」），
+     * 另要一段 [BILINGUAL_HEAD] 补出缺的那门语言 —— 这是全流程里唯一允许新译的地方，参考译文本身照旧不改。
+     * 原文和参考译文本来就一英一中时不要它：那一对由 App 直接拿两边原话拼（见 [bilingualPair]），免得模型借机改译文。
      */
     fun translateEnrich(text: String, langId: String, reference: String): String =
         "你是专业翻译，同时是语言学习助手。翻译方向：" + lang(langId).rule + "。\n" +
-            "下面是原文，以及一份参考译文（由用户选定的翻译引擎给出）。\n\n" +
+            "下面是原文，以及一份参考译文（由用户选定的翻译引擎给出，已经显示在回答最前面）。\n\n" +
             STYLE_SHARED + "\n\n" +
-            "参考译文是这份回答里唯一的译文：不要重译、不要改写、不要另给别的译文，也不要否定它；只有在它和原文明显不一致时，用一句话点明。\n" +
-            "你只补语言点解析，不重复输出整段译文。先判断原文的粒度是单词、短语、句子还是段落，只写这一类对应的内容：\n" +
+            "参考译文是唯一的译文：不要重译、不要改写、不要另给别的译文，也不要否定它；只有在它和原文明显不一致时，用一句话点明。\n" +
+            "你的正文以「## AI 解析」这一行开头，然后只补解析，不重复整段译文。先判断原文的粒度是单词、短语、句子还是段落，只写这一类对应的内容：\n" +
             "1）单词：标词性；列常见义项并结合上下文点明这里最可能取哪一个；原文是英文且有把握时给音标（拿不准就不给）；需要时给词形变化与常见搭配，说清易混 / 近义词的区别；必给 2 个或更多双语例句（不能省）。\n" +
             "2）短语：说明结构与语域，给常见搭配、用法要点和合适的双语例句。\n" +
             "3）句子：拆关键词语（标词性 + 在这句里的具体含义），讲清句子结构、语气、言外之意或易错点，值得时给同义替换或变体例句。\n" +
             "4）段落：用「## 要点」写主旨与关键信息，不要逐个词查词典，只挑真正影响理解的词或表达讲。\n\n" +
-            "纪律：不编词源、读音和事实；不写与理解无关的段落。\n\n" +
+            "术语与延伸（v2.6.3）：\n" +
+            "- 专业术语（医学、法律、技术等）可以比普通义项讲得更透：先一句定义，再给真正有助于理解的背景或机制，最后点明边界（什么情况下不适用）。只在真能帮上理解时才写。\n" +
+            "- 医学 / 专业表述必须分清三件事：这个词的**定义**、它通常**关联的背景或机制**、以及**它不等于对某个人的诊断** —— 例如「高尿钙」只说明这个指标本身的含义，不能据此推断某人患病，也不能替代就医。\n" +
+            "- 可以给少量真正相关的延伸（同族表达、常见误译、该术语在原文语境里的地位），一条两句讲完就收；不要发散成科普文章。\n" +
+            "- 这类详解是「可以详」，不是「必须长」：定义和关键依据讲清就收，不为了凑长展开。\n\n" +
+            "纪律：不编词源、读音、数据和事实（含临床数据、指南、剂量）；不写与理解无关的段落。\n\n" +
+            (if (!needsPair(text, langId) || script(text.trim()) != script(reference.trim())) "" else pairRule(text)) +
             "参考译文：\n" + reference + "\n\n原文：\n" + text
+
+    /**
+     * 原文和参考译文同语种时的「补另一半」要求：这时缺的那门语言谁都没给过，只能真翻一次。
+     * 单独写一段放在最后，并明说**只**补这一段、参考译文一个字不改，免得模型顺手把上面译文换了。
+     */
+    private fun pairRule(text: String): String {
+        val en = script(text.trim()) == "en"
+        val to = if (en) "中文" else "英文"
+        val from = if (en) "英文" else "中文"
+        return "中英互译（默认追加，固定放在最末尾）：\n" +
+            "- 原文和参考译文都是" + from + "，缺的是" + to + "那一半：在全部解析之后另起一段，以「" + BILINGUAL_HEAD + "」这一行开头，把**原文**改写成自然、忠实的" + to + "译文；\n" +
+            "- 段内只写「英文：…」「中文：…」各一行（" + from + "那句照抄原文，" + to + "那句写你的译文），不加解释、不加序号；\n" +
+            "- 除此以外什么都不变：上面那句参考译文照旧，不要改写、不要替换、不要另给第三份译文。\n\n"
+    }
 
     /**
      * 识别的输出预算。思考（DeepSeek 等）和正文共用 max_tokens —— v1.53 以前 4096，
@@ -586,11 +797,25 @@ object Prompts {
      * 识别与翻译共用这一段 —— 译文与解析的组织方式变了，故 2 → 3，旧缓存不再命中。
      * v1.91：STYLE_SHARED 删掉「不要在逗号、分号或破折号处断行」那条、并把分段口径并进短句短段规则，
      * 译文与解析的换行/分段随之变化，故 3 → 4，旧缓存不再命中。
+     * v2.6.3：[translate] / [translateEnrich] 都加了「术语与延伸」段（定义 / 相关背景 / 不等于个体诊断，
+     * 医学词按此区分），[translateEnrich] 还固定以「## AI 解析」开头 —— 解析的结构变了，
+     * 故 4 → 5，v4 及更早存下的解析不再被当作新格式命中。
+     * v2.8：两条提示词都加了「## 中英互译」段（[bilingualRule] / [pairRule]）—— 输出结构又变了，
+     * 且旧缓存里根本没有这一段，故 5 → 6，否则同样的原文会一直命中缺互译段的旧结果。
      */
-    const val TRANSLATE_PROMPT_VERSION = 4
+    const val TRANSLATE_PROMPT_VERSION = 6
 
     fun isMaxTokensError(msg: String?): Boolean =
         msg != null && msg.startsWith("HTTP 400") && Regex("max_?tokens|max_new_tokens|max_completion_tokens", RegexOption.IGNORE_CASE).containsMatchIn(msg)
+
+    /**
+     * 这个 400 是不是「接口 / 模型不认 tools（function calling）」（v2.2.1）。
+     * 很多 OpenAI 兼容的视觉模型、网关根本不支持 function calling，带了 tools 直接 400；
+     * 以前会把它显示成「模型名对吗」，整题失败。命中这里就去掉工具再答一次。
+     */
+    fun isToolsUnsupported(msg: String?): Boolean =
+        msg != null && msg.startsWith("HTTP 400") &&
+            Regex("\\btools?\\b|tool_choice|function[_ ]?call", RegexOption.IGNORE_CASE).containsMatchIn(msg)
 
     /** 「详细」「纯小白」正文会长很多，思考又和正文共用预算 —— 放宽一半（同桌面 answerBudget） */
     fun budget(base: Int, detail: String, novice: Boolean): Int =

@@ -5,21 +5,25 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Outline
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
+import android.graphics.drawable.RippleDrawable
+import android.graphics.drawable.StateListDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
 import android.util.Base64
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewOutlineProvider
-import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -31,66 +35,74 @@ import java.io.File
 import java.lang.ref.WeakReference
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /**
- * 和小珠聊聊（v1.69 陪伴 M2 → v1.79 换皮 + 图片）。
+ * 和小珠聊聊（v1.69 陪伴 M2 → v1.79 换皮 + 图片 → [2.2] 阅读优先重做）。
  *
- * 结构（[2.0.2] 重做）：紧凑顶栏（左侧矢量头像 + 名字/状态两行，整组点一下弹人格列表；右侧常驻「设置」）
- * →「快捷操作」折叠行（展开才是识别屏幕 / 弹单词 / 添加提醒，都在聊天内容区之外）→（必要配置提示条）
- * → 中间消息流（Agent 靠左占满正文宽、用户靠右小卡）→ 底部整宽多行输入框 + 单独工具行（左图片 / 右发送）。
- * 全是原生 View，项目不用 Compose。
+ * **[2.2] 结构：默认只有三块** ——
+ * 紧凑顶栏（矢量头像 + 名字/状态两行，整组点一下弹人格列表；右侧轻量「设置」）
+ * →（必要配置提示条，缺配置时才出现一条短句）
+ * → 消息流（Agent 是**无卡片**的正文，用户是浅色圆角小块）
+ * → 底部**一条** composer（左「＋」工具栏 / 中间多行输入 / 右发送）。
  *
- * **[2.1.0] 布局不变量（修「键盘展开时工具行 / 发送被挤出窗口」）**：
- * 顶栏 + 分隔线**常驻不滚动**；「快捷操作 + 配置提示」收在 [chromeScroll]（默认不滚，可用高不足时滚动）；
- * 消息流 weight=1 占中间；composer（输入框 + 工具行）整块固定最底、**永不被挤出**。
- * 键盘弹出时 root 底部垫 IME 高，可用高变矮；若固定内容之和超过可用高，LinearLayout 的 weight 孩子无法吸收负数，
- * 排在最后的 composer 会整体溢出被裁掉 —— 由 applyClamp 两把锁兜底：chromeScroll 超高可滚、输入框高度受剩余空间上限约束。
+ * **[2.2] 为什么收掉「快捷操作」整行**：那三个常驻按钮占掉一整行、把正文压得很紧，
+ * 而它们一天也用不了几次。现在图片 / 识别屏幕 / 弹单词 / 添加提醒全收进 composer 左侧的「＋」菜单
+ * （[showTools]，触发仍是原来的 [pickImage] / [actSolve] / [actWord] / [actRemind]，没有第二套入口，
+ * 也没有被藏起来的死代码）。页面本身只留阅读和输入。
+ *
+ * **[2.2] 视觉**：不再给这一页刷 [Brut.style]（那套 2dp 黑描边 + 4dp 实心投影是设置页 / 历史页的厚积木规格），
+ * 改成手画的轻量形状：composer 一层 1dp 淡描边、20dp 圆角；用户消息浅色圆角无描边；Agent 回复**完全无卡片**
+ * （只有正文，16sp、可长按选字、链接可点），辅助操作（复制原文）收进正文上方 48dp 的「⋯」菜单。
+ * 配色只取 [Brut] 的 PAPER / CARD / INK / MINT / HINT（外加派生色），按压反馈只用系统 ripple。
+ *
+ * **v2.6 瑞士国际主义**：这一页手画的形状全部过 [corner] / [swiss] 两个闸门，于是同一份代码在两套形状语言下
+ * 各是各的样子 —— 瑞士下 0dp 直角、1dp 细线、无投影、无渐变；输入区从「圆角淡描边容器」变成**只有一条下划线**
+ * （[underlineInput]）；用户消息从「浅色圆角块」变成**直角细线空心块**（[bubbleBg]）：收发靠位置 + 那条线区分，
+ * 不再靠掺主色（掺出来是粉的；瑞士只有黑白 + 一个信号红，而红只给发送按钮）。其它配色逐位不变。
+ *
+ * **[2.1.0] 布局不变量（修「键盘展开时发送被挤出窗口」）**：
+ * 顶栏常驻不滚动；消息流 weight=1 占中间；composer 整块固定最底、**永不被挤出**。
+ * 键盘弹出时 root 底部垫 IME 高，可用高变矮；若固定内容之和超过可用高，LinearLayout 的 weight 孩子
+ * 无法吸收负数，排在最后的 composer 会整体溢出被裁掉 —— 由 [applyClamp] 兜底：
+ * 输入框高度受剩余空间上限约束（输入框已经嵌在 composer 里，预算要按 composer 的实际固定高算）。
  *
  * **[v2.1.1] 阅读位置不变量（修「异步回复一到就把正在往上读的人抢回底部」）**：
  * 只有**本来就在底部**（[atBottom]）或者**用户自己刚发消息 / 切人格**（`draw(showBottom = true)`）才贴底；
  * 其余重画（异步回复回来、回前台补收结果、旋转回来）都把原来的 scrollY 放回去；键盘弹出改高度时同理。
- * 原来 `draw()` 和「高度变了就滚到底」两处都无条件 `fullScroll(FOCUS_DOWN)`，读历史的人每收一条回复就被顶走一次。
  *
- * **[v1.79] 这一页改用 App 自己的「新粗野主义」皮肤**（[Brut]，和设置页 / 历史页 / 待办页同一套）：
- * 纸底 + 2dp 黑描边 + 4dp 实心投影 + 薄荷绿主按钮。改之前这页是全 App 唯一的例外 ——
- * 它按 [Ui.theme] 铺底，而且铺的是 `flat(0xFF)`（**正文色**），默认「护眼」配色下就变成
- * 一页墨绿底 + 浅薄荷／粉渐变顶栏 + 半透明气泡 + 白底黑框小按钮，四种语言打架。
- *
- * **[v1.79] 图片**：输入条左边的「图片」→ 相册选图 → 缩到 1280px / JPEG 80 存 files/chat-img/ →
- * 待发预览可移除 → 发送时和文字一起按多模态（text + image_url）发出去 → 气泡里显示圆角缩略图。
+ * **[v1.79] 图片**：相册选图 → 缩到 1280px / JPEG 80 存 files/chat-img/ → 待发预览可移除 →
+ * 发送时和文字一起按多模态（text + image_url）发出去 → 气泡里显示圆角缩略图。
  *
  * 请求走 [ApiClient] 的配置（[Prefs.api]）但**自己发一次非流式 POST**：ApiClient 的 `post` 是私有的、
  * 而聊天要带 system + 一串历史 messages，现成的 [Bodies.text] 只放单条 user 消息。
- * 为了不碰正在并行改动的 ApiClient，这里在 Activity 里就地发请求，配置 / 思考参数 / 报错措辞
+ * 为了不碰 ApiClient，这里在 Activity 里就地发请求，配置 / 思考参数 / 报错措辞
  * 都还是走 ApiClient 那一套（[ApiConfig] / [Bodies.thinking] / [NetErrors]）。
  *
  * [MP] 多人格 M-a：顶栏头像 + 名字跟着当前人格走，整组点一下弹人格列表切换；每个人格一份会话文件、一份记忆卡。
  *
- * [2.0.2] Agent 回复改用 [Md.render] 排版（加粗 / 列表 / 公式 / 链接），正文可长按选中、可点链接，
- * 下方一行小字「复制」复制原文；用户消息仍是纯文本小卡。
+ * [会话列表] 多会话列表在 [ChatListActivity]（每个人格一行，点进本页带 [EXTRA_PID]；本页左上「‹」/ 系统返回回到列表）。
  *
- * 仍然**不做**：流式逐字、停止生成、新的工具调用、清空会话、多会话列表、重新生成、历史图片的磁盘回收。
+ * 仍然**不做**：流式逐字、停止生成、新的工具调用、清空会话、重新生成、历史图片的磁盘回收。
+ * 生成中不提供「停止 / 重试」—— 现在就是一次非流式请求，做一个按了没用的按钮等于骗人。
  */
 class ChatActivity : Activity() {
     private lateinit var prefs: Prefs
     private lateinit var personas: Personas.Store
     private lateinit var store: ChatStore.Store
-    private lateinit var col: LinearLayout          // 气泡流
+    private lateinit var col: LinearLayout          // 消息流
     private lateinit var scroll: ScrollView
     private lateinit var status: TextView
     private lateinit var input: EditText
-    private lateinit var send: Button
+    private lateinit var send: TextView
     private lateinit var who: TextView              // [MP] 顶部那个「小Ling ▾」（v1.79 起不带 emoji）
     /** 必要配置状态提示条：悬浮窗权限 / 接口地址缺一就显示这一条（原两条横幅合并，点一下去对应地方） */
     private lateinit var setupBar: LinearLayout
     private lateinit var setupLabel: TextView
-    private lateinit var setupBtn: Button
     private lateinit var topBar: LinearLayout
     private lateinit var idIconHost: LinearLayout   // [2.0.2] 顶栏左侧头像位（切人格后只重画这里）
-    private lateinit var quickToggle: Button        // [2.0.2] 「快捷操作」折叠开关
-    private lateinit var actionsRow: LinearLayout   // [2.0.2] 展开后的三个常用动作按钮
     /** [v1.79] 选好还没发出去的那张图（null = 没图）。存的是 files/chat-img/ 下的文件 */
     private var pendingImg: File? = null
     private lateinit var pendingRow: LinearLayout
@@ -108,6 +120,13 @@ class ChatActivity : Activity() {
      * null = 没有在飞请求。
      */
     private var flight: ChatFlight? = null
+    /**
+     * 上次画出来的那套配色（[Ui.applyTheme] 之后取的那份 [Ui.theme]），与 [ChatListActivity] 同一个写法。
+     *
+     * 系统深浅色变了不会碰 [Prefs.themeId]，onResume 里原来的两项（提示条 / 在飞请求重接）都看不出
+     * 「色板已经换了」，于是整页继续用旧色板 —— 深色纸底上留着浅色的顶栏和气泡。这里按色板本身比一次。
+     */
+    private var shownTheme: Theme? = null
 
     private fun dp(v: Float) = Ui.dp(this, v)
 
@@ -126,9 +145,25 @@ class ChatActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
-        Ui.theme = prefs.theme()   // 建视图前先装好当前配色（Brut 的颜色是 getter）
+        // [会话列表] 桌面图标仍落在本页（launcher 组件名不变：老用户桌面上的图标 / 快捷方式不会失效），
+        // 但「从桌面冷启动」这一下转去会话列表 —— 跟微信一样先看列表，点哪个进哪个。
+        // 只认 MAIN + LAUNCHER 的新实例：小球菜单「和小Ling聊聊」、列表点进来、旋转重建都不走这里。
+        // 首次配置引导照旧由 launcher 这一下触发（先开列表、再开引导 → 引导盖在列表上面）。
+        if (savedInstanceState == null && isLauncherLaunch(intent)) {
+            try { startActivity(Intent(this, ChatListActivity::class.java)) } catch (_: Exception) {}
+            maybeOpenOnboarding()
+            finish()
+            @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+            return
+        }
+        Ui.applyTheme(prefs)   // 建视图前先装好当前配色（Brut 的颜色是 getter）
+        shownTheme = Ui.theme  // 记下这一页是按哪套色板画的（onResume 比它决定要不要重建）
         personas = Personas.Store(this)
-        pid = personas.current()
+        // [会话列表] 列表点进来带着 EXTRA_PID；旋转重建优先用存下的 pid（会话里用顶栏切过人格的话以那个为准）。
+        // 打开谁就把谁记成「当前人格」—— 设置页「当前 Agent 的记忆」、小球菜单「和小Ling聊聊」都跟着它走（原语义不变）。
+        val want = savedInstanceState?.getString(KEY_PID) ?: intent?.getStringExtra(EXTRA_PID)
+        pid = if (want != null && personas.list().any { it.id == want }) want.also { personas.setCurrent(it) }
+              else personas.current()
         store = ChatStore.Store(this, pid)
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -136,24 +171,36 @@ class ChatActivity : Activity() {
         Brut.page(this, root)
 
         // ---- 顶部：矢量头像 + 名字/状态两行 + 设置 ----
-        // [2.0.2] 紧凑顶栏：左侧**一整组**（[PersonaIcon] 矢量头像 + 名字/状态上下两行）点一下弹人格列表；
-        // 右侧「设置」常驻。整组高度 ≥ 48dp，好点。顶栏下沿只留一条 1dp 细边（原来 2dp 黑压边太重）。
+        // [2.2] 不再压 2dp 黑边、不再给整页刷厚积木皮肤：顶栏就是纸底上一组可点的身份 + 一个轻量「设置」。
+        // 整组高度 ≥ 48dp；设置入口是文字按钮但 ≥48dp 触达、带 contentDescription。
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Brut.PAPER)
-            setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
+            // 瑞士：顶栏脚下压一条 1dp 细线（画在自身底边里，不改高度，也就不动 applyClamp 的固定高预算）
+            background = if (swiss) ruleBg(Brut.PAPER, bottom = true)
+                         else GradientDrawable().apply { setColor(Brut.PAPER) }
+            setPadding(dp(2f), dp(4f), dp(8f), dp(4f))
         }
         topBar = top
+        // [会话列表] 左上返回：回到会话列表（和系统返回同一条路，见 [goBack]）
+        top.addView(TextView(this).apply {
+            text = "‹"; setTextSize(TypedValue.COMPLEX_UNIT_DIP, 30f); setTextColor(Brut.INK)
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+            minimumWidth = dp(44f); minimumHeight = dp(48f)
+            isClickable = true; isFocusable = true
+            contentDescription = "返回会话列表"
+            background = ripple(rounded(0, 22f), 22f)
+            setOnClickListener { goBack() }
+        }, LinearLayout.LayoutParams(dp(44f), dp(48f)))
         // [MP] 名字那一行仍写「名字 ▾」；点它不在这里处理，交给左边整组（见 idGroup）
         who = TextView(this).apply {
-            textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Brut.INK)
+            textSize = 16.5f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Brut.INK)
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         // 状态行用小灰字（Brut 里的提示色），别和标题抢。
-        // tag = KEEP：Brut.style 会把所有 TextView 刷成墨色，这一行要留住灰
         status = TextView(this).apply {
-            textSize = 12.5f; setTextColor(Brut.HINT); tag = Brut.KEEP
+            textSize = 11.5f; setTextColor(Brut.HINT)
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
@@ -163,8 +210,9 @@ class ChatActivity : Activity() {
         nameCol.addView(status, LinearLayout.LayoutParams(-1, -2))
         val idGroup = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            isClickable = true
+            isClickable = true; isFocusable = true
             minimumHeight = dp(48f)
+            background = ripple(rounded(0, 18f), 18f)
             setOnClickListener { pickPersona() }
         }
         // 头像是独立一个 host：切人格后只清掉它重画（名字/状态那两条 TextView 的引用要留着更新文字）
@@ -172,74 +220,48 @@ class ChatActivity : Activity() {
         idGroup.addView(idIconHost, LinearLayout.LayoutParams(-2, -2))
         idGroup.addView(nameCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10f) })
         top.addView(idGroup, LinearLayout.LayoutParams(0, -2, 1f))
-        // 设置是二级入口（桌面图标落在这儿），所以顶栏常驻一个入口，不藏进气泡流
-        top.addView(Button(this).apply { text = "设置"; setOnClickListener { openSettings() } })
+        // 设置是二级入口（桌面图标落在这儿），所以顶栏常驻一个入口，不藏进消息流
+        top.addView(TextView(this).apply {
+            text = "设置"; textSize = 14f; setTextColor(Brut.INK)
+            gravity = Gravity.CENTER
+            minimumHeight = dp(48f); minimumWidth = dp(48f)
+            setPadding(dp(14f), 0, dp(14f), 0)
+            isClickable = true; isFocusable = true
+            contentDescription = "设置"
+            background = ripple(rounded(0, 18f), 18f)
+            setOnClickListener { openSettings() }
+        }, LinearLayout.LayoutParams(-2, -2))
         root.addView(top, LinearLayout.LayoutParams(-1, -2))
-        // 顶栏下沿压一条 1dp 细黑线：新粗野主义的「边」，也把纸底分成两段。
-        // [2.1.0] 顶栏 + 这条线是**常驻不滚动**的一块：applyClamp 算可用高时先把它们扣掉。
-        val topDivider = View(this).apply { setBackgroundColor(Brut.INK) }
-        root.addView(topDivider, LinearLayout.LayoutParams(-1, dp(1f)))
-
-        // ---- 常用动作（识别屏幕 / 弹单词 / 添加提醒）：默认折叠进一个「快捷操作」 ----
-        // [2.0.2] 这三个动作原来的常驻大按钮占掉一整行，把正文空间压得很紧。现在默认收起，
-        // 点「快捷操作」才展开原来的三个**真实按钮**（触发仍走 QuickActivity / OrbService / TodoListActivity，
-        // 缺权限就回设置或系统引导，不假装执行）。三个按钮等宽、≥48dp 触达，小屏 / 大字号下只在按钮内部换行。
-        val quick = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12f), dp(8f), dp(12f), dp(0f))
-        }
-        quickToggle = Button(this).apply {
-            text = QUICK_SHOW
-            setOnClickListener { toggleQuick() }
-        }
-        quick.addView(quickToggle, LinearLayout.LayoutParams(-1, -2))
-        actionsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            visibility = View.GONE
-        }
-        fun actBtn(label: String, primary: Boolean, onTap: () -> Unit) = Button(this).apply {
-            text = label
-            if (primary) tag = Brut.PRIMARY
-            setOnClickListener { onTap() }
-        }
-        // 三个等宽动作按钮（权重各 1）。标签是四个字，小屏 / 系统大字体（fontScale>1）下一行放不下 ——
-        // 这里先建好留引用，等 Brut.style 刷完皮肤再统一收内边距 + 允许两行（见下方 onCreate 尾部）。
-        val actionBtns = listOf(
-            actBtn("识别屏幕", true) { actSolve() },
-            actBtn("弹单词", false) { actWord() },
-            actBtn("添加提醒", false) { actRemind() },
-        )
-        for (b in actionBtns) actionsRow.addView(b, LinearLayout.LayoutParams(0, -2, 1f))
-        quick.addView(actionsRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8f) })
-        // [2.1.0] 「快捷操作」+ 下面的配置提示条收进 [chromeScroll]：它们是可折叠、也可滚动的「非编辑内容」。
-        // 可用高度不够时**只滚这一块**，不去挤底部的 composer（顶栏 + 分隔线仍常驻，见 applyClamp）。
-        val chromeBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        chromeBox.addView(quick, LinearLayout.LayoutParams(-1, -2))
 
         // ---- 必要配置状态提示（合并原「悬浮球未授权」「接口未配置」两条横幅，只留一句短文案）----
         // 授权 / 接口的活儿都在 MainActivity，这里只做提示与跳转，不重复实现权限系统引导。
+        // [2.2] 只是一条紧凑提示，**不挡输入、不挡发送**：已配好接口时聊天照常，缺悬浮球权限只影响识屏 / 弹单词。
         setupBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            Brut.card(this)
+            setPadding(dp(12f), dp(4f), dp(12f), dp(4f))
+            minimumHeight = dp(48f)
+            isClickable = true; isFocusable = true
+            // 瑞士：直角 + 1dp 细线的空底提示框（灰色块在这套风格里不承载结构，线才承载）
+            // 玻璃（v2.7.3）：走共享材质的小卡片；其余配色仍是原来的淡墨色块。
+            background = when {
+                swiss -> ripple(outlined(0, 14f, Ui.shape.strokeDp, Brut.INK), 14f)
+                glass -> ripple(Ui.material(this@ChatActivity, Brut.CARD, Ui.SurfaceRole.CHIP, 14f), 14f)
+                else -> ripple(rounded(Theme.argb(0x0F, Brut.INK), 14f), 14f)
+            }
             visibility = View.GONE
             setOnClickListener { routeSetup() }
         }
-        setupLabel = Ui.text(this, "", 13.5f, Brut.INK)
-        setupBar.addView(setupLabel, LinearLayout.LayoutParams(0, -2, 1f))
-        setupBtn = Button(this).apply { text = "去设置"; tag = Brut.PRIMARY; setOnClickListener { routeSetup() } }
-        setupBar.addView(setupBtn)
-        chromeBox.addView(setupBar, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(12f), dp(10f), dp(12f), 0) })
-        // 快捷操作 / 配置提示的可滚动容器：高度默认跟着内容（不滚）；可用高不足时由 [applyClamp] 压到上限（滚动）。
-        val chromeScroll = ScrollView(this).apply {
-            isVerticalScrollBarEnabled = false
-            addView(chromeBox)
+        setupLabel = Ui.text(this, "", 13f, Brut.HINT).apply {
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
         }
-        root.addView(chromeScroll, LinearLayout.LayoutParams(-1, -2))
+        setupBar.addView(setupLabel, LinearLayout.LayoutParams(0, -2, 1f))
+        root.addView(setupBar, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(12f), dp(6f), dp(12f), 0) })
 
-        // ---- 中间：气泡流 ----
+        // ---- 中间：消息流 ----
         col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14f), dp(12f), dp(14f), dp(12f))   // [v1.85.8] 40→12：底栏现在是不透明容器，不再需要给被盖住的气泡留大余量
+            setPadding(dp(16f), dp(10f), dp(16f), dp(12f))
         }
         scroll = ScrollView(this).apply { addView(col); isFillViewport = true }
         // [v2.1.1] 阅读位置：用户是不是停在底部。只有「本来就在底部」时，内容变高 / 键盘弹起才继续贴底；
@@ -247,70 +269,122 @@ class ChatActivity : Activity() {
         scroll.setOnScrollChangeListener { v, _, _, _, _ -> atBottom = !v.canScrollVertically(View.FOCUS_DOWN) }
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        // ---- 底部：待发图片预览 + 整宽多行输入框 + 单独工具行（左图片 / 右发送），收进一个不透明的底栏容器 ----
+        // ---- 底部：待发图片预览 + 单条 composer（左「＋」/ 中多行输入 / 右发送）----
         // [2.1.0] 键盘 / 系统栏留白统一垫在 root 上（见 onCreate 尾部的 insets listener）—— 子树都不再各自消费 insets。
-        // composer（输入框 + 工具行）整块固定最底，是**永不被挤出**的那一块；它上面的快捷操作才让位（见 applyClamp）。
-        // 底栏铺 PAPER：键盘弹出 / 内容多的时候，气泡不会从按钮底下透出来。
-        val bottom = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Brut.PAPER) }
+        // 底栏铺 PAPER：键盘弹出 / 内容多的时候，气泡不会从输入栏底下透出来。
+        val bottom = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            // 瑞士：底栏顶上一条 1dp 细线代替原来那圈圆角淡描边（同样画在自身内边，不改高度）
+            background = if (swiss) ruleBg(Brut.PAPER, bottom = false)
+                         else GradientDrawable().apply { setColor(Brut.PAPER) }
+            setPadding(dp(12f), dp(6f), dp(12f), dp(10f))
+        }
         pendingRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14f), 0, dp(14f), dp(8f))
+            setPadding(dp(4f), 0, dp(4f), dp(6f))
             visibility = View.GONE
         }
-        pendingThumb = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; roundCorners(8f) }
+        pendingThumb = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            roundCorners(10f)
+        }
         pendingRow.addView(pendingThumb, LinearLayout.LayoutParams(dp(52f), dp(52f)))
         pendingLabel = Ui.text(this, "选好 1 张图，点发送一块儿发过去", 12.5f, Brut.HINT).apply {
             setPadding(dp(10f), 0, 0, 0)
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
-            tag = Brut.KEEP   // 同上：说明行要留灰，别被 Brut.style 刷成墨色
         }
         pendingRow.addView(pendingLabel, LinearLayout.LayoutParams(0, -2, 1f))
-        pendingRow.addView(Button(this).apply { text = "移除"; setOnClickListener { clearPending() } })
+        pendingRow.addView(TextView(this).apply {
+            text = "移除"; textSize = 13f; setTextColor(Brut.INK)
+            gravity = Gravity.CENTER
+            minimumHeight = dp(48f); minimumWidth = dp(48f)
+            setPadding(dp(12f), 0, dp(12f), 0)
+            isClickable = true; isFocusable = true
+            contentDescription = "移除待发图片"
+            background = ripple(rounded(0, 14f), 14f)
+            setOnClickListener { clearPending() }
+        }, LinearLayout.LayoutParams(-2, -2))
         bottom.addView(pendingRow, LinearLayout.LayoutParams(-1, -2))
 
-        // [2.0.2] composer 固定一种排法，不再随窄 / 宽切换：
-        // 输入框永远整宽、自己一行、可多行；工具行另起一行、左「图片」右「发送」。
-        // 这样 280dp 窄屏 / fontScale 1.5 下输入框也不会被两个按钮的固有宽度挤成竖排；
-        // 两个按钮都由 Brut.button 保证 ≥50dp 触达，中间的空白把发送顶到最右。
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12f), 0, dp(12f), dp(12f))
+        // [2.2] 一条 composer：圆角 20dp、1dp 淡描边的浅色容器；输入框自己**不再画框**，只占中间。
+        // 「＋」和发送都是 48dp 触达；输入框随内容多行增长（maxLines + applyClamp 的高度上限双保险）。
+        val composer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = when {
+                swiss -> null
+                glass -> Ui.material(this@ChatActivity, Brut.CARD, Ui.SurfaceRole.BUTTON, 20f)
+                else -> outlined(Brut.CARD, 20f, 1f, Theme.argb(0x33, Brut.INK))
+            }
+            setPadding(dp(4f), dp(3f), dp(4f), dp(3f))
         }
+        composer.addView(TextView(this).apply {
+            // 「＋」是图标不是正文：按 dp 定尺寸，系统大字体下也不会把字形撑出 48dp 触达框
+            text = "+"; setTextSize(TypedValue.COMPLEX_UNIT_DIP, 24f); setTextColor(Brut.INK)
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+            minimumWidth = dp(48f); minimumHeight = dp(48f)
+            isClickable = true; isFocusable = true
+            contentDescription = "更多功能：图片、识别屏幕、弹单词、添加提醒"
+            background = ripple(rounded(0, 24f), 24f)
+            setOnClickListener { showTools(it) }
+        }, LinearLayout.LayoutParams(dp(48f), dp(48f)))
         input = EditText(this).apply {
-            hint = "说点什么…"; textSize = 15f
+            hint = "说点什么…"; textSize = 16f
+            setTextColor(Brut.INK); setHintTextColor(Brut.HINT)
+            // v2.6 瑞士：composer 那层框已经去掉，输入框自己只留一条下划线（见 [underlineInput]）
+            background = if (swiss) underlineInput() else null     // 正文输入没有独立框，只有 composer 那一层
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            maxLines = 4; isSingleLine = false
+            maxLines = 5; isSingleLine = false
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            minHeight = dp(50f)
+            minHeight = dp(44f)
+            setPadding(dp(4f), dp(8f), dp(4f), dp(8f))
         }
-        val imgBtn = Button(this).apply {
-            text = "图片"
-            setOnClickListener { pickImage() }
-        }
-        send = Button(this).apply {
-            text = "发送"; tag = Brut.PRIMARY
+        send = TextView(this).apply {
+            text = SEND_LABEL; textSize = 15f; typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            minimumHeight = dp(48f)
+            setPadding(dp(16f), 0, dp(16f), 0)
+            // 「发送」↔「回复中」字数不同：宽度按**较长那条**量一次（见下面 addView），
+            // 切文案时 composer 不跟着跳、输入框不被挤动。setAsking 里不再重新量。
+            isClickable = true; isFocusable = true
+            contentDescription = "发送"
+            // 瑞士：实心信号红直角块，按下**填色变深**（没有投影可沉，与 Brut 的 swissButton 同一套反馈）
+            background = ripple(StateListDrawable().apply {
+                addState(intArrayOf(-android.R.attr.state_enabled), rounded(Brut.DISABLED, 16f))
+                if (swiss) addState(
+                    intArrayOf(android.R.attr.state_pressed), rounded(Theme.mix(Brut.MINT, Brut.INK, 0.18f), 16f))
+                addState(intArrayOf(), rounded(Brut.MINT, 16f))
+            }, 16f)
+            // 禁用态字色：瑞士跟 Brut 的 swissButton 同一档（0x99 的可读色），其它配色仍是原来的 HINT
+            setTextColor(ColorStateList(
+                arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+                intArrayOf(if (swiss) Theme.argb(0x99, Brut.on(Brut.DISABLED)) else Brut.HINT, Brut.on(Brut.MINT)),
+            ))
+            // 统一按压反馈（[AnimGlue.attachPress]，全 App 同一份强度）。禁用态收不到触摸事件，
+            // 所以「回复中」不会出现按不动的假反馈；这里不再自己写 setOnTouchListener。
+            AnimGlue.attachPress(this)
             setOnClickListener { ask() }
         }
-        bar.addView(input, LinearLayout.LayoutParams(-1, -2))
-        val toolRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-        }
-        toolRow.addView(imgBtn, LinearLayout.LayoutParams(-2, -2))
-        toolRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))   // 中间留白：左图片 / 右发送
-        toolRow.addView(send, LinearLayout.LayoutParams(-2, -2))
-        bar.addView(toolRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8f) })
-        bottom.addView(bar, LinearLayout.LayoutParams(-1, -2))
+        composer.addView(input, LinearLayout.LayoutParams(0, -2, 1f))
+        // 固定宽度 = max(64dp, 较长文案 + 左右内边距)：两段文案共用同一个宽度
+        val sendW = maxOf(dp(64f), Math.ceil(
+            Math.max(send.paint.measureText(SEND_LABEL), send.paint.measureText(BUSY_LABEL)).toDouble()).toInt() +
+            send.paddingLeft + send.paddingRight)
+        composer.addView(send, LinearLayout.LayoutParams(sendW, -2).apply { marginStart = dp(2f) })
+        // composer 进底栏、底栏进 root —— 这两行是 composer 上树的唯一路径：
+        // 少一行，输入框和发送按钮就整块不在视图树里（220 条 fixture 上「composer 整个消失」就是这么来的）。
+        bottom.addView(composer, LinearLayout.LayoutParams(-1, -2))
         root.addView(bottom, LinearLayout.LayoutParams(-1, -2))
 
         // [2.1.0] insets 分工：**root 一处统一垫**，子树都不消费 —— 上 = 状态栏 / 刘海（topPad），左右 = 刘海，
         // 下 = 系统栏 + 键盘（bottomPad 里 IME 已含导航条，只取超出系统栏的差值，不重复垫）。
         // root 的 listener 在整棵树派发的最前面，永远拿到最新一版 IME inset。
         // 垫高 root 底边距 → root 可用高变矮 → weight=1 的消息流先缩；但光靠这个不够 —— 窄屏 + 大字 + 键盘时，
-        // 「顶栏 + 分隔线 + 快捷操作 + composer」的固定高之和会超过可用高，LinearLayout 的 weight 孩子只能缩到 0、
-        // 吸收不了负数，排在最后的 composer 就整体溢出、被 root.clipToPadding 裁掉（工具行「图片 / 发送」消失）。
-        // 真正的保底是下面的 applyClamp：快捷操作所在 chromeScroll 超高时可滚动、输入框高度受剩余空间上限约束，
-        // 于是 composer 永远完整落在 IME 可见区之上，不缩字号、不禁用输入法。
+        // composer 的固定高会超过可用高，LinearLayout 的 weight 孩子只能缩到 0、吸收不了负数，
+        // 排在最后的 composer 就整体溢出、被 root.clipToPadding 裁掉（发送按钮消失）。
+        // 真正的保底是下面的 applyClamp：输入框高度受剩余空间上限约束，于是 composer 永远完整落在 IME 可见区之上，
+        // 不缩字号、不禁用输入法。
         // [v1.85.4] 那个「高度变了就滚到底」的 GlobalLayoutListener 保留：root 垫高时 scroll 高度照样变。
         val rootBase = intArrayOf(root.paddingLeft, root.paddingTop, root.paddingRight, root.paddingBottom)
         root.setOnApplyWindowInsetsListener { v, ins ->
@@ -332,35 +406,32 @@ class ChatActivity : Activity() {
         // 某些 ROM 的 insets 首派发早于子树挂载，保险起见首帧后再要一次
         root.post { root.requestApplyInsets() }
 
-        // [2.1.0] 「工具行永不挤出窗口」的保底（配合上面的 insets 垫高，两把锁）：
-        // 实测（窄屏 720px + fontScale 1.5 + 键盘）：可用高 = 屏高 − 状态栏 − IME(617px) ≈ 920px，
-        // 展开快捷操作后「顶栏 + 分隔线 + 快捷操作 + 输入框 + 工具行」固定高之和超过它 → 工具行被裁掉。
-        // 1) chromeScroll 上限 = 可用高 − 常驻顶栏区 − composer 实际高：内容不超高就维持原样（不滚），
-        //    超高才滚 —— 让「快捷操作」这块非编辑内容滚动，而不是把 composer 顶出去。
-        // 2) 输入框 maxHeight = 可用高 − 常驻顶栏区 − composer 里除输入框外的固定部分：
-        //    多行展开时输入框自己也受剩余可用空间约束，不会把工具行顶出窗口。
-        // 两把锁都只设上限：不缩字号、不隐藏任何控件、数值全部来自实测高度 / insets，不写死像素。
+        // [2.1.0] 「composer 永不挤出窗口」的保底（配合上面的 insets 垫高）：
+        // 可用高 = root 高 − root 上下 insets；固定部分是顶栏 +（可能出现的）配置提示条 + composer 里
+        // **除输入框以外**的全部高度（待发图行、composer 内边距、＋ / 发送按钮行）。
+        // [2.2] 输入框已经嵌进 composer 里：预算必须按 `bottom.height − input.height` 算实际固定高，
+        // 不能再用旧的「输入框自己一行、工具行另起一行」口径 —— 否则会少扣 composer 的上下内边距和按钮行，
+        // 多行展开时仍会把发送按钮顶出窗口。
+        // 只设上限：不缩字号、不隐藏任何控件、数值全部来自实测高度 / insets，不写死像素。
         fun applyClamp() {
             if (root.height == 0 || bottom.height == 0 || input.height == 0) return
             val avail = root.height - root.paddingTop - root.paddingBottom
             if (avail <= 0) return
-            val topFixed = topBar.height + topDivider.height         // 常驻顶栏区
-            // (2) 输入框剩余高度上限。composeFixed = 待发图行 + 工具行 + 内边距，与输入框本身高度无关。
-            val composeFixed = bottom.height - input.height
-            val inputFloor = input.minimumHeight.coerceAtLeast(0)
+            // 常驻顶栏区 +（可能出现的）配置提示（含它的外边距；height 本身不含 margin）
+            val setupLp = setupBar.layoutParams as? LinearLayout.LayoutParams
+            val setupFixed = if (setupBar.visibility == View.GONE) 0
+                             else setupBar.height + (setupLp?.topMargin ?: 0) + (setupLp?.bottomMargin ?: 0)
+            val topFixed = topBar.height + setupFixed
+            val composeFixed = (bottom.height - input.height).coerceAtLeast(0)
+            val inputFloor = maxOf(input.minimumHeight, dp(44f))   // 再挤也给一行的高度，不把输入框压没
             val inputBudget = (avail - topFixed - composeFixed).coerceAtLeast(inputFloor)
             if (input.maxHeight != inputBudget) input.maxHeight = inputBudget
-            // (1) chromeScroll 上限：内容不超高 → 维持 wrap（不滚）；超高 → 压到剩余空间（滚动）
-            val cap = (avail - topFixed - bottom.height).coerceAtLeast(0)
-            val want = if (chromeBox.measuredHeight <= cap) LinearLayout.LayoutParams.WRAP_CONTENT else cap
-            val lp = chromeScroll.layoutParams as LinearLayout.LayoutParams
-            if (lp.height != want) { lp.height = want; chromeScroll.layoutParams = lp }
         }
         root.viewTreeObserver.addOnGlobalLayoutListener { applyClamp() }
         root.post { applyClamp() }
 
         // [v1.85.4] 键盘弹出（root 底部垫高改变 scroll 高度）时自动重滚到底 ——
-        // 修「最后一条气泡被输入栏压住一半」：以前只在 draw() 时滚一次，键盘一弹新气泡又露出去了。
+        // 修「最后一条气泡被输入栏压住一半」：以前只在 draw() 时滚一次，键盘一弹新气泡又露出来了。
         // [v2.1.1] 现在只在**用户本来就停在底部**时才重滚：正在往上读的人不许被这一下抢回底部。
         val listenResize = { last: IntArray ->
             scroll.viewTreeObserver.addOnGlobalLayoutListener {
@@ -370,17 +441,7 @@ class ChatActivity : Activity() {
         }
         listenResize(intArrayOf(-1))
 
-        // 一次性把整棵树刷成新粗野主义皮肤（输入框 → field、按钮 → 白底/薄荷绿、文字 → 墨色）
-        Brut.style(root)
-        // Brut.button 给每个按钮留的是 14dp/18dp 内边距；三个按钮平分屏宽后，系统大字体下四个字一行放不下。
-        // 这里把左右内边距收窄、允许两行居中 —— 文字不会被挤掉或裁掉，三个按钮仍严格等宽。
-        for (b in actionBtns) {
-            b.isSingleLine = false
-            b.maxLines = 2
-            b.gravity = Gravity.CENTER
-            b.setPadding(dp(5f), dp(10f), dp(9f), dp(14f))
-        }
-        // 气泡底是手画的（要自己控宽度和拾边），Brut.style 不碰 TextView 的背景，所以放在刷皮肤之后也没事
+        // 气泡 / 头像 / composer 底都是手画的，不走 Brut.style，也不在页面级刷 2dp 黑边 + 硬投影。
         draw()
 
         // 旋转/recreate 回来：恢复草稿和待发图。输入框没 id，系统不会自动存它的文字；待发图只存文件名。
@@ -397,23 +458,60 @@ class ChatActivity : Activity() {
         // 在飞请求：系统会把发起时的 [ChatFlight] 原样交回来（onRetainNonConfigurationInstance）——
         // 接上当前页；还没回完就继续显示「正在回复…」，已经回完的 attach 会当场把结果收掉重画
         // （回复早已由后台线程落进发起时那个人格的会话文件，这里只负责画出来）。
-        carriedFlight()?.let { f ->
+        // [会话列表] 返回列表后再点进同一个 Agent 是**新实例**：它的那一轮请求可能还在飞 ——
+        // 从进程内登记表接上，照样显示「正在回复…」、回完当场收（不会让人对着同一个 Agent 再发一轮）。
+        (carriedFlight() ?: ChatFlights.live(pid))?.let { f ->
             flight = f
             f.attach(this)
             if (flight === f) { setAsking(true); draw() }   // attach 没把它收走 = 还在飞
         }
+
+        // launcher 自动送新用户进首次配置：只在**新实例**（savedInstanceState == null）触发，
+        // 转屏 / 进程重建 / 从引导返回都不重复；老用户和已完成引导的人一概不打扰，聊天本身照常可用。
+        if (savedInstanceState == null) maybeOpenOnboarding()
+    }
+
+    /**
+     * 真正的新用户第一次打开 launcher 时，自动进入 MainActivity 既有的 [MainActivity.showSetup] ——
+     * 不在这里另做一套引导，步骤 / 权限链 / 「先不开」全都还是原来那一套。
+     *
+     * **只自动开一次**：先落 [Prefs.onboardAutoOpened] 再跳，进程在跳转途中被杀也不会循环。
+     * 老用户用和 MainActivity.onCreate 相同的 [Onboarding.legacyConfigured] 判定直接记为走完；
+     * 只有真正的新用户才写 [Prefs.orbGuidePending]（悬浮球建好后弹一次新手卡），升级用户不会弹。
+     */
+    private fun maybeOpenOnboarding() {
+        if (prefs.onboardAutoOpened) return
+        val keys = prefs.keys()
+        if (!prefs.onboarded && !prefs.onboardStarted && Onboarding.legacyConfigured(keys)) {
+            prefs.onboarded = true
+            return
+        }
+        if (!Onboarding.shouldShow(prefs.onboarded, prefs.onboardStarted, keys)) return
+        if (!prefs.orbGuideSeen) prefs.orbGuidePending = true
+        prefs.onboardAutoOpened = true
+        try { startActivity(Intent(this, MainActivity::class.java)) } catch (_: Exception) {}
     }
 
     /**
      * 从系统设置页 / 引导页回来时必要配置提示条要跟着更新，所以每次回前台都重新看一眼
      * （悬浮窗权限 + 接口，见 [refreshSetupBar]）。授权 / 录屏 / 无障碍那条链在 MainActivity，
      * 这里不重复实现，只做提示与跳转。
-     *
-     * [v1.79] 这里原来还有一段「配色变了就重铺整页」—— 现在这页是纸底固定的皮肤，不再跟配色走，
-     * 所以那段删了（配色只影响悬浮球 / 面板 / 词卡，和设置页、历史页一个口径）。
      */
     override fun onResume() {
         super.onResume()
+        // 系统深浅色变了 /「跟随系统深色」改过：换的是 [Prefs.themeId] 之外那层结果，下面两项
+        // （提示条 / 在飞请求重接）都看不出色板已经换了，整页会继续用旧色板。按色板本身比一次，
+        // 变了就重建 —— 草稿 / pid / 待发图片走 onSaveInstanceState，在飞请求走 [ChatFlight] 保留态，
+        // 和旋转重建同一条路，不会丢。重建后 shownTheme 已是新值，不会循环。
+        // shownTheme 为 null = 这次 onCreate 是「桌面冷启动转会话列表」那条早退路（视图没建过），
+        // 那种情形下不重建：本来就没有旧色板可换。
+        val t = prefs.theme()
+        if (shownTheme != null && t != shownTheme) {
+            Ui.applyTheme(prefs)
+            shownTheme = Ui.theme
+            recreate()
+            return
+        }
         // 从系统设置 / 引导页回来：重看一眼必要配置（悬浮窗权限 / 接口），缺就重新挂上提示条
         refreshSetupBar()
         // 在飞请求：回到前台就重新接上；期间已经回完的，attach 会当场把结果收掉重画
@@ -430,6 +528,7 @@ class ChatActivity : Activity() {
     override fun onSaveInstanceState(out: Bundle) {
         super.onSaveInstanceState(out)
         if (::input.isInitialized) out.putString(KEY_DRAFT, input.text.toString())
+        out.putString(KEY_PID, pid)
         out.putString(KEY_PENDING_IMG, pendingImg?.name)
     }
 
@@ -452,6 +551,17 @@ class ChatActivity : Activity() {
      * 只在**还是这一轮**时生效 —— 用自增 id 认，迟到的回调不会误收下一轮。回复此刻已经落进发起时
      * 那个人格的会话文件（见 [runChatFlight]），这里只负责重画 + 必要的兜底提示。
      */
+    /**
+     * 在飞那一轮的进度行（v2.2.1：联网搜索 / 读网页的时间比较长，得让人看见在做什么）。
+     * 只对当前那一轮生效；换人格 / 已经收尾的轮次不会来抢这一行。
+     */
+    internal fun onFlightPhase(id: Long, s: String) {
+        val f = flight ?: return
+        if (f.id != id || !asking) return
+        if (s.isBlank()) return
+        setStatus(s)
+    }
+
     internal fun onFlightDone(id: Long) {
         val f = flight ?: return
         if (f.id != id) return
@@ -466,12 +576,51 @@ class ChatActivity : Activity() {
         }
     }
 
+    /**
+     * [会话列表] 返回：本页是任务根（从小球菜单「和小Ling聊聊」直接起来的，底下没有列表）就先把列表开出来再走，
+     * 于是不管从哪儿进的聊天，返回都落在会话列表 —— 跟微信一样；底下本来就有列表就正常关掉本页。
+     */
+    private fun goBack() {
+        if (isTaskRoot) {
+            try { startActivity(Intent(this, ChatListActivity::class.java)) } catch (_: Exception) {}
+        }
+        finish()
+    }
+
+    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() { goBack() }
+
     /** 设置页是二级入口（桌面图标落聊天页）。走显式Intent，不给 singleTask 的 MainActivity 带 extras。 */
     private fun openSettings() {
         try { startActivity(Intent(this, MainActivity::class.java)) } catch (_: Exception) { toast("打不开设置页") }
     }
 
-    // ---------------- 常用动作（识别屏幕 / 弹单词 / 添加提醒） ----------------
+    // ---------------- composer 左侧「＋」：图片 / 识别屏幕 / 弹单词 / 添加提醒 ----------------
+
+    /**
+     * [2.2] 四个原有入口收进一个菜单（原来「图片」在工具行、另外三个在折叠的「快捷操作」行）。
+     * 触发逻辑一个字没改：图片走 [pickImage]，其余三个走 [actSolve] / [actWord] / [actRemind]。
+     */
+    private fun showTools(anchor: View) {
+        val pm = ThemeDialogs.popup(this, anchor, Gravity.NO_GRAVITY)   // v2.7.3 统一弹层入口（锚点定位语义与原 PopupMenu 一致）
+        pm.menu.add(0, MENU_IMAGE, 0, "图片")
+        pm.menu.add(0, MENU_SOLVE, 1, "识别屏幕")
+        pm.menu.add(0, MENU_WORD, 2, "弹单词")
+        // 「添加提醒」落在记事页（todo 模块）。模块被用户关掉时这一项不出现 ——
+        // 开关只在 registry 一处判，[actRemind] 里再兜一次底（菜单已弹出后用户在设置里关掉也有可能）。
+        if (Features.isEnabled(this, "todo")) pm.menu.add(0, MENU_REMIND, 3, "添加提醒")
+        pm.setOnMenuItemClickListener {
+            when (it.itemId) {
+                MENU_IMAGE -> pickImage()
+                MENU_SOLVE -> actSolve()
+                MENU_WORD -> actWord()
+                MENU_REMIND -> actRemind()
+            }
+            true
+        }
+        pm.show()
+    }
 
     /**
      * 「识别屏幕」：走项目现有的 [QuickActivity]（它自己处理「等中转页收干净再截」的延迟），
@@ -503,6 +652,12 @@ class ChatActivity : Activity() {
 
     /** 「添加提醒」：走现有的记事页（[TodoListActivity] 的「加一条」按句子里的时间就地解析），不用任何权限 */
     private fun actRemind() {
+        // 记事页属于 todo 模块：关掉后不该还能从这里进去（球菜单、深链同理，都由 registry 判）。
+        // 关掉的是**入口**，已有待办一条不删 —— 重新打开还在（见 [FeatureToggles] 第 2 条硬规则）。
+        if (!Features.isEnabled(this, "todo")) {
+            toast("待办与随手记已在「模块管理」里关掉 —— 设置 → 模块管理 可以重新打开")
+            return
+        }
         UsageHints.showOnce(this, HINT_REMIND, "添加提醒：一句话带时间就记成待办，例：明天 15:30 交周报")
         try { startActivity(TodoListActivity.intent(this, 0)) }
         catch (_: Exception) { toast("打不开记事页") }
@@ -533,21 +688,16 @@ class ChatActivity : Activity() {
     }
 
     /**
-     * 必要配置状态提示条：悬浮窗权限 / 接口地址缺一就显示一句短文案（两条旧横幅合并，避免重复长文字）。
-     * 从系统设置 / 引导页回来时 [onResume] 重刷一次。
+     * 必要配置状态提示条：悬浮窗权限 / 接口地址缺一就显示**一句**短文案（两条旧横幅合并，避免重复长文字）。
+     * 从系统设置 / 引导页回来时 [onResume] 重刷一次。它只是一条提示，不接管输入区、不阻塞已配好接口的聊天。
      */
     private fun refreshSetupBar() {
         if (!::setupBar.isInitialized) return
-        val noOverlay = !Settings.canDrawOverlays(this)
-        val noApi = !prefs.hasApi()
-        if (!noOverlay && !noApi) { setupBar.visibility = View.GONE; return }
+        // 文案挪到 [ChatList.setupHint]（会话列表顶部那条提示也用它），原文不变
+        val hint = ChatList.setupHint(!Settings.canDrawOverlays(this), !prefs.hasApi())
+        if (hint == null) { setupBar.visibility = View.GONE; return }
         setupBar.visibility = View.VISIBLE
-        setupLabel.text = when {
-            noOverlay && noApi -> "还差 2 项：接口地址、悬浮窗权限"
-            noApi -> "还没填接口地址 —— 填上才能聊"
-            else -> "悬浮球还没授权（识别屏幕 / 弹单词要用）"
-        }
-        setupBtn.text = if (noApi) "去填接口" else "去开启"
+        setupLabel.text = hint
     }
 
     // ---------------- 图片 ----------------
@@ -623,7 +773,7 @@ class ChatActivity : Activity() {
         pendingRow.visibility = View.GONE
     }
 
-    // ---------------- 气泡流 ----------------
+    // ---------------- 消息流 ----------------
 
     /**
      * 重画整条消息流。
@@ -642,24 +792,23 @@ class ChatActivity : Activity() {
         who.text = Personas.headerTitle(p)
         renderIcon(p)
         val list = store.list()
+        // [会话列表] 画出来 = 看过了：已读位置推到最后一条（列表的未读数据此算）。只有本页在前台才会重画到这里
+        // （在飞请求离开前台就 detach，不会替用户「看」掉后台回来的消息）。
+        ChatListActivity.Marks(this).markRead(pid, list.lastOrNull()?.at ?: 0L)
         // [2.0.2] 等待回复时不再说「在想…」（那是假推理），只说「正在回复…」；正文尾部还会挂一条同样的状态
-        status.text = if (asking) "正在回复…" else ChatStore.status(list, System.currentTimeMillis())
+        setStatus(if (asking) "正在回复…" else ChatStore.status(list, System.currentTimeMillis()))
         if (list.isEmpty()) {
-            // 空会话：说清「跟谁聊 + 怎么开口」，不做伪功能卡。挂正中间（挂顶会让整页看着像没加载出来）
+            // [2.2] 空态只留「一句主句 + 一句说明」，不铺按钮、不重复顶栏已经说过的身份。
             col.gravity = Gravity.CENTER_HORIZONTAL or Gravity.CENTER_VERTICAL
             col.addView(TextView(this).apply {
-                text = p.name; textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Brut.INK)
+                text = ChatStore.greeting(p); textSize = 16f; typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Brut.INK)
                 gravity = Gravity.CENTER
             }, LinearLayout.LayoutParams(-1, -2))
             col.addView(TextView(this).apply {
-                text = ChatStore.greeting(p); textSize = 15f; setTextColor(Brut.HINT); tag = Brut.KEEP
+                text = "可以直接提问，也可以发送图片"; textSize = 12.5f; setTextColor(Brut.HINT)
                 gravity = Gravity.CENTER
-                setPadding(dp(8f), dp(6f), dp(8f), 0)
-            }, LinearLayout.LayoutParams(-1, -2))
-            col.addView(TextView(this).apply {
-                text = "可以直接提问，也可以发送图片"; textSize = 12.5f; setTextColor(Brut.HINT); tag = Brut.KEEP
-                gravity = Gravity.CENTER
-                setPadding(dp(8f), dp(4f), dp(8f), 0)
+                setPadding(dp(8f), dp(8f), dp(8f), 0)
             }, LinearLayout.LayoutParams(-1, -2))
             return
         }
@@ -670,13 +819,13 @@ class ChatActivity : Activity() {
                       else ChatStore.dividerText(null, m.at, System.currentTimeMillis())
             if (div != null) {
                 col.addView(TextView(this).apply {
-                    text = div; textSize = 12f; setTextColor(Brut.HINT); tag = Brut.KEEP
+                    text = div; textSize = 11.5f; setTextColor(Brut.HINT)
                     gravity = Gravity.CENTER
-                    setPadding(0, dp(10f), 0, dp(2f))
+                    setPadding(0, dp(12f), 0, dp(4f))
                 }, LinearLayout.LayoutParams(-1, -2))
             }
             // 同一个人连着说的收紧到 3dp：一眼能看出这是一段，不是每人一句来回
-            val gap = if (i > 0 && list[i - 1].isOrb == m.isOrb) 3f else 9f
+            val gap = if (i > 0 && list[i - 1].isOrb == m.isOrb) 3f else 10f
             col.addView(bubble(m, gap, p))
         }
         // [2.0.2] asking：正文尾部挂一条真实的「正在回复…」状态（不是假的推理过程）
@@ -694,78 +843,88 @@ class ChatActivity : Activity() {
 
     /** 等待回复时正文尾部那一行「正在回复…」（左侧、小灰字，纯状态，不可点） */
     private fun typingRow(): View = TextView(this).apply {
-        text = "正在回复…"; textSize = 12.5f; setTextColor(Brut.HINT); tag = Brut.KEEP
+        text = "正在回复…"; textSize = 12.5f; setTextColor(Brut.HINT)
         setPadding(dp(2f), dp(4f), dp(2f), dp(4f))
     }
 
-    /** [2.0.2]「快捷操作」折叠开关：展开 / 收起那三个常用动作按钮（纯显隐，不改任何功能） */
-    private fun toggleQuick() {
-        val show = actionsRow.visibility != View.VISIBLE
-        actionsRow.visibility = if (show) View.VISIBLE else View.GONE
-        quickToggle.text = if (show) QUICK_HIDE else QUICK_SHOW
-    }
-
     /**
-     * 一条消息的气泡。
+     * 一条消息。
      *
-     * [2.0.2] 两种形态彻底分开：
-     *  - **Agent**（[orbBubble]）：靠左、占**可用正文宽**（不再 78% 窄卡、不再黑投影），顶部一行小字人格名，
-     *    正文走 [Md.render]（加粗 / 列表 / 公式 / 链接可点），可长按选中文字，下面一行小字「复制」。
-     *  - **用户**（[userBubble]）：靠右收敛小卡（纯文本，可带图），宽不超过 [maxBubbleW]。
-     * 两者都只画 **1dp 轻描边**（[chatPanel]），不画重投影 —— 和设置页那种厚块区分开，灰度下靠形状辨。
+     * [2.2] 两种形态彻底分开，都不再有卡片描边 / 硬阴影：
+     *  - **Agent**（[orbBubble]）：靠左、占**可用正文宽**，正文 16sp 直接铺在纸上（可长按选中、可点链接 / 公式），
+     *    上方一行小字人格名 + 右侧 48dp「⋯」菜单（复制原文）。
+     *  - **用户**（[userBubble]）：靠右收敛浅色圆角小块（纯文本可带图），宽不超过 [maxBubbleW]，无黑边。
      */
     private fun bubble(m: ChatStore.Msg, gapDp: Float, p: Persona): View =
         if (m.isOrb) orbBubble(m, gapDp, p) else userBubble(m, gapDp)
 
-    /** Agent 回复：左侧、占满可用正文宽，顶部小字人格名 + [Md.render] 正文（可选中 / 可点链接）+ 小字「复制」 */
+    /** Agent 回复：左侧、占满可用正文宽；无背景无描边，正文可选中 / 可点链接，辅助操作收进「⋯」 */
     private fun orbBubble(m: ChatStore.Msg, gapDp: Float, p: Persona): View {
-        val wrap = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = chatPanel(Brut.CARD)
-            setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
-            tag = Brut.KEEP
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        // 人格名是次要信息；「⋯」保持 48dp 触达，点开只有一条「复制原文」，不抢正文的长按选字。
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         }
-        wrap.addView(Ui.text(this, p.name, 11.5f, Brut.HINT).apply { tag = Brut.KEEP },
-            LinearLayout.LayoutParams(-1, -2))
+        head.addView(Ui.text(this, p.name, 11.5f, Brut.HINT), LinearLayout.LayoutParams(0, -2, 1f))
+        head.addView(TextView(this).apply {
+            // 「⋯」也是图标，按 dp 定字号，大字体下不撑破 48dp 触达框
+            text = "⋯"; setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20f); setTextColor(Brut.HINT)
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+            minimumWidth = dp(48f); minimumHeight = dp(48f)
+            isClickable = true; isFocusable = true
+            contentDescription = "更多操作"
+            background = ripple(rounded(0, 24f), 24f)
+            setOnClickListener { showMessageMenu(it, m.content) }
+        }, LinearLayout.LayoutParams(dp(48f), dp(48f)))
+        wrap.addView(head, LinearLayout.LayoutParams(-1, -2))
         wrap.addView(TextView(this).apply {
             text = Md.render(m.content, Brut.INK, Theme.argb(0x22, Brut.INK))
-            textSize = 15f; setLineSpacing(0f, 1.4f); setTextColor(Brut.INK)
+            textSize = 16f; setLineSpacing(0f, 1.45f); setTextColor(Brut.INK)
             setTextIsSelectable(true)                 // 正文可以长按选中
             movementMethod = Links.SelectableTap      // 点链接跳转，其余照常选字
-            setPadding(0, dp(5f), 0, 0)
-            tag = Brut.KEEP
+            setPadding(0, 0, 0, dp(2f))
         }, LinearLayout.LayoutParams(-1, -2))
-        // 「复制」：复制原文（走系统剪贴板，不加任何新的历史字段）
-        wrap.addView(Ui.text(this, "复制", 12f, Brut.HINT).apply {
-            tag = Brut.KEEP
-            isClickable = true
-            gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(48f)   // [2.0.2] 触达行最低 48dp（原来 40dp 偏小）
-            setPadding(dp(4f), 0, dp(8f), 0)
-            setOnClickListener { copyText(m.content) }
-        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(2f) })
         wrap.layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
             gravity = Gravity.START
-            topMargin = dp(gapDp); bottomMargin = dp(3f)
+            topMargin = dp(gapDp); bottomMargin = dp(4f)
         }
         return wrap
     }
 
-    /** 用户消息：靠右收敛小卡（纯文本可带图），宽不超过 [maxBubbleW] */
+    /** 「⋯」菜单：目前只有一条「复制完整原文」，走系统剪贴板，不新增任何历史字段 */
+    private fun showMessageMenu(anchor: View, content: String) {
+        val pm = ThemeDialogs.popup(this, anchor, Gravity.NO_GRAVITY)   // v2.7.3 统一弹层入口
+        pm.menu.add(0, MENU_COPY, 0, "复制原文")
+        pm.setOnMenuItemClickListener {
+            if (it.itemId == MENU_COPY) copyText(content)
+            true
+        }
+        pm.show()
+    }
+
+    /** 用户消息：靠右收敛的小块（纯文本可带图），宽不超过 [maxBubbleW]；瑞士下是直角细线空心块（见 [bubbleBg]） */
     private fun userBubble(m: ChatStore.Msg, gapDp: Float): View {
+        // 瑞士：纸底上只留一条细线，不再掺主色（掺出来是粉的 —— 这套风格只有黑白 + 一个信号红）。
+        // 玻璃：主色掺色底交给共享材质去画（轻透明层 + 高光边），掺色比例本身不动。
+        val fill = when {
+            swiss -> 0
+            glass -> Theme.argb(0xFF, Theme.mix(Brut.CARD, Brut.MINT, 0.30f))
+            else -> 0xFF000000.toInt() or Theme.mix(Brut.CARD, Brut.MINT, 0.30f)
+        }
+        val fg = if (swiss) Brut.INK else Brut.on(fill)
         val lp = LinearLayout.LayoutParams(-2, -2).apply {
             gravity = Gravity.END
-            topMargin = dp(gapDp); bottomMargin = dp(3f)
+            topMargin = dp(gapDp); bottomMargin = dp(4f)
         }
         val bmp = m.img?.let { imgFile(it) }?.takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.absolutePath) }
         if (bmp == null) {
             return TextView(this).apply {
-                text = m.content; textSize = 15f; setLineSpacing(0f, 1.35f)
-                setTextColor(Brut.on(Brut.MINT))
-                background = chatPanel(Brut.MINT)
-                setPadding(dp(12f), dp(9f), dp(12f), dp(10f))
+                text = m.content; textSize = 16f; setLineSpacing(0f, 1.35f)
+                setTextColor(fg)
+                background = bubbleBg(fill)
+                setPadding(dp(14f), dp(10f), dp(14f), dp(11f))
                 maxWidth = maxBubbleW
-                tag = Brut.KEEP
                 layoutParams = lp
             }
         }
@@ -778,9 +937,8 @@ class ChatActivity : Activity() {
         val ih = maxOf(dp(48f), (bmp.height * k).toInt())
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = chatPanel(Brut.MINT)
+            background = bubbleBg(fill)
             setPadding(padL, dp(8f), padR, dp(10f))
-            tag = Brut.KEEP
         }
         box.addView(ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
@@ -788,7 +946,7 @@ class ChatActivity : Activity() {
             roundCorners(10f)
         }, LinearLayout.LayoutParams(iw, ih))
         val cap = if (m.content.isBlank()) null else TextView(this).apply {
-            text = m.content; textSize = 15f; setLineSpacing(0f, 1.35f); setTextColor(Brut.on(Brut.MINT))
+            text = m.content; textSize = 16f; setLineSpacing(0f, 1.35f); setTextColor(fg)
             setPadding(0, dp(8f), 0, 0)
             maxWidth = maxW
         }
@@ -806,17 +964,6 @@ class ChatActivity : Activity() {
         return box
     }
 
-    /**
-     * 聊天页私有的「轻描边」块：填色 + 1dp 黑边、无投影。
-     * 刻意**不用** [Brut.box]（那个带 4dp 实心黑投影，是设置页那种厚积木的规格）—— 聊天流要轻。
-     * 灰度下仍靠形状区分：用户是薄荷底、Agent 是白底。
-     */
-    private fun chatPanel(fill: Int): Drawable = GradientDrawable().apply {
-        setColor(fill)
-        cornerRadius = dp(6f).toFloat()
-        setStroke(dp(1f), Brut.INK)
-    }
-
     /** 「复制」：把回复原文写进系统剪贴板（不新增任何历史字段） */
     private fun copyText(s: String) {
         try {
@@ -825,12 +972,87 @@ class ChatActivity : Activity() {
             toast("已复制")
         } catch (_: Exception) { toast("复制失败") }
     }
+
+    // ---------------- 轻量形状（这一页自己的视觉，不改其它页面） ----------------
+
+    /**
+     * v2.6 瑞士国际主义：这一页是手画形状、不走 [Brut.style]，所以形状语言得自己跟 [Ui.shape] 走。
+     * 判据与 Brut 内部同一口径（投影为 0 = 「无投影」的那套）—— 主题包显式设过形状也照样生效。
+     */
+    private val swiss: Boolean get() = Ui.shape.shadowDp <= 0f
+
+    /** 当前配色是不是液态玻璃材质（v2.7.3）：只决定「谁来画底」，气泡 / 输入 / 触摸行为都不变 */
+    private val glass: Boolean get() = Ui.theme.isGlassMaterial
+
+    /** 圆角档位：平时用调用点给的（页面自己的层级），瑞士一律取 [Ui.shape] 的直角 */
+    private fun corner(radiusDp: Float): Float = if (swiss) Ui.shape.cornerDp else radiusDp
+
+    /** 圆角实心块：无描边、无投影（用户消息 / 按压底）。瑞士下圆角为 0，形同一块方底 */
+    private fun rounded(fill: Int, radiusDp: Float): GradientDrawable = GradientDrawable().apply {
+        setColor(fill)
+        cornerRadius = dp(corner(radiusDp)).toFloat()
+    }
+
+    /** 圆角 + 一档淡描边（composer）：描边透明度由调用方给，六套配色都跟着当前 INK 走 */
+    private fun outlined(fill: Int, radiusDp: Float, strokeDp: Float, stroke: Int): GradientDrawable =
+        rounded(fill, radiusDp).apply { setStroke(dp(strokeDp).coerceAtLeast(1), stroke) }
+
+    /** 统一按压反馈：系统 ripple，边界和内容同一形状（不引第三方库、不自己画状态机） */
+    private fun ripple(content: Drawable, radiusDp: Float): Drawable =
+        RippleDrawable(
+            ColorStateList.valueOf(Theme.argb(0x22, Brut.INK)),
+            content,
+            rounded(0xFFFFFFFF.toInt(), radiusDp),   // 显式圆角遮罩：按下水波不会跑出圆角
+        )
+
     /** 给 ImageView 加圆角（API 21+ 的 outline 裁切，不用第三方库也不用再去包一层 drawable） */
     private fun ImageView.roundCorners(radiusDp: Float) {
         outlineProvider = object : ViewOutlineProvider() {
-            override fun getOutline(v: View, o: Outline) = o.setRoundRect(0, 0, v.width, v.height, dp(radiusDp).toFloat())
+            override fun getOutline(v: View, o: Outline) = o.setRoundRect(0, 0, v.width, v.height, dp(corner(radiusDp)).toFloat())
         }
         clipToOutline = true
+    }
+
+    /**
+     * 用户消息的底：圆角实心块（无描边、无投影），[fill] 由 [userBubble] 按主题给。
+     *
+     * 瑞士下改成**直角 + 1dp 细线空心块**：收发靠「靠右 / 靠左」和这条线区分，不新增第二种彩色。
+     * 描边粗细取 [Ui.shape]，于是主题包换形状时这里跟着走。
+     */
+    private fun bubbleBg(fill: Int): Drawable = when {
+        glass -> Ui.material(this, fill, Ui.SurfaceRole.CARD, 18f)
+        else -> rounded(fill, 18f).apply {
+            if (swiss) setStroke(maxOf(1, dp(Ui.shape.strokeDp)), Brut.INK)
+        }
+    }
+
+    /**
+     * 瑞士的分栏线：底色不动，只在**底边**（[bottom] = true）或**顶边**画一条 [Shape.strokeDp] 的细线。
+     *
+     * 为什么画在自身内边而不是插一个 1dp 高的 View：`applyClamp` 的固定高预算按「顶栏 + composer」实测算，
+     * 多插一个兄弟 View 就得同步加进那份预算；画进背景则高度一个字都不用改（线条落在内边距里）。
+     */
+    private fun ruleBg(fill: Int, bottom: Boolean): Drawable = LayerDrawable(arrayOf(
+        GradientDrawable().apply { setColor(fill) },
+        GradientDrawable().apply { setColor(Brut.INK) },
+    )).apply {
+        setLayerGravity(1, if (bottom) Gravity.BOTTOM else Gravity.TOP)
+        setLayerHeight(1, maxOf(1, dp(Ui.shape.strokeDp)))
+    }
+
+    /**
+     * 瑞士的输入形态：**只有一条下划线**，没有整圈框（完整的框会把它变成一张表格）。
+     * 聚焦时线加粗到 [Shape.focusStrokeDp] 并变成实心墨色 —— 这是这套风格里唯一的聚焦信号。
+     * 下划线用 [LayerDrawable] 贴底画一条实色条：`setStroke` 画的是四边，那不是下划线。
+     */
+    private fun underlineInput(): Drawable = StateListDrawable().apply {
+        fun line(wDp: Float, col: Int): Drawable =
+            LayerDrawable(arrayOf(GradientDrawable().apply { setColor(col) })).apply {
+                setLayerGravity(0, Gravity.BOTTOM)
+                setLayerHeight(0, maxOf(1, dp(wDp)))
+            }
+        addState(intArrayOf(android.R.attr.state_focused), line(Ui.shape.focusStrokeDp, Brut.INK))
+        addState(intArrayOf(), line(Ui.shape.strokeDp, Theme.argb(0x55, Brut.INK)))
     }
 
     /** 会话里记的文件名 → files/chat-img/<名字> */
@@ -846,34 +1068,8 @@ class ChatActivity : Activity() {
      * 现在每行左边是 [PersonaIcon] 画的矢量图，副标题**单行截断**，各占各的位置。
      * 行 = (iconKey, 主标题, 副标题?)；`onPick` 收到行的下标。
      */
-    private fun iconListDialog(title: String, rows: List<Triple<String, String, String?>>, onPick: (Int) -> Unit): android.app.AlertDialog {
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(6f), 0, dp(6f)) }
-        val dlg = android.app.AlertDialog.Builder(this)
-            .setTitle(title)
-            .setView(ScrollView(this).apply { addView(col) })
-            .setNegativeButton("取消", null)
-            .create()
-        rows.forEachIndexed { i, (key, main, sub) ->
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(18f), dp(12f), dp(18f), dp(12f))
-                isClickable = true
-                setOnClickListener { dlg.dismiss(); onPick(i) }
-            }
-            row.addView(PersonaIcon(this, key))
-            val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            texts.addView(Ui.text(this@ChatActivity, main, 15f), LinearLayout.LayoutParams(-1, -2))
-            if (!sub.isNullOrBlank()) {
-                texts.addView(Ui.text(this@ChatActivity, sub, 12.5f, Ui.TX2).apply {
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2f) })
-            }
-            row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(12f) })
-            col.addView(row, LinearLayout.LayoutParams(-1, -2))
-        }
-        return dlg
-    }
+    private fun iconListDialog(title: String, rows: List<Triple<String, String, String?>>, onPick: (Int) -> Unit): android.app.AlertDialog =
+        PersonaPicker.iconListDialog(this, title, rows, onPick)   // [会话列表] 挪到 PersonaPicker 共用，行样式不变
 
     /**
      * 点顶栏名字 → 人格列表。一行一张：**矢量头像** + 名字 + 职责一句话（v1.85 起不再用 emoji）。
@@ -909,17 +1105,7 @@ class ChatActivity : Activity() {
     private fun newPersona() {
         // 同上：从「＋新建」走到真正建号之前也要再判一次 —— 回话中建号会建完切不过去，白留一个空号
         if (asking) { toast("${persona().name}还在回话，回完再建"); return }
-        val list = personas.list()
-        if (!Personas.canAdd(list)) { toast("最多 ${Personas.MAX} 个 Agent"); return }
-        val t = Personas.TEMPLATES
-        val rows = t.map { Triple(it.iconKey, it.label, it.role) }
-        iconListDialog("新 Agent 从哪个模板起", rows) { i ->
-            val before = personas.list().size
-            personas.fromTemplate(t[i].id)
-            val after = personas.list()
-            if (after.size <= before) { toast("建不了 —— 提示词已经写满 ${Personas.PROMPT_TOTAL} 字"); return@iconListDialog }
-            switchTo(after.last().id)
-        }.show()
+        PersonaPicker.newFromTemplate(this, personas) { id -> switchTo(id) }
     }
 
     // ---------------- 发消息 ----------------
@@ -968,6 +1154,7 @@ class ChatActivity : Activity() {
             memOn = prefs.agentMemOn,
         )
         flight = f
+        ChatFlights.put(f)
         f.attach(this)
         runChatFlight(f)
     }
@@ -976,8 +1163,27 @@ class ChatActivity : Activity() {
         asking = on
         send.isEnabled = !on
         input.isEnabled = !on
-        // [2.0.2] 禁用规则照旧，只是文案直说「回复中」，不用省略号
-        send.text = if (on) "回复中" else "发送"
+        // [2.0.2] 禁用规则照旧，只是文案直说「回复中」，不用省略号。
+        // 两段文案的宽度已在建按钮时按**较长那条**钉死，这里换字不会让 composer 抖动。
+        send.text = if (on) BUSY_LABEL else SEND_LABEL
+    }
+
+    /**
+     * 顶栏状态行。文案真变了才做一次 [Anim.MICRO] 的短 alpha 过渡（0.45 → 1），
+     * 不循环、不重放、不碰消息流（重画与滚动位置完全不受影响）。
+     * 系统关掉动画（[android.animation.ValueAnimator.areAnimatorsEnabled] 为 false）时直接写死，不留半透明。
+     */
+    private fun setStatus(s: String) {
+        if (status.text.toString() == s) return
+        status.text = s
+        // 还没上屏（首次 draw 之前）或系统关掉动画：直接写死，不为第一次填字 / 无动画环境闪一下
+        if (status.height == 0 || !android.animation.ValueAnimator.areAnimatorsEnabled()) {
+            status.alpha = 1f
+            return
+        }
+        status.animate().cancel()
+        status.alpha = 0.45f
+        status.animate().alpha(1f).setDuration(Anim.MICRO).setInterpolator(AnimGlue.EASE_OUT).start()
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
@@ -986,19 +1192,40 @@ class ChatActivity : Activity() {
         /** 选图的请求码（别和 MainActivity 的录屏 7 / 导入 4712 / 通知 8 撞） */
         private const val REQ_PICK = 91
 
+        /** 发送按钮的两段文案。两段字数不同，宽度按较长那条钉死（见 onCreate 的 sendW） */
+        private const val SEND_LABEL = "发送"
+        private const val BUSY_LABEL = "回复中"
+
         /** 图片最长边（1280 是识屏那条线一直在用的口径，接口那边也认这个尺寸） */
         private const val MAX_SIDE = 1280
 
         /** 气泡里那张图最多多高（dp）：再高就该长按看大图了，聊天流里不该压过一整屏 */
         private const val IMG_MAX_H_DP = 200f
 
-        /** 「快捷操作」折叠开关的两种文案（▾/▴ 是几何符号，不是 emoji） */
-        private const val QUICK_SHOW = "快捷操作 ▾"
-        private const val QUICK_HIDE = "收起快捷操作 ▴"
+        /** 「＋」菜单里的四项（原来是「图片」按钮 + 快捷操作行的三个按钮） */
+        private const val MENU_IMAGE = 1
+        private const val MENU_SOLVE = 2
+        private const val MENU_WORD = 3
+        private const val MENU_REMIND = 4
+
+        /** 回复「⋯」菜单：复制完整原文 */
+        private const val MENU_COPY = 5
 
         /** 旋转/recreate 恢复用：草稿文字 + 待发图文件名（EditText 没 id，系统不会自动存） */
         private const val KEY_DRAFT = "chat_draft"
         private const val KEY_PENDING_IMG = "chat_pending_img"
+        private const val KEY_PID = "chat_pid"
+
+        /** [会话列表] 列表点进来时带的人格 id */
+        const val EXTRA_PID = "com.chun.lingzhu.extra.PID"
+
+        /** 某个 Agent 的聊天页（会话列表点一行用） */
+        fun open(ctx: android.content.Context, pid: String) =
+            android.content.Intent(ctx, ChatActivity::class.java).putExtra(EXTRA_PID, pid)
+
+        /** 桌面图标那一下（MAIN + LAUNCHER）。纯判断，别的入口一律 false */
+        fun isLauncherLaunch(i: android.content.Intent?): Boolean =
+            i != null && i.action == android.content.Intent.ACTION_MAIN && i.hasCategory(android.content.Intent.CATEGORY_LAUNCHER)
 
         /** 常用动作「只提示一次」的 id（存进 [UsageHints] 的独立 key，跨旋转 / 进程不重复） */
         private const val HINT_SOLVE = "action.solve"
@@ -1009,6 +1236,19 @@ class ChatActivity : Activity() {
         fun intent(ctx: android.content.Context) =
             android.content.Intent(ctx, ChatActivity::class.java).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
     }
+}
+
+/**
+ * [会话列表] 进程内「谁还在回话」登记表：pid → 在飞的那一轮。
+ * 用途两个：① 返回列表后再点进同一个 Agent（新实例）能接上那一轮；② 会话列表那一行显示「正在回复…」。
+ * 只存在内存里 —— 进程没了请求也就没了，没有要落盘的东西。
+ */
+internal object ChatFlights {
+    private val live = java.util.concurrent.ConcurrentHashMap<String, ChatFlight>()
+    fun put(f: ChatFlight) { live[f.pid] = f }
+    fun done(f: ChatFlight) { live.remove(f.pid, f) }
+    fun live(pid: String): ChatFlight? = live[pid]?.takeIf { !it.finished }
+    fun busy(pid: String): Boolean = live(pid) != null
 }
 
 /** 每轮在飞请求一个自增号：重画回调认号不认对象，迟到的回调不会把下一轮的结果收走 */
@@ -1023,7 +1263,7 @@ private val chatFlightSeq = AtomicLong(0L)
  *
  * 冻结的身份是关键：回复和提炼出的记忆一律按发起时的 [pid] 走，等接口期间切了人格也不会串台。
  */
-private class ChatFlight(
+internal class ChatFlight(
     val app: Context,
     val pid: String,                    // 发起时的人格 id —— 回复 / 记忆都钉死在它上面
     val persona: Persona,               // 发起时那个人格（system 段 / 记忆卡都按它取，之后变了也不影响这一轮）
@@ -1054,6 +1294,15 @@ private class ChatFlight(
 
     fun detach(a: ChatActivity) { if (host?.get() === a) host = null }
 
+    /**
+     * 后台线程报一句进度（「正在联网搜索…」「正在读取网页…」）。
+     * 没有前台页就丢掉 —— 进度只是提示，绝不能因为它影响请求本身。
+     */
+    fun phase(s: String) {
+        val a = host?.get() ?: return
+        a.runOnUiThread { if (host?.get() === a) a.onFlightPhase(id, s) }
+    }
+
     /** 后台线程收尾时调：有前台页就让它重画；没有（销毁 / 后台）就留着，等新页 onResume 自己来收 */
     fun deliver() {
         val a = host?.get() ?: return
@@ -1071,8 +1320,18 @@ private class ChatFlight(
  */
 private fun runChatFlight(f: ChatFlight) {
     thread(name = "lz-chat") {
+        // v2.2.1：聊天也接入联网搜索（用户明确拍板「聊天接搜索」）。
+        // 开关 / 来源 / Key 全在冻结的 [f.cfg.searchConfig] 里，和识屏那条线同一套配置与协议；
+        // 只是聊天没有截图：请求体换成流式 + tools，工具轮由 streamWithSession 跑完，正文照旧一次性落盘。
+        val search = WebSearch.session(f.cfg.searchConfig, f.cfg)
+        // v2.3.1：工具循环不再由联网开关决定。联网工具（web_search / web_fetch）跟着搜索开关走，
+        // 但本机工具（建卡 / 提醒 / 查记忆 / 报账 / 看台账 / 排计划）不需要网络，
+        // 关掉联网也该能用 —— 否则用户说「帮我记一张卡」只能得到一句「好的我记住了」。
+        // online 现在只表示「要不要给联网工具」，工具循环本身始终走。
+        val online = search.active
         // [MP] system 跟着**发起时**的人格走：人格段（空则回落 PERSONA）+ 这个人格自己的记忆卡
-        val sys = ChatStore.systemPrompt(f.persona, MemoryCard.Store(f.app, f.pid).get().takeIf { !it.isEmpty })
+        val sys0 = ChatStore.systemPrompt(f.persona, MemoryCard.Store(f.app, f.pid).get().takeIf { !it.isEmpty })
+        val sys = if (online) sys0 + WebSearch.toolPrompt() else sys0
         // [v1.87] 每轮实时告诉模型「现在几点」：提醒标记（ChatStore.REMIND_RULE）要本机当地时间，
         // 但此前从没把当前值交给模型，它只能瞎猜。时间行走 suffix 开头 —— **不进 system**，system 是前缀
         // 缓存锚点（见 ChatStore.body），时间每轮都变。每轮现取 System.currentTimeMillis()：不是会话创建时
@@ -1095,13 +1354,39 @@ private fun runChatFlight(f: ChatFlight) {
             }
         }
         var ok = false
+        // 联网搜索真返回过来源时，App 自己补一行「已联网 · N 条来源」（不靠模型写来源行）
+        var searchNote = ""
         val reply = try {
             // [v1.79] 只有这一刻刚发的那张图带 base64（按文件名认；历史里的图不带，退化成「[图片]」占位）
             val b64 = f.img?.let { runCatching { Base64.encodeToString(it.readBytes(), Base64.NO_WRAP) }.getOrNull() }
-            val body = ChatStore.body(f.cfg, f.snapshot, system = sys, suffix = suffix) { m ->
-                if (f.img != null && m.at == f.at) b64 else null
-            }
-            chatPost(f.cfg, body).also { ok = true }
+            // v2.7.1：发出去的历史先过一遍压缩（按 token 预算，不看条数）。
+            // 装得下就整份原样发、一次额外请求都不发；压不成时要么整份会话照发、要么这次不发（见 [historyFor]）。
+            val history = historyFor(f, sys, suffix, search)
+            // withTools 恒为 true：Bodies.tools 里常驻挂 AgentTools 的本机工具，联网工具由它自己按
+            // session.active 决定加不加。这里若跟着 online 走，关掉联网就等于把建卡 / 提醒也一起关了。
+            val body = ChatStore.body(
+                f.cfg, f.snapshot, system = sys, suffix = suffix,
+                stream = true, withTools = true, history = history,
+                imgB64 = { m -> if (f.img != null && m.at == f.at) b64 else null },
+            )
+            // 一律走工具循环（搜索 / 抓网页 / 建卡 / 提醒 / 查记忆 / 报账 / 看台账 / 排计划都在那边收口）。
+            // f.app 是发起时冻结的 applicationContext，f.pid 是冻结的人格 —— 等待中切人格也不会串台。
+            val text = ApiClient(f.cfg).streamWithSession(
+                body,
+                object : ApiClient.Listener {
+                    override fun onText(text: String) {}
+                },
+                AtomicBoolean(false),
+                fallbackQuery = f.text,
+                session = search,
+                onPhase = { ph -> f.phase(ph) },
+                tools = AppToolContext(f.app, f.pid),
+                // 用户在聊天框里说话就是要办事，首轮 required 逼模型先动手，别只回一句「好的我来安排」
+                agentMode = true,
+            ).first
+            if (online) searchNote = search.sourcesLine()
+            ok = text.isNotBlank()
+            text.trim()
         } catch (e: Exception) {
             NetErrors.friendly(e, f.cfg.base)
         }
@@ -1116,7 +1401,9 @@ private fun runChatFlight(f: ChatFlight) {
             val plan = Remind.Plan(asks, rules)
             if (!plan.isEmpty) rememberPlan(f.app, plan)
             // shown 为空 = 整条回复只有标记：别把空消息灌进会话，用一句兜底
-            val body = shown.ifBlank { if (plan.isEmpty) "" else "好，记下了。" }
+            val body0 = shown.ifBlank { if (plan.isEmpty) "" else "好，记下了。" }
+            // 来源行只进「落盘 + 展示」这一条：提炼记忆用的是干净的 reply，不把网址当记忆存进去
+            val body = body0 + if (searchNote.isNotEmpty() && body0.isNotEmpty()) searchNote else ""
             if (body.isNotEmpty()) store0.say(ChatStore.orb(body, nowR))
             if (!plan.isEmpty) store0.say(ChatStore.orb(Remind.confirmPlan(plan, nowR), nowR))
         }
@@ -1131,11 +1418,17 @@ private fun runChatFlight(f: ChatFlight) {
         }
         f.blank = reply.isBlank()
         f.finished = true
+        ChatFlights.done(f)
         f.deliver()
     }
 }
 
-/** 一次非流式 chat/completions；返回正文。失败抛 [ApiException]（消息已经是大白话） */
+/**
+ * 一次非流式 chat/completions；返回正文。失败抛 [ApiException]（消息已经是大白话）。
+ *
+ * 现在只给会话压缩用（[historyFor]）。**`finish_reason == "length"` 一律当失败**：
+ * 那表示摘要被 max_tokens 截断了，半截摘要写进 sidecar 等于把「没说完的旧事」伪装成完整记忆。
+ */
 private fun chatPost(cfg: ApiConfig, body: String): String {
     if (cfg.base.isEmpty()) throw ApiException("还没填接口地址（右上角「设置」→ 接口）")
     val conn = (URL(cfg.base + "/chat/completions").openConnection() as HttpURLConnection).apply {
@@ -1151,12 +1444,67 @@ private fun chatPost(cfg: ApiConfig, body: String): String {
         val code = conn.responseCode
         if (code !in 200..299) throw ApiException("HTTP $code" + chatHttpHint(code) + " " + conn.chatErrHint())
         val txt = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
-        return try {
-            JSONObject(txt).getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "").trim()
-        } catch (e: Exception) { "" }
+        val choice = try { JSONObject(txt).getJSONArray("choices").getJSONObject(0) } catch (_: Exception) {
+            throw ApiException("自动整理对话历史失败：接口返回的不是正常的 chat 响应")
+        }
+        if (choice.optString("finish_reason") == "length") {
+            throw ApiException("自动整理对话历史失败：摘要被输出上限截断，这次先不发 —— 再试一次")
+        }
+        return choice.optJSONObject("message")?.optString("content", "").orEmpty().trim()
+    } catch (e: ApiException) {
+        throw e
+    } catch (e: Exception) {
+        throw ApiException(NetErrors.friendly(e, cfg.base))
     } finally {
         conn.disconnect()
     }
+}
+
+/**
+ * 这一轮真正要发出去的历史（不含 system）：装得下就整份会话原样返回（一次额外请求都不发），
+ * 超窗才是「更早对话的摘要 + 完整尾部 exchange」（[AgentContext.compact]）。
+ *
+ * **是否要压只由 token 预算判**：[AgentContext.plan] 把「已验摘要 + 未压到的后缀」按真实口径估算，
+ * 加上 [fixedReserve]（system / 本轮 suffix / 工具定义）与输出预留超过窗口才算要压。
+ * 条数不再参与判断 —— 几十条短消息装得下就一条不压，「>26 条」那条提示已摘除。
+ *
+ * **压缩失败一律停止这一轮**：异常原样抛到 [runChatFlight] 的 catch，由已有的错误气泡把原因
+ * （接口报错 / 消息太长 / 会话刚被清空）显示给用户。不做任何「装得下就凑合发」的兜底 ——
+ * 那要么让用户看不见失败，要么在会话刚被清空时把旧历史再发出去，两者都比「重试一次」糟。
+ */
+private fun historyFor(
+    f: ChatFlight,
+    sys: String,
+    suffix: String,
+    search: WebSearch.Session,
+): List<ChatStore.Msg> {
+    val store = AgentContext.SummaryStore(File(f.app.filesDir, AgentContext.file(f.pid)))
+    return AgentContext.compact(
+        f.cfg, f.snapshot, store,
+        ask = { body -> chatPost(f.cfg, body) },
+        fresh = { ChatStore.Store(f.app, f.pid).list() },
+        reserve = fixedReserve(f, sys, suffix, search),
+        onLog = { s -> android.util.Log.i("LingCtx", s) },
+        // 只有真要做压缩（plan 非空）才闪这一行：短聊天 / 条数多但装得下都不提示
+        onCompacting = { f.phase("正在整理更早的对话…") },
+        // 这一轮已经不是该人格「在飞的那一轮」＝被打断（新请求顶掉 / 页面重开换了一轮）：
+        // 立刻停，不写摘要、也不把整理到一半的结果发出去。不新增任何取消入口，只认已有登记表。
+        cancelled = { ChatFlights.live(f.pid) !== f },
+    )
+}
+
+/**
+ * 冻结前缀（system / 本轮 suffix / 工具定义）换算成的 token 预留。
+ *
+ * 工具定义只在**这里量一次长度**：和 [Bodies.tools] 真正挂进请求的是同一份 JSON，
+ * 不为了计数再造一个请求体、也不新增模型目录 / 设置项。
+ */
+private fun fixedReserve(f: ChatFlight, sys: String, suffix: String, search: WebSearch.Session): Int {
+    val tools = runCatching {
+        AgentTools.toolsJson(f.cfg.agentScope, f.cfg.disabledFeatures).length +
+            (if (search.active) WebSearch.toolsJson(search.canFetch).length else 0)
+    }.getOrDefault(0)
+    return AgentContext.estimateFixed(sys.length, suffix.length, tools)
 }
 
 /** 常见的几个状态码补一句人话（和 ApiClient 那一套口径一致） */
@@ -1191,4 +1539,3 @@ private fun rememberPlan(ctx: Context, plan: Remind.Plan) {
         Schedule.sync(ctx)
     }
 }
-

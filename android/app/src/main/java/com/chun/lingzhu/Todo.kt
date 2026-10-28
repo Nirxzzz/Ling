@@ -217,6 +217,31 @@ object Todo {
         return h * 60 + mi
     }
 
+    /**
+     * 星期几的中文写法 → Calendar 的 DAY_OF_WEEK（周日=1 … 周六=7）。
+     *
+     * 支持「周五 / 星期五 / 礼拜五 / 周天 / 周七」这些常见写法。
+     * 返回 null 表示不是星期词。
+     */
+    fun weekdayOf(raw: String): Pair<Int, IntRange>? {
+        val m = WEEKDAY_RE.find(raw) ?: return null
+        val ch = m.groupValues[1]
+        val dow = when (ch) {
+            "一" -> 2; "二" -> 3; "三" -> 4; "四" -> 5; "五" -> 6; "六" -> 7
+            "日", "天", "七" -> 1
+            else -> return null
+        }
+        return dow to m.range
+    }
+
+    internal val WEEKDAY_RE = Regex("(?:周|星期|礼拜)([一二三四五六日天七])")
+
+    /** 星期几的中文名，给「下周五」这类显示用 */
+    fun weekdayName(dow: Int): String = when (dow) {
+        1 -> "周日"; 2 -> "周一"; 3 -> "周二"; 4 -> "周三"
+        5 -> "周四"; 6 -> "周五"; 7 -> "周六"; else -> ""
+    }
+
     /** 自然语言时间兜底解析：「明天下午3点 / 3小时后 / 20:00 / 晚八点」认不出的部分当标题。纯函数可单测 */
     fun parseWhen(raw: String, now: Long = System.currentTimeMillis()): ParsedWhen {
         val cal = java.util.Calendar.getInstance().apply { timeInMillis = now }
@@ -225,19 +250,28 @@ object Todo {
         // v1.85.5：中文数字也要认 —— 「一分钟后」原先掉进口语钟点分支算出错误时刻（用户实测：早8点说 → 记23:24）
         val after = Regex("(\\d+|[一二两三四五六七八九十]+)(分钟|小时|天)后").find(title)
         val day = Regex("(今天|明天|后天)").find(title)
+        val wk = if (after == null && day == null) weekdayOf(title) else null
         val min = if (after == null) minuteOfDay(title) else null   // 「3 小时后」里的“时”不是钟点
         if (after != null) {
             val n = (numOf(after.groupValues[1]) ?: 1L).toLong().coerceAtLeast(1L)
             due = now + n * 60_000L * when (after.groupValues[2]) { "分钟" -> 1L; "小时" -> 60L; else -> 1440L }
         } else {
             day?.let { cal.add(java.util.Calendar.DAY_OF_YEAR, when (it.value) { "明天" -> 1; "后天" -> 2; else -> 0 }) }
+            // 「周五」：算到**下一个**周五。今天就是周五时算下周 —— 说「周五交」
+            // 不会是「今天交」，口语里一定指接下来那个周五。
+            wk?.let { (dow, _) ->
+                val cur = cal.get(java.util.Calendar.DAY_OF_WEEK)
+                var delta = (dow - cur + 7) % 7
+                if (delta == 0) delta = 7
+                cal.add(java.util.Calendar.DAY_OF_YEAR, delta)
+            }
             if (min != null) {
                 cal.set(java.util.Calendar.HOUR_OF_DAY, min / 60)
                 cal.set(java.util.Calendar.MINUTE, min % 60)
                 cal.set(java.util.Calendar.SECOND, 0)
                 due = cal.timeInMillis
-                if (due < now && day == null) due += 86_400_000L   // 没说哪天、时间已过 → 算明天
-            } else if (day != null) {
+                if (due < now && day == null && wk == null) due += 86_400_000L   // 没说哪天、时间已过 → 算明天
+            } else if (day != null || wk != null) {
                 cal.set(java.util.Calendar.HOUR_OF_DAY, 9); cal.set(java.util.Calendar.MINUTE, 0); cal.set(java.util.Calendar.SECOND, 0)
                 due = cal.timeInMillis
             }
@@ -246,6 +280,7 @@ object Todo {
             // 各分支必含字符，杜绝「全可选分组零长匹配」在每字之间插空格（P0：曾把「交周报」拆成「交 周 报」）
             title = title
                 .replace(Regex("(今天|明天|后天)"), " ")
+                .replace(WEEKDAY_RE, " ")
                 .replace(Regex("(?:\\d+|[一二两三四五六七八九十]+)(分钟|小时|天)后"), " ")
                 .let { s -> if (min != null) TIME_RE.replace(s, " ") else DIGIT_TIME.replace(s, " ") }
                 .replace(Regex("\\s+"), " ").trim()
@@ -262,11 +297,23 @@ object Todo {
             String.format("%02d:%02d", c.get(java.util.Calendar.HOUR_OF_DAY), c.get(java.util.Calendar.MINUTE))
     }
 
+    /**
+     * 「今天 13:18 / 明天 09:30 / 3 天后」这种相对日期说法。
+     *
+     * ## 必须按日历天算，不能按毫秒差除以 86400000
+     * 曾经的写法是 (dueAt - now) / 86_400_000L，也就是「不足 24 小时就算 0 天」。
+     * 今天 13:17 存一条明天 09:30 的待办，只差 20 小时，除法得 0，显示成**今天 09:30**。
+     * 用户看到的日期直接错了一天。跨夏令时、跨时区时这种算法还会再错一次。
+     *
+     * 正确做法：两边都对齐到各自当天的 0 点，再相减。
+     *
+     * ## 时:分用原始 dueAt
+     * 调用方如果传的是 dayStart(dueAt)，fmt(dueAt) 会得到 00:00 ——
+     * 待办列表曾经就是这样，所有条目全显示「今天 00:00」，因为它们在调用处就把时间截掉了。
+     * 所以这里不再相信调用方传的是哪种口径：天数差按日历天算，时:分用传进来的值取。
+     */
     fun fmtDue(dueAt: Long, now: Long, fmt: (Long) -> String): String {
-        // v1.85.13：内部归一化成天 —— daysBetween 返回毫秒差，直接当天数比较会产出
-        // 「41526013 天前」级天文数字（确认卡/待办列表两处调用点都中招，实测复现）。
-        // 归一化后「传原始毫秒」或「传 dayStart 对齐毫秒」两种口径都正确。
-        val days = daysBetween(now, dueAt) / 86_400_000L
+        val days = daysBetween(dayStart(now), dayStart(dueAt)) / 86_400_000L
         val hm = fmt(dueAt)
         return when {
             days == 0L -> "今天 $hm"
@@ -292,34 +339,53 @@ object Todo {
         return s to c.timeInMillis
     }
 
+    /**
+     * 锁约定：`@Synchronized` 只锁**本实例**，而全 App 到处 `Todo.Store(ctx)` 现 new 一个，
+     * 所以实例锁保护不了 todo.json。所有「读 → 改 → 写」一律走 [FileMemo.update]（锁在进程内唯一的 FileMemo 上），
+     * 否则用户新增 / 完成 / 删除会被另一路拿着旧快照的整表写入覆盖掉。
+     * [list] / [get] / [clear] 只读或由 FileMemo 自己加锁，不需要再加实例锁。
+     */
     class Store(ctx: Context) {
         private val file = File(ctx.applicationContext.filesDir, FILE)
         fun list(): List<Item> = FileMemo.get(file) { parse(it) }
-        private fun save(l: List<Item>) = FileMemo.put(file, l) { toJson(it) }
+        private fun update(f: (List<Item>) -> List<Item>) = FileMemo.update(file, { parse(it) }, { toJson(it) }) { f(it) }
 
-        @Synchronized fun add(text: String, dueAt: Long, note: String = ""): Long {
+        fun add(text: String, dueAt: Long, note: String = ""): Long {
             if (text.isBlank()) return -1L
             val now = System.currentTimeMillis()
-            val l = add(list(), Item(now, Memo.clip(text, 120), dueAt, now, note = note))
-            save(l)
-            return l.first().id
+            var id = -1L
+            update { l ->
+                val next = add(l, Item(now, Memo.clip(text, 120), dueAt, now, note = note))
+                id = next.firstOrNull()?.id ?: -1L
+                next
+            }
+            return id
         }
-        @Synchronized fun remove(id: Long) = save(remove(list(), id))
-        @Synchronized fun setDone(id: Long, done: Boolean) = save(setDone(list(), id, done))
-        @Synchronized fun setDue(id: Long, dueAt: Long) = save(setDue(list(), id, dueAt))
-        @Synchronized fun setNote(id: Long, note: String) = save(setNote(list(), id, note))
-        @Synchronized fun setCalendar(id: Long, calId: Long, calendar: String) = save(setCalendar(list(), id, calId, calendar))
+        fun remove(id: Long) = update { remove(it, id) }
+        fun setDone(id: Long, done: Boolean) = update { setDone(it, id, done) }
+        fun setDue(id: Long, dueAt: Long) = update { setDue(it, id, dueAt) }
+        fun setNote(id: Long, note: String) = update { setNote(it, id, note) }
+        fun setCalendar(id: Long, calId: Long, calendar: String) = update { setCalendar(it, id, calId, calendar) }
         /** 稍后 30 分钟：新建一条带「（稍后）」的副本（震动档跟着原条目，见 [snoozeItem]），原条目不动 */
-        @Synchronized fun snooze(id: Long, ms: Long): Long {
-            val t = get(id) ?: return -1L
+        fun snooze(id: Long, ms: Long): Long {
             val now = System.currentTimeMillis()
-            val l = add(list(), snoozeItem(t, now, ms))
-            save(l)
-            return l.first().id
+            var newId = -1L
+            update { l ->
+                val t = get(l, id) ?: return@update l
+                val next = add(l, snoozeItem(t, now, ms))
+                newId = next.firstOrNull()?.id ?: -1L
+                next
+            }
+            return newId
         }
-        /** v1.86：整表覆盖（[Schedule.sync] 物化规则时按「期望集合」一次性重排，逐条 add 的去重规则在这儿会碍事） */
-        @Synchronized fun setAll(l: List<Item>) = save(trim(l, MAX))
-        @Synchronized fun clear() = FileMemo.clear(file, emptyList<Item>())
+        /**
+         * v1.86：[Schedule.sync] 物化规则时的**整表重排**。必须与 [sync] 的读取在同一把锁里 ——
+         * sync 先 list() 算「保留 + 补齐」，这里再整表覆盖；中间若插进用户的新增 / 完成 / 删除，
+         * 就会被旧快照吃掉。sync 在 `synchronized(FileMemo)` 内调用，[update] 可重入同一把锁。
+         * 保留 [trim] 上限语义（删掉的是已完成的，不影响未处理的条目）。
+         */
+        fun replaceAll(l: List<Item>) = update { trim(l, MAX) }
+        fun clear() = FileMemo.clear(file, emptyList<Item>())
         fun get(id: Long): Item? = get(list(), id)
     }
 }

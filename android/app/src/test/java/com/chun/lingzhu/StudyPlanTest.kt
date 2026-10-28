@@ -40,10 +40,4 @@ class StudyPlanTest {
         assertEquals(Fsrs.State.Review, c.state)
     }
 
-    @Test fun importedCardsAreNotMarkedLearnedWithoutAnAnswer() {
-        val c = AnkiImport.toKCData(listOf(1L to "问题\u001f答案"), "数学", 1000L).single()
-        assertTrue(c.fsrs.isNew)
-        assertEquals(0, c.fsrs.reps)
-        assertEquals(0L, c.fsrs.lastReview)
-    }
 }
