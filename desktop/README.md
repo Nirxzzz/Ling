@@ -79,7 +79,7 @@ npm run pack       # 依次执行上面两条
 
 **产物状态（如实说明）**：
 
-- macOS zip **未签名、未公证**：`Ling-1.64.1-mac-arm64.zip`（102,879,005 字节，`sha256 56fed7dc97bd12632752520917ca0fb0a5593ce4babfdc9958e641f0f2347216`），`identity: null`，`codesign` 显示 adhoc 签名且没有 TeamIdentifier。首次打开会被 Gatekeeper 拦截，需要在「系统设置 → 隐私与安全性」里选择「仍要打开」，或用自己的 Developer ID 重新签名后再分发；每次重新构建后，屏幕录制 / 辅助功能授权可能需要重新授予。**没有签名的 release 包，也没有任何已发布产物。**
+- macOS zip `Ling-1.64.1-mac-arm64.zip`（102,879,005 字节，`sha256 56fed7dc97bd12632752520917ca0fb0a5593ce4babfdc9958e641f0f2347216`）**未签名、未公证**：`identity: null`，`codesign` 显示 adhoc 签名且没有 TeamIdentifier。首次打开会被 Gatekeeper 拦截，需要在「系统设置 → 隐私与安全性」里选择「仍要打开」，或用自己的 Developer ID 重新签名后再分发；每次重新构建后，屏幕录制 / 辅助功能授权可能需要重新授予。该 zip 与 Windows zip、Android debug APK 一起随 Release `v2.7.3-1.64.1` 对外提供；**没有签名的 release 包**。
 - Windows zip **未做代码签名，也从未在 Windows 上启动过**：产物 `Ling-1.64.1-win-x64.zip`（134,543,299 字节，`sha256 52a9e2fb79330311273d127f742583decadf84d2941807b621de7b6c85cce055`）在修复复习队列 / 存卡之后构建，`unzip -t` 校验通过，`app.asar` 里含上述修复；但**没有在任何 Windows 机器上运行过**，因此 Windows 侧的界面、签名警告与系统集成都未验证。请在 Windows 上自行构建并实测后再分发。
 - 打包资源完整：
   - 图标：`build/` 下有 `icon.png`（1024×1024 RGBA PNG）、`icon.icns`、`icon.ico`，`build.icon` 指向 `icon.png`；最终 macOS 产物里的 `Resources/icon.icns`，其 1024×1024 图层与 `desktop/build/icon.png` **逐像素相同**。`.gitignore` 已对 `desktop/build/` 开例外（`!desktop/build/**`），这三份二进制随源码一起提交。

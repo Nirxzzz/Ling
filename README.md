@@ -7,7 +7,7 @@ Ling 是一款常驻桌面的悬浮球工具：屏幕识别、划词翻译，结
 - 仓库地址：<https://github.com/Nirxzzz/Ling>，已公开（`private=false`、`visibility=public`），默认分支为 `main`。
 - 采用**单仓库**结构：根目录即仓库根，`android/` 与 `desktop/` 都是它的子目录，不各自独立建库；`android/.githooks/pre-commit` 由仓库根通过 `git config core.hooksPath android/.githooks` 启用。
 - 仓库自有源码以 **GPL-3.0-only** 许可公开，版权人为 **Ling contributors**，年份 **2026**；许可证全文见根目录 [LICENSE](LICENSE)，是 GNU 官方 GPLv3 正文的逐字原文。第三方组件、字体与词表仍按各自授权分发，详见下文「许可与第三方资产」。
-- 公开可见只说明仓库内容可被访问，不代表已发布成品、已提供安装包，也不代表下文验证记录之外还有额外验收。当前没有已发布的 Release，也不把任何 tag 或产物写成已发布；实际状态以 <https://github.com/Nirxzzz/Ling/releases> 为准。
+- 公开可见只说明仓库内容可被访问；当前只有一个归档性质的 Release（tag `v2.7.3-1.64.1`：Android debug 签名 APK + 未签名 macOS/Windows zip + `sha256.txt`），它既不是正式发布渠道，也不代表下文验证记录之外还有额外验收。实际状态以 <https://github.com/Nirxzzz/Ling/releases> 为准。
 
 ## 包含内容
 
@@ -56,7 +56,7 @@ Ling 是一款常驻桌面的悬浮球工具：屏幕识别、划词翻译，结
 - **1.64.1 单元测试**：`npm ci --ignore-scripts --no-audit --no-fund` 安装 332 个包（跳过 Electron 二进制下载）；`npm test` **302 项通过，0 失败**，`tool/smoke-main.js` **8/8 通过**。这是纯函数与模块级冒烟，**不启动**窗口与渲染进程。
 - **1.64.1 界面验收（两轮）**：先跑源码（隔离临时用户数据目录、复用 Electron `37.10.3`），再跑最终 zip 解出的 `Ling.app`；两轮都用真实鼠标 / 键盘操作，模型请求全部指向本机临时 fixture 服务。走通的路径：新手卡 → 设置页填接口 → 获取模型列表 → 检测连接 → 保存 → 退出重启后设置与引导状态仍在 → 双击截屏流式答案 → 追问（打包产物那轮带新截图并成功）→ 历史记录重启后仍在、可选中、星标可切换 → 存知识卡且存后按钮不可点 → 知识卡评分「良好」后到期顺延 2 天、当日到期队列为空、卡库计数 1 → HTTP 500 时面板显示错误且窗口可操作，干净配置下该轮「存为复习卡」不可点、主进程回 `notsaveable`，失败后再成功的一轮可以正常存 → 流式挂起时关闭面板后 busy 清除且不再自行弹回 → 退出码 0，无残留进程或单实例锁。
 - 边界：fixture 只证明**协议与接线**（请求构造、SSE 解析、错误显示、取消恢复、存卡资格、复习调度），**不证明**真实模型对截图的识别能力，也不证明答案质量。未验收：语音云链路（腾讯 / 豆包 / 阿里云）、局域网同步、MCP、手机常连、剪贴板翻译、专注守护、陪伴气泡、更新检查与下载、Windows 真机；桌面端没有笔记界面。这些是「未验证」，不是「不可用」。
-- **1.64.1 打包**：macOS arm64 zip 已构建（`Ling-1.64.1-mac-arm64.zip`，102,879,005 字节，`sha256 56fed7dc97bd12632752520917ca0fb0a5593ce4babfdc9958e641f0f2347216`），**未签名、未公证**（`identity: null`，`codesign` 为 ad hoc、无 TeamIdentifier），首次打开需在系统设置里选「仍要打开」。核对过最终产物的 `Info.plist`：`com.ling.opensource` / `1.64.1`，麦克风与系统音频用途说明存在，摄像头与蓝牙三项用途串已不在 plist 中；`app.asar` 顶层与 `build.files` 逐项一致，包内图标与 `desktop/build/icon.png` 逐像素相同。Windows zip 也在修复复习队列 / 存卡之后构建（`Ling-1.64.1-win-x64.zip`，134,543,299 字节，`sha256 52a9e2fb79330311273d127f742583decadf84d2941807b621de7b6c85cce055`，`unzip -t` 通过，`app.asar` 含上述修复），但**从未在 Windows 上启动过**。两个 zip 都未做代码签名，**没有签名的 release 包，也没有发布任何产物**。
+- **1.64.1 打包**：macOS arm64 zip 已构建（`Ling-1.64.1-mac-arm64.zip`，102,879,005 字节，`sha256 56fed7dc97bd12632752520917ca0fb0a5593ce4babfdc9958e641f0f2347216`），**未签名、未公证**（`identity: null`，`codesign` 为 ad hoc、无 TeamIdentifier），首次打开需在系统设置里选「仍要打开」。核对过最终产物的 `Info.plist`：`com.ling.opensource` / `1.64.1`，麦克风与系统音频用途说明存在，摄像头与蓝牙三项用途串已不在 plist 中；`app.asar` 顶层与 `build.files` 逐项一致，包内图标与 `desktop/build/icon.png` 逐像素相同。Windows zip 也在修复复习队列 / 存卡之后构建（`Ling-1.64.1-win-x64.zip`，134,543,299 字节，`sha256 52a9e2fb79330311273d127f742583decadf84d2941807b621de7b6c85cce055`，`unzip -t` 通过，`app.asar` 含上述修复），但**从未在 Windows 上启动过**。三个文件与 `sha256.txt` 随 Release `v2.7.3-1.64.1` 对外提供；两个 zip 都未做代码签名，**没有签名的 release 包**。
 
 ## 已知限制
 

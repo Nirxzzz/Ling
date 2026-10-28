@@ -1,9 +1,10 @@
 # Changelog
 
-## 2.7.3（versionCode 273）— 未发布
+## 2.7.3（versionCode 273）— 已发布 tag `v2.7.3-1.64.1`
 
-> 本条只记录在公开副本里实际发生的结果：构建、单元测试与冒烟都已真实执行。没有 tag、没有 Release，
-> 也没有对外分发的安装包；本机产物是 debug 签名 APK。
+> 本条只记录在公开副本里实际发生的结果：构建、单元测试与冒烟都已真实执行。
+> GitHub Release `v2.7.3-1.64.1` 附带三个归档文件与 `sha256.txt`；Android 侧只有
+> **debug 签名** APK，本仓库不含签名材料，也没有签名 release 包。
 
 ### 签名闸门
 
@@ -38,7 +39,7 @@
 ### 版本
 
 - `versionName` 2.7.3，`versionCode` 273。
-- 尚未发布：没有 tag、没有 Release，也没有对外分发的产物；上面的 APK 只在本机临时目录。
+- 对外产物：Release `v2.7.3-1.64.1` 里的 `Ling-2.7.3-opensource-debug.apk`（debug 签名，不能覆盖官方 App）。
 
 ## 2.0.10（versionCode 218）— 预发布，待主脑确认
 
