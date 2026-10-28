@@ -11,6 +11,8 @@ A bridge between you and your agents and the things happening on your screens.
 
 **Android · macOS · Windows**
 
+English · [简体中文](README.zh-CN.md)
+
 [Download](#download) · [Get started](#get-started) · [Agents and devices](#give-your-agent-a-way-in) · [Obsidian and Anki](#keep-the-tools-you-already-like) · [Build from source](#build-from-source)
 
 </div>
